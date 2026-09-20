@@ -1,0 +1,20 @@
+# Reproducible dependency environment.
+#   spack env activate -d .
+#   spack install
+spack:
+  specs:
+    - kokkos@4.4: +openmp
+    - petsc@3.22: +mpi+hypre+hdf5 ~debug
+    - hypre@2.32: +mpi
+    - cgns@4.4: +mpi+hdf5
+    - adios2@2.10: +mpi+hdf5
+    - paraview@5.13: +mpi+catalyst ~qt
+    - parmetis@4.0.3
+    - cmake@3.28:
+  view: true
+  concretizer:
+    unify: true
+
+  # GPU build: swap the kokkos and petsc specs for
+  #   - kokkos@4.4: +cuda+cuda_lambda cuda_arch=89
+  #   - petsc@3.22: +mpi+hypre+cuda ~debug
