@@ -9,7 +9,7 @@ libraries, targeting workstation CPU + GPU.
 
 | Stage | Scope | State |
 | --- | --- | --- |
-| v0 | Mesh geometry, FVM diffusion operator, linear-solver plumbing | **Python reference passing; C++ interfaces fixed** |
+| v0 | Mesh geometry, FVM diffusion operator, linear-solver plumbing | **Python + C++ passing; CGNS and MPI remaining** |
 | v1 | Incompressible laminar 3D (fractional step / SIMPLE) | not started |
 | v2 | RANS turbulence + heat transfer + buoyancy | not started |
 | v2.5 | GPU port | not started |
@@ -28,6 +28,21 @@ Run the active gates:
 ```
 python tests/mms/run_gates.py v0
 ```
+
+Four gates are active. The C++ ones are skipped with a notice if the build tree
+is absent, so the suite still runs without Kokkos.
+
+| Gate | What it proves |
+| --- | --- |
+| `python: MMS diffusion` | the scheme is second-order on orthogonal and skewed meshes |
+| `c++: mesh geometry` | the C++ geometry reproduces the Python reference on identical vertices |
+| `c++: MMS diffusion` | the C++ scheme is second-order, independently measured |
+| `cross-check` | Python and C++ L2 errors agree to 1.6e-12 across all 12 combinations |
+
+The cross-check is the one that matters most. The two implementations share no
+code — one is numpy with a sparse direct solve, the other is Kokkos with a
+Jacobi-preconditioned CG. Agreeing to 1.6e-12 on twelve independent cases is
+evidence a single implementation cannot produce on its own.
 
 ### v0 gate — current result
 
@@ -50,6 +65,7 @@ on both meshes.
 
 ```
 prototype/    Python reference implementation -- defines correct behaviour
+              and generates the fixtures the C++ unit tests check against
 src/core/     Kokkos types, MPI, configuration
 src/mesh/     unstructured mesh, geometry, CGNS reader
 src/field/    field containers, boundary conditions
@@ -72,16 +88,24 @@ rewrite solver internals: the reference and the gate both already exist.
 
 ## Build
 
+Only Kokkos is required today; PETSc is optional until the production solver
+backend lands.
+
 ```
-spack env activate -d .
-spack install
-cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DKokkos_ROOT=<kokkos install>
 cmake --build build -j
 ctest --test-dir build
 ```
 
-GPU build: see the commented specs at the bottom of `spack.yaml`, then
-`-DNSFLOW_ENABLE_GPU=ON`.
+For the full dependency set (PETSc, hypre, CGNS, ADIOS2, ParaView):
+
+```
+spack env activate -d .
+spack install
+```
+
+GPU build: swap the Kokkos spec at the bottom of `spack.yaml` for a CUDA or HIP
+one. No solver code changes — that is what ADR-002 buys.
 
 ## Licence
 

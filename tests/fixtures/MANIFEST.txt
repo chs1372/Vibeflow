@@ -1,0 +1,23 @@
+# nsflow v0 fixtures  n=8 skew=0.25 seed=1
+# cells=512 internal_faces=1344 boundary_faces=384
+# max_nonorthogonality_deg=25.650505504806468
+# closure_error=7.8062556418956319e-18
+# volume_sum=1
+vertices.txt 729 3
+cell_centre.txt 512 3
+cell_volume.txt 512 1
+owner.txt 1344 1
+neighbour.txt 1344 1
+face_area.txt 1344 3
+face_centre.txt 1344 3
+boundary_cell.txt 384 1
+boundary_area.txt 384 3
+boundary_centre.txt 384 3
+vertices_n8_s0.txt 729 3 n=8 skew=0.0
+vertices_n8_s25.txt 729 3 n=8 skew=0.25
+vertices_n16_s0.txt 4913 3 n=16 skew=0.0
+vertices_n16_s25.txt 4913 3 n=16 skew=0.25
+vertices_n32_s0.txt 35937 3 n=32 skew=0.0
+vertices_n32_s25.txt 35937 3 n=32 skew=0.25
+solution_caseA.txt 512 1
+# solution_caseA_L2_error=0.0056073824656658342

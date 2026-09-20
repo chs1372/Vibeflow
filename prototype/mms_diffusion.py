@@ -66,10 +66,10 @@ def study(case, skew, grids):
 def report(label, rows, gate=(1.9, 2.1)):
     print(f"\n{label}   (max non-orthogonality {rows[0]['nonortho']:.2f} deg, "
           f"|u|max {rows[0]['umax']:.3f})")
-    print(f"  {'N':>4} {'h':>9} {'L2 error':>13} {'Linf':>13} {'order':>8} {'corr it':>8}")
+    print(f"  {'N':>4} {'h':>9} {'L2 error':>19} {'Linf':>13} {'order':>8} {'corr it':>8}")
     for r in rows:
         o = f"{r['order']:8.3f}" if "order" in r else f"{'-':>8}"
-        print(f"  {r['n']:4d} {r['h']:9.5f} {r['l2']:13.6e} {r['linf']:13.6e} {o} {r['iters']:8d}")
+        print(f"  {r['n']:4d} {r['h']:9.5f} {r['l2']:19.12e} {r['linf']:13.6e} {o} {r['iters']:8d}")
     last = rows[-1]["order"]
     ok = gate[0] <= last <= gate[1]
     print(f"  -> order {last:.3f} in [{gate[0]}, {gate[1]}]: {'PASS' if ok else 'FAIL'}")
