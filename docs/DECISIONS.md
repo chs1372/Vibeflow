@@ -67,3 +67,39 @@ the backend-equivalence gate measured 1.4e-13 agreement across four PETSc
 configurations.
 *Measured:* BoomerAMG reaches the same solution in 7 iterations where
 Jacobi-CG needs 92, on 4096 cells.
+
+## ADR-009 — Pressure-velocity coupling: SIMPLE with PISO correctors
+**Decided.** One momentum predictor followed by two or more pressure
+correctors, with under-relaxation available so the same code runs steady
+(SIMPLE) and transient (PISO) cases.
+*Why:* it covers both regimes from one implementation, and the extra corrector
+is what lets a transient run take a time step larger than a fractional-step
+method tolerates.
+*Cost:* more work per time step than fractional step, and the corrector count
+is a tuning knob rather than a fixed property of the scheme.
+*Reverses if:* v2 LES becomes the dominant use, where fractional step is
+cheaper per step at the small time steps LES needs anyway.
+
+## ADR-010 — Collocated variables with Rhie-Chow face interpolation
+**Decided.** Velocity and pressure both at cell centres; the face mass flux
+comes from Rhie-Chow interpolation rather than from interpolating velocity.
+*Why:* staggered arrangements do not generalise to unstructured meshes. This is
+what OpenFOAM, code_saturne and Nalu-Wind all do.
+*Known trap, which the gates must cover:* the naive form makes the face flux
+depend on the time step through the aP coefficient, because aP carries the
+transient term V/dt. As dt shrinks the pressure-damping term vanishes and
+checkerboarding returns; worse, a steady state reached with different dt is a
+different steady state. The implementation must use the dt-consistent form
+that carries the old-time flux, and a gate must solve the same steady problem
+at several dt and require the same answer.
+
+## ADR-011 — Second-order implicit time integration (BDF2)
+**Decided.** BDF2, with a BDF1 start-up step.
+*Why:* second order without the Crank-Nicolson oscillation at large time steps,
+and it is L-stable, which matters once stiff source terms arrive with
+turbulence models in v2.
+*Cost:* one extra stored time level, and the start-up step is first order, so
+the temporal order gate must measure over enough steps that the start-up
+error does not dominate.
+*Reverses if:* nothing foreseeable for v1. A higher-order or IMEX scheme is a
+v3 concern.
