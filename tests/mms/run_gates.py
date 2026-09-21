@@ -78,7 +78,15 @@ GATES = {
         ("backends: every linear solver gives the same solution",
          lambda: run([str(BUILD / "test_backends"), str(FIX)]), BUILD / "test_backends"),
     ],
-    # v1: taylor_green, cavity_ghia, cylinder_strouhal
+    "v1": [
+        ("symbolic: the exact solutions really satisfy the equations",
+         lambda: run([PY, str(Path(__file__).parent / "verify_exact.py")]), None),
+        ("python: convection-diffusion is second order at high Peclet",
+         lambda: run([PY, str(PROTO / "mms_convection.py"), "8", "16", "32"], PROTO), None),
+        ("python: Navier-Stokes vs the Ethier-Steinman exact solution",
+         lambda: run([PY, str(PROTO / "ethier_steinman.py")], PROTO), None),
+    ],
+    # v1 remaining: cavity_ghia, cylinder_strouhal
     # v2: flat_plate_cf, backward_step, rayleigh_benard
     # v3: sod_shock_tube, naca0012_transonic
     # v4: dam_break, rising_bubble

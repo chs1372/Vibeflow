@@ -10,7 +10,7 @@ libraries, targeting workstation CPU + GPU.
 | Stage | Scope | State |
 | --- | --- | --- |
 | v0 | Mesh geometry, FVM diffusion, IO, MPI, linear-solver backends | **complete — 8 gates passing** |
-| v1 | Incompressible laminar 3D (fractional step / SIMPLE) | not started |
+| v1 | Incompressible laminar 3D (SIMPLE/PISO, Rhie-Chow, BDF2) | **in progress — 1 gate failing, cause identified** |
 | v2 | RANS turbulence + heat transfer + buoyancy | not started |
 | v2.5 | GPU port | not started |
 | v3 | Compressible (density-based path) | not started |
@@ -42,6 +42,24 @@ is absent, so the suite still runs without Kokkos.
 | `vtu` | ParaView output round-trips through meshio, an independent parser |
 | `mpi` | the answer is independent of the rank count (1/2/3/4 agree to 9e-14) |
 | `backends` | native CG and four PETSc configurations give the same solution to 1.4e-13 |
+
+v1 gates (`python tests/mms/run_gates.py v1`):
+
+| Gate | State |
+| --- | --- |
+| `symbolic` | sympy confirms Ethier-Steinman satisfies Navier-Stokes exactly | 
+| `convection-diffusion` | **PASS** — 2.04 orthogonal, 2.02 skewed, at cell Peclet up to 30 |
+| `NS spatial, orthogonal` | **PASS** — 1.98 |
+| `NS spatial, skewed` | **FAIL — 1.23.** Cause measured, see below |
+| `NS temporal (BDF2)` | **PASS** — 2.03 |
+| `Rhie-Chow dt independence` | reported, not gated — the measurement is inconclusive (ADR-012) |
+
+The skewed-mesh failure is left failing on purpose. Pressure converges at 2.06
+on the same run; the velocity does not, because the velocity correction
+`u = H/aP - grad(p) V/aP` uses a reconstructed gradient that is first order
+(least squares) or non-convergent (Green-Gauss) on a perturbed mesh. The fix is
+a quadratic least-squares gradient. Loosening the gate band instead would hide
+exactly the kind of defect this project's whole method exists to catch.
 
 Two of these carry most of the weight. The **cross-check** compares
 implementations that share no code — numpy with a sparse direct solve against

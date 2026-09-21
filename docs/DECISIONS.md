@@ -103,3 +103,30 @@ the temporal order gate must measure over enough steps that the start-up
 error does not dominate.
 *Reverses if:* nothing foreseeable for v1. A higher-order or IMEX scheme is a
 v3 concern.
+
+## ADR-012 — Gradient reconstruction limits velocity accuracy on skewed meshes
+**Measured, not yet decided.** The v1 solver reaches second order on an
+orthogonal mesh (1.98) but only 1.17 on a randomly perturbed one, while the
+pressure on that same run converges at 2.06.
+
+The cause is the gradient reconstruction, measured directly against the
+analytic gradient of the exact pressure field on a mesh with 30 deg maximum
+non-orthogonality:
+
+| cells per side | Green-Gauss | order | least squares | order |
+| --- | --- | --- | --- | --- |
+| 6 | 1.64e-01 | – | 1.19e-01 | – |
+| 12 | 1.47e-01 | 0.16 | 5.49e-02 | 1.11 |
+| 24 | 1.62e-01 | -0.14 | 2.66e-02 | 1.05 |
+
+Green-Gauss does not converge at all on a perturbed mesh; least squares is
+first order. The velocity correction `u = H/aP - grad(p) V/aP` uses this
+gradient directly, so the velocity cannot be better than the gradient.
+
+*Chosen for now:* least squares, because first order beats zeroth.
+*Fix:* a quadratic least-squares fit over a two-ring stencil, which is second
+order for the gradient. That is the next v1 task, and the skewed spatial gate
+stays failing until it lands.
+*Note:* a scalar transported on the same mesh IS second order, because there
+the gradient only enters the deferred non-orthogonal correction, where its
+error is multiplied by a small coefficient rather than used directly.
