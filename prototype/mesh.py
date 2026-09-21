@@ -28,16 +28,35 @@ class HexMesh:
     b_centre    : (nbf, 3)
     """
 
-    def __init__(self, n, skew=0.0, seed=0):
+    def __init__(self, n, skew=0.0, seed=0, skew_mode="warped"):
+        """skew_mode:
+          "warped"  - perturb interior vertices in all three directions. Faces
+                      become non-planar, which is realistic but is a known
+                      source of first-order solution error in 3D: a single
+                      face value times the total area vector does not
+                      integrate a flux correctly over a warped face.
+          "planar"  - random 2D perturbation extruded in z. Faces stay planar.
+          "smooth"  - a FIXED analytic distortion of the same shape at every
+                      resolution, extruded in z so faces stay planar.
+
+        "smooth" is the family to measure order on. A randomly perturbed mesh
+        redraws its perturbation at every resolution, so the meshes are
+        independent samples rather than refinements of one another: the mesh
+        quality itself fluctuates (measured non-orthogonality 25.9, 30.1, 28.4
+        degrees at n = 6, 12, 24) and the error constant fluctuates with it,
+        which shows up as a wandering "order". A fixed mapping refines toward
+        a definite geometry, so the order it measures is the scheme's.
+        """
         self.n = n
         self.skew = skew
-        self._build_vertices(n, skew, seed)
+        self.skew_mode = skew_mode
+        self._build_vertices(n, skew, seed, skew_mode)
         self._build_faces(n)
         self._compute_face_geometry()
         self._compute_cell_geometry()
 
     # ------------------------------------------------------------------ mesh
-    def _build_vertices(self, n, skew, seed):
+    def _build_vertices(self, n, skew, seed, mode="warped"):
         nv = n + 1
         h = 1.0 / n
         g = np.linspace(0.0, 1.0, nv)
@@ -46,12 +65,37 @@ class HexMesh:
 
         if skew > 0.0:
             rng = np.random.default_rng(seed)
-            d = rng.uniform(-1.0, 1.0, size=v.shape) * skew * h
-            # Interior vertices only: the domain boundary stays planar so that
-            # Dirichlet faces carry the exact boundary value with no extra error.
-            interior = np.zeros(v.shape[:3], dtype=bool)
-            interior[1:-1, 1:-1, 1:-1] = True
-            v[interior] += d[interior]
+            if mode == "smooth":
+                # Deterministic, C-infinity, zero on the boundary, and the
+                # same shape at every resolution.
+                # Amplitude is absolute, not a multiple of h: that is what
+                # makes the family a refinement of ONE geometry. It must stay
+                # below about 1/(2 pi) or the map stops being invertible and
+                # the cells tangle -- at amplitude 0.25 this mesh inverts and
+                # the momentum matrix is exactly singular.
+                amp = 0.2 * skew
+                gx, gy = np.meshgrid(g, g, indexing="ij")
+                bump = np.sin(np.pi * gx) * np.sin(np.pi * gy)
+                v[:, :, :, 0] += (amp * np.sin(2 * np.pi * gy) * bump)[:, :, None]
+                v[:, :, :, 1] += (amp * np.sin(2 * np.pi * gx) * bump)[:, :, None]
+            elif mode == "planar":
+                # One 2D perturbation in x-y, repeated on every z layer, and
+                # no z displacement at all. Each z = const face stays flat and
+                # each side face is spanned by a 2D edge and the z axis, so
+                # every face is planar.
+                d2 = rng.uniform(-1.0, 1.0, size=(nv, nv, 2)) * skew * h
+                d2[0, :, :] = d2[-1, :, :] = 0.0
+                d2[:, 0, :] = d2[:, -1, :] = 0.0
+                v[:, :, :, 0] += d2[:, :, None, 0]
+                v[:, :, :, 1] += d2[:, :, None, 1]
+            else:
+                d = rng.uniform(-1.0, 1.0, size=v.shape) * skew * h
+                # Interior vertices only: the domain boundary stays planar so
+                # Dirichlet faces carry the exact boundary value with no extra
+                # error.
+                interior = np.zeros(v.shape[:3], dtype=bool)
+                interior[1:-1, 1:-1, 1:-1] = True
+                v[interior] += d[interior]
 
         self.vert = v
         self.nv = nv
@@ -183,6 +227,22 @@ class HexMesh:
         np.add.at(s, self.neigh, -self.face_area)
         np.add.at(s, self.b_cell, self.b_area)
         return np.abs(s).max()
+
+    def max_face_warp(self):
+        """Largest out-of-plane deviation of a face, relative to its size.
+
+        Zero means every face is planar.
+        """
+        verts = self.vert.reshape(-1, 3)
+        worst = 0.0
+        for fv in (self.fverts, self.b_fverts):
+            p = verts[fv]
+            n = np.cross(p[:, 1] - p[:, 0], p[:, 2] - p[:, 0])
+            nn = np.linalg.norm(n, axis=1)
+            off = np.abs(np.einsum("ij,ij->i", p[:, 3] - p[:, 0], n)) / np.maximum(nn, 1e-300)
+            scale = np.linalg.norm(p[:, 2] - p[:, 0], axis=1)
+            worst = max(worst, (off / scale).max())
+        return worst
 
     def non_orthogonality(self):
         """Max angle in degrees between the owner->neighbour vector and the face normal."""

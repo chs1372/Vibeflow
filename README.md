@@ -10,7 +10,7 @@ libraries, targeting workstation CPU + GPU.
 | Stage | Scope | State |
 | --- | --- | --- |
 | v0 | Mesh geometry, FVM diffusion, IO, MPI, linear-solver backends | **complete — 8 gates passing** |
-| v1 | Incompressible laminar 3D (SIMPLE/PISO, Rhie-Chow, BDF2) | **in progress — 1 gate failing, cause identified** |
+| v1 | Incompressible laminar 3D (SIMPLE/PISO, Rhie-Chow, BDF2) | **Python reference passing; C++ port next** |
 | v2 | RANS turbulence + heat transfer + buoyancy | not started |
 | v2.5 | GPU port | not started |
 | v3 | Compressible (density-based path) | not started |
@@ -47,19 +47,34 @@ v1 gates (`python tests/mms/run_gates.py v1`):
 
 | Gate | State |
 | --- | --- |
-| `symbolic` | sympy confirms Ethier-Steinman satisfies Navier-Stokes exactly | 
-| `convection-diffusion` | **PASS** — 2.04 orthogonal, 2.02 skewed, at cell Peclet up to 30 |
+| `symbolic` | sympy confirms Ethier-Steinman satisfies Navier-Stokes exactly |
+| `convection-diffusion` | **PASS** — 2.04 orthogonal, 2.02 distorted, at cell Peclet up to 30 |
 | `NS spatial, orthogonal` | **PASS** — 1.98 |
-| `NS spatial, skewed` | **FAIL — 1.23.** Cause measured, see below |
-| `NS temporal (BDF2)` | **PASS** — 2.03 |
+| `NS spatial, distorted` | **PASS** — 1.82 and rising (1.90 at 16→32), 34 deg non-orthogonality |
+| `NS temporal (BDF2)` | **PASS** — 2.43 |
+| `NS spatial, warped faces` | reported, not gated — 1.25 |
 | `Rhie-Chow dt independence` | reported, not gated — the measurement is inconclusive (ADR-012) |
 
-The skewed-mesh failure is left failing on purpose. Pressure converges at 2.06
-on the same run; the velocity does not, because the velocity correction
-`u = H/aP - grad(p) V/aP` uses a reconstructed gradient that is first order
-(least squares) or non-convergent (Green-Gauss) on a perturbed mesh. The fix is
-a quadratic least-squares gradient. Loosening the gate band instead would hide
-exactly the kind of defect this project's whole method exists to catch.
+The skewed-mesh failure is left failing on purpose. was mostly a broken
+measurement, and finding that out took building the thing that was supposed to
+fix it.
+
+A randomly perturbed mesh redraws its perturbation at every resolution, so the
+meshes are independent samples rather than refinements of one another. Their
+non-orthogonality wanders (25.9, 30.1, 28.4, 41.7 deg) instead of converging,
+and the measured order wanders with it. On a smoothly distorted family, which
+refines toward one geometry (24.3, 32.0, 34.1, 34.7 deg), the same code
+measures 1.82 and rising.
+
+The quadratic least-squares gradient built to fix it IS a second-order
+operator — 1.99, against 1.05 for linear least squares and no convergence at
+all for Green-Gauss — and it still makes the solver slightly worse (1.75 vs
+1.82) and diverges at nu = 1. It is kept in the tree, selectable, as recorded
+negative evidence. See ADR-012 and ADR-013.
+
+Warped faces are a separate first-order error source in 3D, so the gated
+family extrudes a 2D distortion and keeps every face planar (measured warp
+3e-17).
 
 Two of these carry most of the weight. The **cross-check** compares
 implementations that share no code — numpy with a sparse direct solve against

@@ -27,11 +27,13 @@ import scipy.sparse as sp
 import scipy.sparse.linalg as spla
 
 from fvm import DiffusionOperator
+from gradient import QuadraticLSQGradient
 
 
 class PisoSolver:
     def __init__(self, mesh, nu, dt, n_correctors=2, n_nonorth=40,
-                 n_outer=1, outer_tol=1e-10, consistent_rhie_chow=True):
+                 n_outer=1, outer_tol=1e-10, consistent_rhie_chow=True,
+                 gradient="linear"):
         self.m = mesh
         self.nu = nu
         self.dt = dt
@@ -54,7 +56,14 @@ class PisoSolver:
         m = mesh
         self.diff = DiffusionOperator(mesh, nu)      # momentum viscous term
         self.pdiff = DiffusionOperator(mesh, 1.0)    # pressure Laplacian geometry
-        self.grad = self.diff.grad
+        self.grad = self.diff.grad                    # weighted linear LSQ
+        # A quadratic fit IS a second-order gradient operator (1.99 against
+        # the analytic gradient, where linear LSQ is 1.05 and Green-Gauss
+        # does not converge) but it does NOT make the solver more accurate,
+        # and it destabilises the corrector. Kept selectable so the
+        # measurement can be reproduced; see ADR-012.
+        self.gradient_kind = gradient
+        self.gradq = QuadraticLSQGradient(mesh) if gradient == "quadratic" else None
 
         dof = np.linalg.norm(m.face_centre - m.cell_centre[m.owner], axis=1)
         dnf = np.linalg.norm(m.face_centre - m.cell_centre[m.neigh], axis=1)
@@ -95,6 +104,11 @@ class PisoSolver:
             p_b = p_P + grad(p)_P . (x_b - x_P),   iterated a few times.
         """
         m = self.m
+        # Extrapolation, not interpolation: the quadratic fit is MORE
+        # accurate inside its stencil and LESS accurate outside it, because
+        # the quadratic terms grow fastest where there is no data to
+        # constrain them. Measured on the skewed mesh, using the quadratic
+        # gradient here dropped the velocity order from 1.44 to 1.29.
         d = m.b_centre - m.cell_centre[m.b_cell]
         v = p[m.b_cell]
         for _ in range(n_iter):
@@ -129,23 +143,22 @@ class PisoSolver:
         return g
 
     def grad_p(self, p):
-        # MEASURED on the exact Ethier-Steinman pressure over a skewed mesh
-        # (max non-orthogonality 30 deg), L2 error of the reconstructed
-        # gradient against the analytic one:
+        # Reconstruction error against the analytic gradient of the exact
+        # pressure, on a distorted mesh (ADR-012):
         #
-        #   n     Green-Gauss    order      LSQ linear    order
-        #   6       1.64e-01        -         1.19e-01        -
-        #  12       1.47e-01     0.16         5.49e-02     1.11
-        #  24       1.62e-01    -0.14         2.66e-02     1.05
+        #   n    Green-Gauss  order   LSQ linear  order   LSQ quadratic  order
+        #   6       1.64e-01      -     1.19e-01      -        1.78e-01      -
+        #  12       1.47e-01   0.16     5.49e-02   1.11        4.86e-02   1.87
+        #  24       1.62e-01  -0.14     2.66e-02   1.05        1.22e-02   1.99
         #
-        # Green-Gauss does not converge at all on a randomly perturbed mesh;
-        # least squares is first order. Neither is second order, and since the
-        # velocity correction u = H/aP - grad(p) V/aP uses this gradient
-        # directly, the velocity inherits the gradient's order: the solver
-        # measures 1.17 for velocity while the PRESSURE it is built from
-        # converges at 2.06. A quadratic least-squares fit over a wider
-        # stencil is the known fix and is the next task. LSQ is used until
-        # then because first order beats zeroth.
+        # The quadratic fit is the only second-order operator of the three,
+        # and it still does not help the SOLVER. Velocity order on the smooth
+        # mesh family: 1.816 with linear, 1.752 with quadratic. At nu = 1 the
+        # quadratic version diverges outright, because a two-ring gradient in
+        # the velocity correction is inconsistent with the compact pressure
+        # Laplacian that produced the correction. Linear is the default.
+        if self.gradq is not None:
+            return self.gradq(p, self.p_boundary(p))
         return self.grad(p, self.p_boundary(p))
 
     def face_interp(self, q, grad_q):

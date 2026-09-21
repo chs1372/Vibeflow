@@ -123,10 +123,89 @@ Green-Gauss does not converge at all on a perturbed mesh; least squares is
 first order. The velocity correction `u = H/aP - grad(p) V/aP` uses this
 gradient directly, so the velocity cannot be better than the gradient.
 
-*Chosen for now:* least squares, because first order beats zeroth.
-*Fix:* a quadratic least-squares fit over a two-ring stencil, which is second
-order for the gradient. That is the next v1 task, and the skewed spatial gate
-stays failing until it lands.
-*Note:* a scalar transported on the same mesh IS second order, because there
-the gradient only enters the deferred non-orthogonal correction, where its
-error is multiplied by a small coefficient rather than used directly.
+*Investigated, and the obvious fix does not work.* A quadratic least-squares
+fit over a two-ring stencil (nine terms, about 24 neighbours per hex cell) is
+genuinely a second-order gradient operator:
+
+| cells per side | Green-Gauss | order | LSQ linear | order | LSQ quadratic | order |
+| --- | --- | --- | --- | --- | --- | --- |
+| 6 | 1.64e-01 | – | 1.19e-01 | – | 1.78e-01 | – |
+| 12 | 1.47e-01 | 0.16 | 5.49e-02 | 1.11 | 4.86e-02 | 1.87 |
+| 24 | 1.62e-01 | -0.14 | 2.66e-02 | 1.05 | 1.22e-02 | 1.99 |
+
+It still does not make the solver more accurate. On the smooth mesh family
+(ADR-013), velocity order is **1.816 with the linear gradient and 1.752 with
+the quadratic one**, and at nu = 1 the quadratic version diverges outright.
+
+Two reasons, both measured:
+
+* A two-ring gradient in the velocity correction is inconsistent with the
+  compact pressure Laplacian that produced that correction. The outer loop
+  stops contracting: at nu = 1, n = 8, the velocity reaches 29 (the exact
+  solution is order 1) after one step and the momentum matrix is singular at
+  the next.
+* What limits the velocity is not the reconstruction operator. The discrete
+  pressure converges at 1.93 and the quadratic reconstruction of the EXACT
+  pressure converges at 1.99, but the reconstruction of the SOLVER's pressure
+  converges at only 1.32 — the pressure error field carries mesh-scale
+  roughness, and differentiating rough data costs an order no matter how good
+  the operator is.
+
+*Decided:* weighted linear least squares stays the default. The quadratic
+implementation is kept in `prototype/gradient.py` and selectable with
+`PisoSolver(gradient="quadratic")` so the measurement above can be reproduced,
+not because it is recommended.
+*What the 1.23 originally reported actually was:* mostly a broken measurement.
+See ADR-013 — on a valid refinement family the same code measures 1.82.
+*Confirmed externally:* the ordering of the three operators matches the
+literature — Green-Gauss with face averaging is "inconsistent on irregular
+grids and fails to achieve first-order accuracy" while least-squares methods
+are "at least first-order on arbitrary unstructured grids"
+([Advances in Aerodynamics, 2019](https://aia.springeropen.com/articles/10.1186/s42774-019-0020-9)).
+That paper also notes solution accuracy does not simply follow gradient
+accuracy, which is exactly what happened here.
+
+## ADR-013 — Order studies run on a smoothly distorted mesh, not a random one
+**Decided.** The gated distorted-mesh order study uses a fixed analytic
+distortion, applied in x-y and extruded in z so every face stays planar.
+Randomly perturbed meshes are still run, but reported rather than gated.
+
+*Why:* a randomly perturbed mesh redraws its perturbation at every
+resolution, so the meshes are independent samples rather than refinements of
+one another. The mesh quality itself wanders, and the measured order wanders
+with it:
+
+| cells per side | random perturbation | smooth distortion |
+| --- | --- | --- |
+| 6 | 25.9 deg | 24.3 deg |
+| 12 | 30.1 deg | 32.0 deg |
+| 24 | 28.4 deg | 34.1 deg |
+| 48 | 41.7 deg | 34.7 deg |
+
+The random column has no limit; the smooth one converges to about 35 deg. An
+order measured against a geometry that is not converging is not measuring the
+scheme.
+
+*Second reason for planar faces:* in 3D, "simple flux integrations on
+non-planar control volume faces lead to first-order solution errors"
+([J. Comput. Phys. 230, 2011](https://www.sciencedirect.com/science/article/abs/pii/S0021999111003871)).
+Randomly perturbing vertices in all three directions warps every face, and
+the relative warp does not shrink under refinement — measured 0.72, 0.79,
+0.87 at n = 6, 12, 24. Extruding a 2D distortion keeps every face planar
+exactly (measured warp 3e-17), so the study isolates the scheme.
+
+*Measured on the smooth family, linear gradient:*
+
+| refinement | order |
+| --- | --- |
+| 6 -> 12 | 1.694 |
+| 12 -> 24 | 1.816 |
+
+Rising toward 2 as the family approaches its limiting geometry. The same code
+on the random family reported 1.23, and on the planar-random family 1.23 as
+well: those numbers were measuring the mesh, not the scheme.
+*Gate:* the routine run uses 6/12/24 and requires a rising trend rather than a
+fixed value, because those resolutions are pre-asymptotic; `--full` uses
+8/16/32 and requires 1.8. *Condition to tighten to 1.9:* the C++ solver
+reaching n = 64, which the Python prototype cannot do in reasonable time —
+n = 32 already takes about ten minutes.
