@@ -9,7 +9,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      - run: pip install numpy scipy
+      - run: pip install numpy scipy meshio h5py
+
+      - name: System libraries
+        run: sudo apt-get update -q && sudo apt-get install -y -q libcgns-dev libopenmpi-dev openmpi-bin libpetsc-real-dev libhypre-dev
 
       - name: Cache Kokkos
         id: kokkos-cache

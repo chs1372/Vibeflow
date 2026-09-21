@@ -7,6 +7,7 @@
 // Valid only for symmetric systems, which pure diffusion is.
 
 #include "linalg/LinearSolver.hpp"
+#include "core/Parallel.hpp"
 #include "core/Types.hpp"
 
 namespace nsflow {
@@ -15,7 +16,7 @@ class Mesh;
 
 class NativeCG final : public LinearSolver {
  public:
-  explicit NativeCG(const Mesh& mesh);
+  explicit NativeCG(const Mesh& mesh, Comm comm = Comm());
   SolveReport solve(LinearSystem& sys, ScalarField& x,
                     Real relTol, Real absTol, int maxIter) override;
   std::string backendName() const override { return "native-cg(jacobi)"; }
@@ -25,6 +26,7 @@ class NativeCG final : public LinearSolver {
 
  private:
   const Mesh& m_;
+  Comm comm_;
   ScalarField r_, z_, p_, q_;
 };
 

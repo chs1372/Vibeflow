@@ -4,10 +4,12 @@
 namespace nsflow {
 
 LinearSystem::LinearSystem(const Mesh& mesh)
-    : diag_("diag", mesh.nCells()),
+    // Sized over TOTAL cells: face loops write into ghost rows. Those rows are
+    // never read back, but they must exist.
+    : diag_("diag", mesh.nTotal()),
       upper_("upper", mesh.nInternalFaces()),
       lower_("lower", mesh.nInternalFaces()),
-      source_("source", mesh.nCells()) {}
+      source_("source", mesh.nTotal()) {}
 
 void LinearSystem::zero() {
   Kokkos::deep_copy(diag_, 0.0);

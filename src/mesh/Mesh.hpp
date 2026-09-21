@@ -19,12 +19,28 @@ struct BoundaryPatch {
   Index size{};
 };
 
+// Fills ghost-cell entries of a field from the ranks that own them.
+// Serial meshes return nullptr for halo() and allocate no ghosts.
+class HaloExchange {
+ public:
+  virtual ~HaloExchange() = default;
+  virtual void exchange(const ScalarField& f) const = 0;
+  virtual void exchange(const VectorField& f) const = 0;
+};
+
 class Mesh {
  public:
   virtual ~Mesh() = default;
 
   // -- counts
+  // nCells() is the OWNED cells: every loop that reduces (residuals, error
+  // norms, volume sums) runs over these. nTotal() adds ghost cells and is what
+  // every field allocation uses -- a field sized nCells() will read out of
+  // bounds the first time a face touches a ghost neighbour.
   virtual Index nCells()          const = 0;
+  virtual Index nGhost()          const { return 0; }
+  Index nTotal()                  const { return nCells() + nGhost(); }
+  virtual const HaloExchange* halo() const { return nullptr; }
   virtual Index nInternalFaces()  const = 0;
   virtual Index nBoundaryFaces()  const = 0;
   virtual const std::vector<BoundaryPatch>& patches() const = 0;

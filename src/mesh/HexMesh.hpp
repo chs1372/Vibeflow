@@ -37,12 +37,18 @@ class HexMesh final : public Mesh {
   VectorField  boundaryArea()   const override { return bArea_; }
   VectorField  boundaryCentre() const override { return bCentre_; }
 
+  // Defining points and hex connectivity, for output. Geometry alone cannot
+  // draw cells, so the writer needs these.
+  const std::vector<Vec3>& points() const { return points_; }
+  const std::vector<std::array<Index, 8>>& hexes() const { return hexes_; }
+
   Real maxNonOrthogonality() const override;
   Real maxSkewness()         const override;
   Real maxClosureError()     const override;
 
  private:
   void buildTopology(Index n);
+  void buildCellVertices(Index n);
   void computeFaceGeometry(const std::vector<Vec3>& verts);
   void computeCellGeometry();
 
@@ -54,6 +60,8 @@ class HexMesh final : public Mesh {
   VectorField  faceArea_, faceCentre_, bArea_, bCentre_;
   VectorField  cellCentre_;
   ScalarField  cellVolume_;
+  std::vector<Vec3> points_;
+  std::vector<std::array<Index, 8>> hexes_;
 };
 
 }  // namespace nsflow

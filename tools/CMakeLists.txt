@@ -1,0 +1,5 @@
+if(CGNS_INCLUDE_DIR AND CGNS_LIBRARY)
+  add_executable(write_cgns_fixture write_cgns_fixture.cpp)
+  target_include_directories(write_cgns_fixture PRIVATE ${CGNS_INCLUDE_DIR})
+  target_link_libraries(write_cgns_fixture PRIVATE ${CGNS_LIBRARY})
+endif()

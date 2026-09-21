@@ -6,8 +6,8 @@
 
 namespace nsflow {
 
-DiffusionOperator::DiffusionOperator(const Mesh& mesh, Real gamma)
-    : m_(mesh), gamma_(gamma),
+DiffusionOperator::DiffusionOperator(const Mesh& mesh, Real gamma, Comm comm)
+    : m_(mesh), gamma_(gamma), comm_(comm),
       aInt_("aInt", mesh.nInternalFaces()),
       aBnd_("aBnd", mesh.nBoundaryFaces()),
       wOwner_("wOwner", mesh.nInternalFaces()),
@@ -72,17 +72,18 @@ void DiffusionOperator::assembleMatrix(LinearSystem& sys) const {
 void DiffusionOperator::assembleSource(LinearSystem& sys, const ScalarField& volSource,
                                        const ScalarField& phiB,
                                        const ScalarField& phiPrev) const {
-  const Index nc = m_.nCells(), nf = m_.nInternalFaces(), nb = m_.nBoundaryFaces();
+  const Index nc = m_.nCells(), nt = m_.nTotal();
+  const Index nf = m_.nInternalFaces(), nb = m_.nBoundaryFaces();
   auto own = m_.owner(); auto nei = m_.neighbour(); auto bc = m_.boundaryCell();
   auto vol = m_.cellVolume();
   auto b = sys.source();
   auto a = aInt_, ab = aBnd_, w = wOwner_; auto k = kInt_, kb = kBnd_;
   const Real g = gamma_;
 
-  VectorField gr("grad", nc, 3);
+  VectorField gr("grad", nt, 3);
   grad_(phiPrev, phiB, gr);
 
-  Kokkos::parallel_for("srcVol", Kokkos::RangePolicy<ExecSpace>(0, nc),
+  Kokkos::parallel_for("srcVol", Kokkos::RangePolicy<ExecSpace>(0, nt),
     KOKKOS_LAMBDA(const Index c) { b(c) = volSource(c) * vol(c); });
   Kokkos::fence();
 
@@ -109,9 +110,9 @@ void DiffusionOperator::assembleSource(LinearSystem& sys, const ScalarField& vol
 int DiffusionOperator::solve(LinearSystem& sys, LinearSolver& solver,
                              const ScalarField& volSource, const ScalarField& phiB,
                              ScalarField& phi, int maxSweeps, Real tol) const {
-  const Index nc = m_.nCells();
+  const Index nc = m_.nCells(), nt = m_.nTotal();
   assembleMatrix(sys);
-  ScalarField prev("prev", nc);
+  ScalarField prev("prev", nt);
   Kokkos::deep_copy(phi, 0.0);
 
   for (int sweep = 1; sweep <= maxSweeps; ++sweep) {
@@ -131,7 +132,11 @@ int DiffusionOperator::solve(LinearSystem& sys, LinearSolver& solver,
       KOKKOS_LAMBDA(const Index c, Real& acc) {
         acc = Kokkos::max(acc, Kokkos::abs(p(c)));
       }, Kokkos::Max<Real>(scale));
-    if (delta < tol * Kokkos::max(1.0, scale)) return sweep;
+    // The sweep test must agree on every rank or they run different loop
+    // counts and the parallel answer stops matching the serial one.
+    delta = comm_.max(delta);
+    scale = comm_.max(scale);
+    if (delta < tol * std::max(1.0, scale)) return sweep;
   }
   return maxSweeps;
 }

@@ -7,3 +7,19 @@ target_link_libraries(mms_diffusion PRIVATE nsflow_discretization)
 set(FIXTURES ${CMAKE_SOURCE_DIR}/tests/fixtures)
 add_test(NAME geometry       COMMAND test_geometry  ${FIXTURES})
 add_test(NAME mms_diffusion  COMMAND mms_diffusion  ${FIXTURES})
+
+add_executable(test_vtu unit/test_vtu.cpp)
+target_link_libraries(test_vtu PRIVATE nsflow_mesh nsflow_io)
+add_test(NAME vtu COMMAND test_vtu ${FIXTURES} ${CMAKE_BINARY_DIR}/vtu_check)
+
+add_executable(test_cgns unit/test_cgns.cpp)
+target_link_libraries(test_cgns PRIVATE nsflow_mesh)
+add_test(NAME cgns COMMAND test_cgns ${FIXTURES})
+
+add_executable(mms_parallel mms/mms_parallel.cpp)
+target_link_libraries(mms_parallel PRIVATE nsflow_discretization)
+add_test(NAME mms_parallel COMMAND mms_parallel ${FIXTURES})
+
+add_executable(test_backends unit/test_backends.cpp)
+target_link_libraries(test_backends PRIVATE nsflow_discretization)
+add_test(NAME backends COMMAND test_backends ${FIXTURES})

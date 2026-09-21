@@ -9,7 +9,7 @@ libraries, targeting workstation CPU + GPU.
 
 | Stage | Scope | State |
 | --- | --- | --- |
-| v0 | Mesh geometry, FVM diffusion operator, linear-solver plumbing | **Python + C++ passing; CGNS and MPI remaining** |
+| v0 | Mesh geometry, FVM diffusion, IO, MPI, linear-solver backends | **complete — 8 gates passing** |
 | v1 | Incompressible laminar 3D (fractional step / SIMPLE) | not started |
 | v2 | RANS turbulence + heat transfer + buoyancy | not started |
 | v2.5 | GPU port | not started |
@@ -38,11 +38,28 @@ is absent, so the suite still runs without Kokkos.
 | `c++: mesh geometry` | the C++ geometry reproduces the Python reference on identical vertices |
 | `c++: MMS diffusion` | the C++ scheme is second-order, independently measured |
 | `cross-check` | Python and C++ L2 errors agree to 1.6e-12 across all 12 combinations |
+| `cgns` | a mesh read from CGNS gives identical geometry, with faces rediscovered by vertex matching |
+| `vtu` | ParaView output round-trips through meshio, an independent parser |
+| `mpi` | the answer is independent of the rank count (1/2/3/4 agree to 9e-14) |
+| `backends` | native CG and four PETSc configurations give the same solution to 1.4e-13 |
 
-The cross-check is the one that matters most. The two implementations share no
-code — one is numpy with a sparse direct solve, the other is Kokkos with a
-Jacobi-preconditioned CG. Agreeing to 1.6e-12 on twelve independent cases is
-evidence a single implementation cannot produce on its own.
+Two of these carry most of the weight. The **cross-check** compares
+implementations that share no code — numpy with a sparse direct solve against
+Kokkos with a Jacobi-preconditioned CG — so agreement on twelve independent
+cases is evidence one implementation cannot produce alone. The **mpi** gate is
+the only thing that catches a wrong halo exchange: a missing exchange still
+converges and still looks like a solution, it just quietly gives a different
+answer on four ranks than on one.
+
+Measured on 4096 cells, same system, every backend reaching the same solution:
+
+| backend | iterations | L2 vs exact |
+| --- | --- | --- |
+| native-cg (jacobi) | 92 | 2.064615287e-03 |
+| petsc cg+jacobi | 92 | 2.064615287e-03 |
+| petsc cg+ilu | 33 | 2.064615287e-03 |
+| petsc cg+hypre (BoomerAMG) | **7** | 2.064615287e-03 |
+| petsc gmres+hypre | 7 | 2.064615287e-03 |
 
 ### v0 gate — current result
 
@@ -66,13 +83,14 @@ on both meshes.
 ```
 prototype/    Python reference implementation -- defines correct behaviour
               and generates the fixtures the C++ unit tests check against
-src/core/     Kokkos types, MPI, configuration
-src/mesh/     unstructured mesh, geometry, CGNS reader
+src/mesh/     geometry, generated mesh, CGNS reader, domain decomposition
 src/field/    field containers, boundary conditions
 src/discretization/  gradients, flux schemes, non-orthogonal correction
-src/linalg/   LinearSystem + PETSc/hypre/AmgX backends
+src/linalg/   LinearSystem, native CG, PETSc/hypre backend
 src/physics/  transport equations, turbulence models
-src/io/       CGNS, ADIOS2, ParaView Catalyst
+src/io/       VTK XML output (.vtu/.pvtu) for ParaView
+src/core/     Kokkos types, MPI communicator
+tools/        fixture generators
 tests/        unit tests and verification gates
 ```
 
@@ -88,8 +106,9 @@ rewrite solver internals: the reference and the gate both already exist.
 
 ## Build
 
-Only Kokkos is required today; PETSc is optional until the production solver
-backend lands.
+Kokkos is required. MPI, CGNS and PETSc are each optional and detected at
+configure time — without one, the corresponding gate is skipped and nothing
+else changes.
 
 ```
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DKokkos_ROOT=<kokkos install>

@@ -35,3 +35,35 @@ density-based path. Decide at the end of v1.
 *Why:* keeps the core relicensable and safe to embed.
 *Reverses if:* the project commits to GPL, which would allow linking cfMesh
 directly and simplify meshing automation.
+
+## ADR-006 — v0 partitioner reads the whole mesh on every rank
+**Decided.** `DistributedMesh` takes a global mesh that every rank already
+holds, and keeps its slice. Partitioning is recursive coordinate bisection on
+cell centroids — no ParMETIS dependency, deterministic.
+*Why:* it makes the parallel-consistency gate possible immediately, and that
+gate is what protects every later parallel change.
+*Cost, stated plainly:* memory does not scale. A mesh that fits one rank is the
+limit, which defeats the point of MPI for large cases.
+*Reverses when:* before v2 on real geometry. Replace with a parallel CGNS read
+plus ParMETIS/Zoltan2; the `PartitionMethod` enum and the `HaloExchange`
+interface are the seams, so nothing above `mesh/` changes.
+
+## ADR-007 — VTK XML output written directly, no VTK library
+**Decided.** `io/VtuWriter` emits base64 `.vtu` and `.pvtu` itself.
+*Why:* linking VTK for output alone adds a heavy build dependency. The XML
+format is stable and ParaView reads it natively. Verified by reading our output
+back with meshio, an independent parser.
+*Reverses if:* in-situ Catalyst is adopted, which needs the VTK data model
+anyway. At that point the writer becomes the file-output path and Catalyst the
+in-memory one.
+
+## ADR-008 — Linear-solver backend selected at runtime by string
+**Decided.** `PetscSolver` takes "cg+hypre", "gmres+ilu" and so on from the
+case; `NativeCG` stays as a dependency-free reference.
+*Why:* the pressure solve dominates runtime, so the preconditioner must be
+tunable per case without a rebuild, and the GPU path later is the same kind of
+switch. Keeping NativeCG means every PETSc result has an independent check —
+the backend-equivalence gate measured 1.4e-13 agreement across four PETSc
+configurations.
+*Measured:* BoomerAMG reaches the same solution in 7 iterations where
+Jacobi-CG needs 92, on 4096 cells.

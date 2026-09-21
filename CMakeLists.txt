@@ -21,8 +21,10 @@ add_subdirectory(src/linalg)           # -> core, mesh  (+ PETSc when enabled)
 add_subdirectory(src/discretization)   # -> core, mesh, linalg
 # add_subdirectory(src/field)          # v1
 # add_subdirectory(src/physics)        # v1
-# add_subdirectory(src/io)             # v0 remaining: CGNS
+add_subdirectory(src/io)               # -> core, mesh
 # add_subdirectory(src/app)            # v1
+
+add_subdirectory(tools)
 
 if(NSFLOW_BUILD_TESTS)
   enable_testing()

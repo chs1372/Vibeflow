@@ -7,6 +7,7 @@
 // system stays well conditioned on skewed meshes); k is deferred-corrected
 // against the least-squares gradient. Mirrors prototype/fvm.py.
 
+#include "core/Parallel.hpp"
 #include "core/Types.hpp"
 #include "discretization/Gradient.hpp"
 
@@ -18,7 +19,7 @@ class LinearSolver;
 
 class DiffusionOperator {
  public:
-  DiffusionOperator(const Mesh& mesh, Real gamma);
+  DiffusionOperator(const Mesh& mesh, Real gamma, Comm comm = Comm());
 
   // Assemble the constant implicit coefficients. Call once.
   void assembleMatrix(LinearSystem& sys) const;
@@ -35,6 +36,7 @@ class DiffusionOperator {
  private:
   const Mesh& m_;
   Real gamma_;
+  Comm comm_;
   ScalarField aInt_, aBnd_, wOwner_;
   VectorField kInt_, kBnd_;
   LeastSquaresGradient grad_;

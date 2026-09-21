@@ -1,0 +1,75 @@
+#pragma once
+// Domain-decomposed view of a global mesh.
+//
+// v0 partitioning reads the whole mesh on every rank and keeps a slice. That
+// is the right trade now -- it makes the parallel-consistency gate possible
+// without a parallel reader -- and it is the one thing here that must change
+// before the solver is memory-scalable. Recorded as ADR-006.
+//
+// Partitioning is recursive coordinate bisection on cell centroids: no
+// ParMETIS dependency, deterministic, and good enough for a workstation. The
+// partitioner is behind an enum so swapping in ParMETIS later touches nothing
+// else.
+//
+// Each rank stores every face incident on one of its owned cells. A face on a
+// rank boundary is therefore stored on both sides, each time with the local
+// cell as owner and a ghost as neighbour -- the area vector is flipped on the
+// side where the global owner is remote, so it always points owner to
+// neighbour locally.
+
+#include "core/Parallel.hpp"
+#include "core/Types.hpp"
+#include "mesh/Mesh.hpp"
+#include <array>
+#include <memory>
+#include <vector>
+
+namespace nsflow {
+
+enum class PartitionMethod { Linear, RCB };
+
+class DistributedMesh final : public Mesh {
+ public:
+  DistributedMesh(const Mesh& global, const Comm& comm,
+                  PartitionMethod method = PartitionMethod::RCB);
+
+  Index nCells()         const override { return nOwned_; }
+  Index nGhost()         const override { return nGhost_; }
+  Index nInternalFaces() const override { return nFaces_; }
+  Index nBoundaryFaces() const override { return nBnd_; }
+  const std::vector<BoundaryPatch>& patches() const override { return patches_; }
+  const HaloExchange* halo() const override { return halo_.get(); }
+
+  VectorField cellCentre() const override { return cellCentre_; }
+  ScalarField cellVolume() const override { return cellVolume_; }
+  View1<Index> owner()      const override { return owner_; }
+  View1<Index> neighbour()  const override { return neigh_; }
+  VectorField  faceArea()   const override { return faceArea_; }
+  VectorField  faceCentre() const override { return faceCentre_; }
+  View1<Index> boundaryCell()   const override { return bCell_; }
+  VectorField  boundaryArea()   const override { return bArea_; }
+  VectorField  boundaryCentre() const override { return bCentre_; }
+
+  Real maxNonOrthogonality() const override;
+  Real maxSkewness()         const override;
+  Real maxClosureError()     const override;
+
+  // Global cell id of each owned cell, for gathering results in a fixed order.
+  const std::vector<Index>& globalCellId() const { return globalId_; }
+
+  static std::vector<int> partition(const Mesh& global, int nParts,
+                                    PartitionMethod method);
+
+ private:
+  Comm comm_;
+  Index nOwned_{}, nGhost_{}, nFaces_{}, nBnd_{};
+  std::vector<Index> globalId_;
+  std::vector<BoundaryPatch> patches_;
+  std::unique_ptr<HaloExchange> halo_;
+
+  View1<Index> owner_, neigh_, bCell_;
+  VectorField faceArea_, faceCentre_, bArea_, bCentre_, cellCentre_;
+  ScalarField cellVolume_;
+};
+
+}  // namespace nsflow
