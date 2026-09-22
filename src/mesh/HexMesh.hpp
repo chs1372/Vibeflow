@@ -20,6 +20,19 @@ class HexMesh final : public Mesh {
 
   static HexMesh fromVertexFile(Index n, const std::string& path);
 
+  // Deterministic distorted mesh, matching prototype/mesh.py skew_mode.
+  //   "none"    - uniform Cartesian
+  //   "smooth"  - fixed analytic distortion applied in x-y and extruded in z,
+  //               so every face stays planar (ADR-013). This is the family
+  //               order studies run on; it refines toward ONE geometry, where
+  //               a randomly perturbed family redraws itself each time and
+  //               its mesh quality never converges.
+  // Random modes are not generated here: reproducing numpy's PCG64 stream in
+  // C++ would be pointless coupling. Those meshes come in through
+  // fromVertexFile or CGNS.
+  static HexMesh generate(Index n, Real skew = 0.0,
+                          const std::string& mode = "smooth");
+
   Index nCells()         const override { return nCells_; }
   Index nInternalFaces() const override { return nInternal_; }
   Index nBoundaryFaces() const override { return nBoundary_; }
@@ -41,6 +54,8 @@ class HexMesh final : public Mesh {
   // draw cells, so the writer needs these.
   const std::vector<Vec3>& points() const { return points_; }
   const std::vector<std::array<Index, 8>>& hexes() const { return hexes_; }
+  View2<Index> internalFaceVerts() const { return fVerts_; }
+  View2<Index> boundaryFaceVerts() const { return bVerts_; }
 
   Real maxNonOrthogonality() const override;
   Real maxSkewness()         const override;

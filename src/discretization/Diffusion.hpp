@@ -29,6 +29,14 @@ class DiffusionOperator {
                       const ScalarField& phiB, const ScalarField& phiPrev) const;
 
   // Deferred-correction loop. Returns the number of sweeps used.
+  // Precomputed face coefficients, shared by the momentum and pressure
+  // assemblies so the two use exactly the same geometry.
+  ScalarField aInt()   const { return aInt_; }
+  ScalarField aBnd()   const { return aBnd_; }
+  ScalarField wOwner() const { return wOwner_; }
+  VectorField kInt()   const { return kInt_; }
+  VectorField kBnd()   const { return kBnd_; }
+
   int solve(LinearSystem& sys, LinearSolver& solver, const ScalarField& volSource,
             const ScalarField& phiB, ScalarField& phi,
             int maxSweeps = 40, Real tol = 1e-12) const;

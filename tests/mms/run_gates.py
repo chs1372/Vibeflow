@@ -85,6 +85,18 @@ GATES = {
          lambda: run([PY, str(PROTO / "mms_convection.py"), "8", "16", "32"], PROTO), None),
         ("python: Navier-Stokes vs the Ethier-Steinman exact solution",
          lambda: run([PY, str(PROTO / "ethier_steinman.py")], PROTO), None),
+        ("c++: convection-diffusion is second order at high Peclet",
+         lambda: run([str(BUILD / "mms_convection"), "8", "16", "32"]),
+         BUILD / "mms_convection"),
+        ("c++: Navier-Stokes vs the Ethier-Steinman exact solution",
+         lambda: run([str(BUILD / "ethier_steinman"), "8", "16", "32"]),
+         BUILD / "ethier_steinman"),
+        ("cross-check: python and c++ convection agree",
+         lambda: run([PY, str(Path(__file__).parent / "crosscheck_v1.py")]),
+         BUILD / "mms_convection"),
+        ("cross-check: python and c++ Navier-Stokes agree",
+         lambda: run([PY, str(Path(__file__).parent / "crosscheck_ns.py")]),
+         BUILD / "ethier_steinman"),
     ],
     # v1 remaining: cavity_ghia, cylinder_strouhal
     # v2: flat_plate_cf, backward_step, rayleigh_benard

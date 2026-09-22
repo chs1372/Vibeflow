@@ -209,3 +209,34 @@ fixed value, because those resolutions are pre-asymptotic; `--full` uses
 8/16/32 and requires 1.8. *Condition to tighten to 1.9:* the C++ solver
 reaching n = 64, which the Python prototype cannot do in reasonable time —
 n = 32 already takes about ten minutes.
+
+## ADR-014 — Pure-Neumann pressure: project the right-hand side, do not pin a cell
+**Decided.** With Dirichlet velocity on every boundary the pressure operator is
+singular, its null space the constants. The C++ solver removes the null-space
+component from the right-hand side before each solve and from the solution
+after it.
+
+*Why not pin a cell:* setting one row to identity makes the matrix
+non-symmetric, which rules out CG — and CG is what makes the pressure solve
+affordable. The Python reference pins, because it uses a direct solve and does
+not care.
+*Measured:* without the projection, CG stalls on the null-space component. The
+non-orthogonal corrector then chases linear-solver noise, uses all 40 sweeps
+and still leaves a continuity residual of 8.9e-9; with it, the same case
+converges in 20 sweeps to 1.3e-14.
+*Related:* the corrector's own convergence threshold has to sit above the
+linear solver's noise floor. At 1e-14 it never converged; 1e-12 does. The
+correction is also under-relaxed at 0.7, because undamped it stalled on the
+coarsest distorted mesh.
+
+## ADR-015 — Two native Krylov solvers, chosen by symmetry
+**Decided.** `NativeCG` for the pressure equation, `NativeBiCGStab` for
+momentum.
+*Why:* convection makes the momentum matrix non-symmetric. CG on a
+non-symmetric system does not fail loudly — it converges to the wrong answer
+while reporting a small residual, which is precisely the failure mode this
+project's gates exist to prevent. The pressure Laplacian stays symmetric, so
+it keeps CG.
+*Both remain reference implementations,* not the production path: PETSc with
+hypre is (ADR-008). They exist so every gate runs without a PETSc build and
+every PETSc result has an independent check.

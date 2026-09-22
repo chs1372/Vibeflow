@@ -3,3 +3,6 @@ if(CGNS_INCLUDE_DIR AND CGNS_LIBRARY)
   target_include_directories(write_cgns_fixture PRIVATE ${CGNS_INCLUDE_DIR})
   target_link_libraries(write_cgns_fixture PRIVATE ${CGNS_LIBRARY})
 endif()
+
+add_executable(dump_mesh_vertices dump_mesh_vertices.cpp)
+target_link_libraries(dump_mesh_vertices PRIVATE nsflow_mesh)

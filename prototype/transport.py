@@ -124,8 +124,8 @@ class ConvectionDiffusion:
         return phi, it + 1, converged
 
     def peclet(self):
-        """Max cell Peclet number, |F| d / (gamma |S|)."""
+        """Max cell Peclet number, |F| |d| / (gamma |S|)."""
         m = self.m
         d = np.linalg.norm(m.cell_centre[m.neigh] - m.cell_centre[m.owner], axis=1)
         area = np.linalg.norm(m.face_area, axis=1)
-        return (np.abs(self.F) * d / (self.gamma * area ** 2)).max() * area.max()
+        return (np.abs(self.F) * d / (self.gamma * area)).max()

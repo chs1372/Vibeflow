@@ -23,3 +23,11 @@ add_test(NAME mms_parallel COMMAND mms_parallel ${FIXTURES})
 add_executable(test_backends unit/test_backends.cpp)
 target_link_libraries(test_backends PRIVATE nsflow_discretization)
 add_test(NAME backends COMMAND test_backends ${FIXTURES})
+
+add_executable(mms_convection mms/mms_convection.cpp)
+target_link_libraries(mms_convection PRIVATE nsflow_discretization)
+add_test(NAME mms_convection COMMAND mms_convection)
+
+add_executable(ethier_steinman mms/ethier_steinman.cpp)
+target_link_libraries(ethier_steinman PRIVATE nsflow_physics)
+add_test(NAME ethier_steinman COMMAND ethier_steinman)

@@ -128,6 +128,39 @@ Real HexMesh::maxSkewness() const {
   return geometry::maxSkewness(owner_, neigh_, cellCentre_, faceCentre_);
 }
 
+HexMesh HexMesh::generate(Index n, Real skew, const std::string& mode) {
+  const Index nv = n + 1;
+  std::vector<Vec3> v(static_cast<std::size_t>(nv) * nv * nv);
+  auto g = [nv](Index i) { return static_cast<Real>(i) / static_cast<Real>(nv - 1); };
+
+  for (Index i = 0; i < nv; ++i)
+    for (Index j = 0; j < nv; ++j)
+      for (Index k = 0; k < nv; ++k)
+        v[(i * nv + j) * nv + k] = {g(i), g(j), g(k)};
+
+  if (skew > 0.0 && mode == "smooth") {
+    // Amplitude is absolute, not a multiple of h: that is what makes the
+    // family a refinement of one geometry. Above about 1/(2 pi) the map stops
+    // being invertible and the cells tangle.
+    const Real amp = 0.2 * skew;
+    for (Index i = 0; i < nv; ++i)
+      for (Index j = 0; j < nv; ++j) {
+        const Real x = g(i), y = g(j);
+        const Real bump = std::sin(M_PI * x) * std::sin(M_PI * y);
+        const Real dx = amp * std::sin(2.0 * M_PI * y) * bump;
+        const Real dy = amp * std::sin(2.0 * M_PI * x) * bump;
+        for (Index k = 0; k < nv; ++k) {
+          v[(i * nv + j) * nv + k].x += dx;
+          v[(i * nv + j) * nv + k].y += dy;
+        }
+      }
+  } else if (skew > 0.0 && mode != "none") {
+    throw std::runtime_error("HexMesh::generate: mode '" + mode +
+                             "' is not generated in C++; use fromVertexFile");
+  }
+  return HexMesh(n, v);
+}
+
 HexMesh HexMesh::fromVertexFile(Index n, const std::string& path) {
   std::ifstream in(path);
   if (!in) throw std::runtime_error("cannot open vertex file: " + path);

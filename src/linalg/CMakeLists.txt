@@ -1,4 +1,4 @@
-add_library(nsflow_linalg LinearSystem.cpp NativeCG.cpp)
+add_library(nsflow_linalg LinearSystem.cpp NativeCG.cpp NativeBiCGStab.cpp)
 target_link_libraries(nsflow_linalg PUBLIC nsflow_core nsflow_mesh)
 
 # PETSc is optional. Without it NativeCG is the only backend -- fine for the

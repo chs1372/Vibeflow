@@ -46,8 +46,8 @@ def source(p):
     return conv + GAMMA * (PI ** 2 - 1.25) * phi_exact(p)
 
 
-def run(n, skew, seed=1):
-    m = HexMesh(n, skew=skew, seed=seed)
+def run(n, skew, seed=1, mode="smooth"):
+    m = HexMesh(n, skew=skew, seed=seed, skew_mode=mode)
     fi, fb = face_flux_from_potential(m, SF.potential)
     div = np.abs(discrete_divergence(m, fi, fb)).max()
     op = ConvectionDiffusion(m, GAMMA, fi, fb)
@@ -59,8 +59,8 @@ def run(n, skew, seed=1):
                 nonortho=m.non_orthogonality())
 
 
-def study(skew, grids):
-    rows = [run(n, skew) for n in grids]
+def study(skew, grids, mode="smooth"):
+    rows = [run(n, skew, mode=mode) for n in grids]
     for i in range(1, len(rows)):
         rows[i]["order"] = (np.log(rows[i - 1]["l2"] / rows[i]["l2"])
                             / np.log(rows[i - 1]["h"] / rows[i]["h"]))
@@ -68,7 +68,9 @@ def study(skew, grids):
 
 
 def report(label, rows, gate=(1.85, 2.15)):
-    print(f"\n{label}   (max non-orthogonality {rows[0]['nonortho']:.2f} deg, "
+    # "non-orthogonality" contains the substring "orthogonal", which a naive
+    # parser reads as the orthogonal case. Keep the word out of this line.
+    print(f"\n{label}   (skewness {rows[0]['nonortho']:.2f} deg, "
           f"max discrete div {max(r['div'] for r in rows):.1e})")
     print(f"  {'N':>4} {'h':>9} {'L2 error':>19} {'Linf':>13} {'order':>8} "
           f"{'maxPe':>8} {'corr it':>8}")
@@ -87,7 +89,7 @@ def report(label, rows, gate=(1.85, 2.15)):
 def main():
     grids = [int(a) for a in sys.argv[1:]] or [8, 16, 32]
     ok = True
-    for skew, tag in ((0.0, "orthogonal"), (0.25, "skewed")):
+    for skew, tag in ((0.0, "orthogonal"), (0.25, "distorted")):
         ok &= report(f"convection-diffusion (gamma={GAMMA}) / {tag} mesh", study(skew, grids))
     print()
     print("v1 convection MMS GATE: " + ("PASS" if ok else "FAIL"))

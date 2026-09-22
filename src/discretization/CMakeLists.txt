@@ -1,2 +1,2 @@
-add_library(nsflow_discretization Gradient.cpp Diffusion.cpp)
+add_library(nsflow_discretization Gradient.cpp Diffusion.cpp FaceFlux.cpp Convection.cpp)
 target_link_libraries(nsflow_discretization PUBLIC nsflow_core nsflow_mesh nsflow_linalg)
