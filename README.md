@@ -10,7 +10,7 @@ libraries, targeting workstation CPU + GPU.
 | Stage | Scope | State |
 | --- | --- | --- |
 | v0 | Mesh geometry, FVM diffusion, IO, MPI, linear-solver backends | **complete — 8 gates passing** |
-| v1 | Incompressible laminar 3D (SIMPLE/PISO, Rhie-Chow, BDF2) | **Python reference passing; C++ port next** |
+| v1 | Incompressible laminar 3D (SIMPLE/PISO, Rhie-Chow, BDF2) | **Python and C++ passing** |
 | v2 | RANS turbulence + heat transfer + buoyancy | not started |
 | v2.5 | GPU port | not started |
 | v3 | Compressible (density-based path) | not started |
@@ -54,6 +54,10 @@ v1 gates (`python tests/mms/run_gates.py v1`):
 | `NS temporal (BDF2)` | **PASS** — 2.43 |
 | `NS spatial, warped faces` | reported, not gated — 1.25 |
 | `Rhie-Chow dt independence` | reported, not gated — the measurement is inconclusive (ADR-012) |
+| `c++: convection-diffusion` | **PASS** — 2.04 orthogonal, 2.04 distorted |
+| `c++: Navier-Stokes` | **PASS** — 1.986 orthogonal and 1.895 distorted at 8/16/32 |
+| `cross-check: convection` | Python and C++ agree to 4.6e-13 over six cases |
+| `cross-check: Navier-Stokes` | agree to 2.0e-5 at six outer iterations, 1.5e-6 at forty |
 
 The skewed-mesh failure is left failing on purpose. was mostly a broken
 measurement, and finding that out took building the thing that was supposed to
@@ -75,6 +79,11 @@ negative evidence. See ADR-012 and ADR-013.
 Warped faces are a separate first-order error source in 3D, so the gated
 family extrudes a 2D distortion and keeps every face planar (measured warp
 3e-17).
+
+The C++ port reproduces all of this independently. At 8/16/32 it measures
+1.977 → 1.986 on the orthogonal family and 1.695 → 1.895 on the distorted
+one — the same orders as Python to three decimals, from a different linear
+algebra stack.
 
 Two of these carry most of the weight. The **cross-check** compares
 implementations that share no code — numpy with a sparse direct solve against
@@ -120,7 +129,7 @@ src/mesh/     geometry, generated mesh, CGNS reader, domain decomposition
 src/field/    field containers, boundary conditions
 src/discretization/  gradients, flux schemes, non-orthogonal correction
 src/linalg/   LinearSystem, native CG, PETSc/hypre backend
-src/physics/  transport equations, turbulence models
+src/physics/  PISO solver: momentum, Rhie-Chow, pressure correction, BDF2
 src/io/       VTK XML output (.vtu/.pvtu) for ParaView
 src/core/     Kokkos types, MPI communicator
 tools/        fixture generators

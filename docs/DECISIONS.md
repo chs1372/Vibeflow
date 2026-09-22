@@ -240,3 +240,28 @@ it keeps CG.
 *Both remain reference implementations,* not the production path: PETSc with
 hypre is (ADR-008). They exist so every gate runs without a PETSc build and
 every PETSc result has an independent check.
+
+## ADR-016 — The deferred non-orthogonal pressure correction is the cost bottleneck
+**Measured, open.** On an orthogonal mesh the pressure equation needs ONE
+non-orthogonal sweep. On the smooth distorted family it needs 20 to 40, each
+one a full pressure solve, so the distorted case costs roughly 20-40x the
+orthogonal one. That is what makes the high-resolution distorted order study
+impractical even in C++: `n = 32` orthogonal finishes in minutes, distorted
+does not.
+
+*Why:* the correction is deferred — the skewed part of the Laplacian sits on
+the right-hand side and is iterated to a fixed point. The contraction factor
+worsens with non-orthogonality, and under-relaxation at 0.7 (needed for
+stability on coarse meshes) slows it further.
+
+*Options, none chosen yet:*
+- Treat the non-orthogonal term implicitly with an extended stencil. Largest
+  win, largest change, and it gives up the M-matrix property.
+- Keep it deferred but precondition the pressure solve with AMG rather than
+  Jacobi-CG, so each sweep is much cheaper. PETSc + hypre already offers this
+  (ADR-008) and the gates simply do not use it.
+- Cap the sweeps and accept a larger continuity residual, which is what
+  production codes do (OpenFOAM typically runs 1-2 correctors).
+
+The second option is the cheapest test and should be tried first: it changes
+no discretisation, so the gates must give the same answer, only faster.
