@@ -241,27 +241,67 @@ it keeps CG.
 hypre is (ADR-008). They exist so every gate runs without a PETSc build and
 every PETSc result has an independent check.
 
-## ADR-016 — The deferred non-orthogonal pressure correction is the cost bottleneck
-**Measured, open.** On an orthogonal mesh the pressure equation needs ONE
-non-orthogonal sweep. On the smooth distorted family it needs 20 to 40, each
-one a full pressure solve, so the distorted case costs roughly 20-40x the
-orthogonal one. That is what makes the high-resolution distorted order study
-impractical even in C++: `n = 32` orthogonal finishes in minutes, distorted
-does not.
+## ADR-016 — The pressure cost was a stalling solver, not the discretisation
+**Superseded by measurement. The original diagnosis in this slot was wrong and
+is kept here because the way it was wrong is the point.**
 
-*Why:* the correction is deferred — the skewed part of the Laplacian sits on
-the right-hand side and is iterated to a fixed point. The contraction factor
-worsens with non-orthogonality, and under-relaxation at 0.7 (needed for
-stability on coarse meshes) slows it further.
+What was recorded first: the distorted-mesh pressure solve costs 20-40x the
+orthogonal one, and the cause is the deferred non-orthogonal correction needing
+20-40 sweeps against one. The sweep count was right. The conclusion was not.
 
-*Options, none chosen yet:*
-- Treat the non-orthogonal term implicitly with an extended stencil. Largest
-  win, largest change, and it gives up the M-matrix property.
-- Keep it deferred but precondition the pressure solve with AMG rather than
-  Jacobi-CG, so each sweep is much cheaper. PETSc + hypre already offers this
-  (ADR-008) and the gates simply do not use it.
-- Cap the sweeps and accept a larger continuity residual, which is what
-  production codes do (OpenFOAM typically runs 1-2 correctors).
+Profiling the solvers rather than counting sweeps:
 
-The second option is the cheapest test and should be tried first: it changes
-no discretisation, so the gates must give the same answer, only faster.
+| pressure backend | iterations, n=8 distorted | wall, n=8+16 |
+| --- | --- | --- |
+| native CG, as written | 2,745,371 | 354 s |
+| PETSc CG + Jacobi | 31,688 | 6 s |
+| native CG + null-space projection | 39,879 | 18 s |
+
+Same algorithm, same preconditioner, 87x the iterations. The native CG was not
+converging at all — it ran to its iteration cap on nearly every solve. The
+pressure operator is pure Neumann, so its null space is the constants;
+projecting that component out of the right-hand side once is not enough,
+because round-off re-injects it every iteration and CG cannot reduce it. The
+residual norm then stalls above any tight tolerance. Projecting inside the
+iteration fixes it (ADR-017).
+
+*What this cost:* a whole ADR arguing for an implicit non-orthogonal treatment
+and an AMG preconditioner, to fix a bug in a reference solver. The lesson is
+narrow and worth keeping: a sweep count is not a profile.
+
+*What remains true:* the distorted mesh really does need 24-32 non-orthogonal
+sweeps where the orthogonal one needs 1, and that is still the largest
+structural cost. It is now roughly a 15x factor rather than 40x.
+
+## ADR-017 — Preconditioner and backend choice for the pressure equation
+**Decided.** PETSc is the production backend; the native CG stays as the
+dependency-free reference, now with null-space projection.
+
+Measured at n = 32 (32,768 cells), distorted, accumulated pressure-solve time
+and iterations for the whole run:
+
+| backend | iterations | pressure time |
+| --- | --- | --- |
+| native CG (projected) | 204,350 | 231 s |
+| PETSc CG + Jacobi | 176,309 | 61 s |
+| PETSc CG + BoomerAMG | 9,191 | 36-59 s |
+
+BoomerAMG cuts iterations by 19x, and at this size that does NOT translate
+into wall time: the pressure matrix changes at every PISO corrector, so the
+AMG hierarchy is rebuilt about 24 times per run and the setup eats the gain.
+Iteration counts are deterministic and reliable; the wall times on a
+two-core sandbox are not — repeat runs of the same configuration varied by
+50%, so no wall-clock claim finer than "about the same" is made here.
+
+Reusing the preconditioner across matrix changes is implemented
+(`pcRebuildInterval`) and did not clearly help: never rebuilding after the
+first setup was fastest but moved the orthogonal answer by 1.5e-5 and left a
+continuity residual of 1.4e-10, which means the solves stopped short of the
+requested tolerance. Left at 1 (rebuild every change) until there is a case
+large enough to measure it properly.
+
+*Expectation, not yet measured:* AMG's advantage grows with problem size
+because Krylov iteration counts grow and AMG's do not. The crossover is
+somewhere above 32k cells. That is worth re-measuring on real hardware rather
+than guessing at it here.
+

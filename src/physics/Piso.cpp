@@ -287,11 +287,10 @@ void PisoSolver::solvePressure(LinearSolver& solver) {
       up(f) = -a; lo(f) = -a;
     });
   Kokkos::fence();
-  // Velocity is Dirichlet everywhere, so pressure is fixed only up to a
-  // constant. Pin one cell, or the system is singular.
-  auto hdiag = Kokkos::create_mirror_view_and_copy(HostSpace::memory_space(), diag);
-  const Real pinned = hdiag(0);
-  (void)pinned;
+  // The coefficients are now fixed for every sweep below, so tell the backend
+  // once. A backend that builds an AMG hierarchy would otherwise rebuild it
+  // 20-40 times per corrector for nothing.
+  solver.notifyMatrixChanged();
 
   ScalarField nonorth("nonorth", nf);
   VectorField g("gp", nt, 3);
@@ -412,6 +411,8 @@ StepReport PisoSolver::advance(const VectorField& uB, const ScalarField& fB,
     Kokkos::deep_copy(sys.diag(), diag_);
     Kokkos::deep_copy(sys.upper(), upper_);
     Kokkos::deep_copy(sys.lower(), lower_);
+    // One matrix, three component solves.
+    momentumSolver.notifyMatrixChanged();
     for (int d = 0; d < 3; ++d) {
       auto rhs = sys.source(); auto b = bSrc_; auto g = gp_;
       Kokkos::parallel_for("mrhs", Kokkos::RangePolicy<ExecSpace>(0, nt),

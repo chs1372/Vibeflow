@@ -27,12 +27,20 @@ class PetscSolver final : public LinearSolver {
  public:
   // globalRowOf maps each LOCAL cell (owned, then ghost) to its global row.
   // Pass an empty vector for a serial mesh.
+  // pcRebuildInterval: rebuild the preconditioner only every Nth time the
+  // matrix changes, reusing it in between. A preconditioner does not have to
+  // match the matrix it preconditions -- it only has to be close enough that
+  // the Krylov method converges quickly. For BoomerAMG the setup is most of
+  // the cost, and the pressure matrix changes only slightly from one PISO
+  // corrector to the next, so reusing it is nearly free accuracy-wise and
+  // large wall-clock-wise.
   PetscSolver(const Mesh& mesh, Comm comm, std::string config = "cg+jacobi",
-              std::vector<Index> globalRowOf = {});
+              std::vector<Index> globalRowOf = {}, int pcRebuildInterval = 1);
   ~PetscSolver() override;
 
   SolveReport solve(LinearSystem& sys, ScalarField& x,
                     Real relTol, Real absTol, int maxIter) override;
+  void notifyMatrixChanged() override;
   std::string backendName() const override { return "petsc(" + config_ + ")"; }
 
   // True when this PETSc build actually has hypre; a case asking for it on a

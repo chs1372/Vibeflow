@@ -16,7 +16,12 @@ class Mesh;
 
 class NativeCG final : public LinearSolver {
  public:
-  explicit NativeCG(const Mesh& mesh, Comm comm = Comm());
+  // singularNullSpace: the operator has the constants in its null space, as
+  // the pure-Neumann pressure equation does. CG then needs the constant
+  // component projected out of the residual at every iteration, not just out
+  // of the right-hand side once.
+  explicit NativeCG(const Mesh& mesh, Comm comm = Comm(),
+                    bool singularNullSpace = false);
   SolveReport solve(LinearSystem& sys, ScalarField& x,
                     Real relTol, Real absTol, int maxIter) override;
   std::string backendName() const override { return "native-cg(jacobi)"; }
@@ -27,7 +32,9 @@ class NativeCG final : public LinearSolver {
  private:
   const Mesh& m_;
   Comm comm_;
+  bool nullSpace_;
   ScalarField r_, z_, p_, q_;
+  void projectOut(ScalarField& v) const;
 };
 
 }  // namespace nsflow

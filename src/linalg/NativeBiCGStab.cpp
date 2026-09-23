@@ -100,6 +100,7 @@ SolveReport NativeBiCGStab::solve(LinearSystem& sys, ScalarField& x,
   rep.finalResidual = rn;
   rep.wallSeconds = std::chrono::duration<Real>(
       std::chrono::steady_clock::now() - t0).count();
+  record(rep);
   return rep;
 }
 

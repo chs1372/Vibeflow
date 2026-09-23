@@ -14,6 +14,12 @@
 #include "physics/Piso.hpp"
 #include "linalg/NativeBiCGStab.hpp"
 #include "linalg/NativeCG.hpp"
+#ifdef NSFLOW_HAVE_PETSC
+#include "linalg/PetscSolver.hpp"
+#include <petscsys.h>
+#endif
+#include <memory>
+#include <vector>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -59,7 +65,35 @@ void adjustBoundaryFlux(const Mesh& mesh, ScalarField& fb) {
   Kokkos::fence();
 }
 
-struct Row { Index n; Real h, dt, l2, cont; int outer, nonOrth; };
+struct Row {
+  Index n; Real h, dt, l2, cont; int outer, nonOrth;
+  Real momSec, preSec; int momIt, preIt, preSolves;
+  std::string backend;
+};
+
+// Backend selection, so the same case can be timed with either stack. The
+// discretisation does not change, so the L2 errors must not either -- that is
+// what makes this a safe optimisation rather than a rewrite.
+std::string backendName() {
+  const char* e = std::getenv("NSFLOW_PRESSURE");
+  return e ? e : "native";
+}
+
+std::unique_ptr<LinearSolver> makePressureSolver(const Mesh& mesh) {
+  const std::string cfg = backendName();
+  // The pressure operator is pure Neumann, hence singular.
+  if (cfg == "native") return std::make_unique<NativeCG>(mesh, Comm(), true);
+#ifdef NSFLOW_HAVE_PETSC
+  int interval = 1;
+  if (const char* e = std::getenv("NSFLOW_PC_REUSE")) interval = std::stoi(e);
+  return std::make_unique<PetscSolver>(mesh, Comm(), cfg,
+                                       std::vector<Index>{}, interval);
+#else
+  std::fprintf(stderr, "built without PETSc; NSFLOW_PRESSURE=%s unavailable\n",
+               cfg.c_str());
+  std::exit(2);
+#endif
+}
 
 Row run(Index n, Real dt, int nsteps, Real nu, Real skew, int outer = 6) {
   auto mesh = HexMesh::generate(n, skew, skew == 0.0 ? "none" : "smooth");
@@ -104,7 +138,8 @@ Row run(Index n, Real dt, int nsteps, Real nu, Real skew, int outer = 6) {
 
   VectorField src("src", nt, 3);
   NativeBiCGStab momentum(mesh);
-  NativeCG pressure(mesh);
+  auto pressurePtr = makePressureSolver(mesh);
+  LinearSolver& pressure = *pressurePtr;
   Real cont = 0.0;
   int outerUsed = 0, nonOrthUsed = 0;
   for (int k = 0; k < nsteps; ++k) {
@@ -142,14 +177,18 @@ Row run(Index n, Real dt, int nsteps, Real nu, Real skew, int outer = 6) {
   Kokkos::parallel_reduce("vol", Kokkos::RangePolicy<ExecSpace>(0, nc),
     KOKKOS_LAMBDA(const Index i, Real& a) { a += vol(i); }, den);
 
-  return {n, 1.0 / n, dt, std::sqrt(num / den), cont, outerUsed, nonOrthUsed};
+  return {n, 1.0 / n, dt, std::sqrt(num / den), cont, outerUsed, nonOrthUsed,
+          momentum.totalSeconds(), pressure.totalSeconds(),
+          momentum.totalIterations(), pressure.totalIterations(),
+          pressure.solveCount(), pressure.backendName()};
 }
 
 bool report(const char* label, const std::vector<Row>& rows, Real lo, Real hi,
             bool requireRising) {
   std::printf("\n%s\n", label);
-  std::printf("  %4s %10s %19s %11s %7s %9s %8s\n", "N", "h", "L2(u) error", "max div",
-              "outer", "nonOrth", "order");
+  std::printf("  %4s %10s %19s %11s %7s %9s %8s %9s %9s %8s\n",
+              "N", "h", "L2(u) error", "max div", "outer", "nonOrth", "order",
+              "mom s", "pres s", "pres it");
   std::vector<Real> orders;
   for (std::size_t i = 0; i < rows.size(); ++i) {
     char o[16] = "       -";
@@ -158,9 +197,9 @@ bool report(const char* label, const std::vector<Row>& rows, Real lo, Real hi,
                        / std::log(rows[i-1].h / rows[i].h));
       std::snprintf(o, sizeof o, "%8.3f", orders.back());
     }
-    std::printf("  %4d %10.5f %19.12e %11.2e %7d %9d %s\n",
+    std::printf("  %4d %10.5f %19.12e %11.2e %7d %9d %s %9.1f %9.1f %8d\n",
                 rows[i].n, rows[i].h, rows[i].l2, rows[i].cont, rows[i].outer,
-                rows[i].nonOrth, o);
+                rows[i].nonOrth, o, rows[i].momSec, rows[i].preSec, rows[i].preIt);
   }
   const Real last = orders.empty() ? 0.0 : orders.back();
   bool ok = last >= lo && last <= hi;
@@ -179,6 +218,9 @@ bool report(const char* label, const std::vector<Row>& rows, Real lo, Real hi,
 }  // namespace
 
 int main(int argc, char** argv) {
+#ifdef NSFLOW_HAVE_PETSC
+  PetscInitialize(&argc, &argv, nullptr, nullptr);
+#endif
   Kokkos::initialize(argc, argv);
   int rc = 0;
   {
@@ -189,6 +231,9 @@ int main(int argc, char** argv) {
     if (const char* e = std::getenv("NSFLOW_OUTER")) outer = std::stoi(e);
 
     bool ok = true;
+    std::printf("pressure backend: %s (pc rebuild interval %s)\n",
+                backendName().c_str(),
+                std::getenv("NSFLOW_PC_REUSE") ? std::getenv("NSFLOW_PC_REUSE") : "1");
     std::vector<Row> ortho, dist;
     for (Index n : grids) ortho.push_back(run(n, 2e-4, 2, 0.05, 0.0, outer));
     ok &= report("spatial order / orthogonal  (dt=2e-4, 2 steps)", ortho, 1.85, 2.15, false);
@@ -200,5 +245,8 @@ int main(int argc, char** argv) {
     rc = ok ? 0 : 1;
   }
   Kokkos::finalize();
+#ifdef NSFLOW_HAVE_PETSC
+  PetscFinalize();
+#endif
   return rc;
 }

@@ -3,6 +3,7 @@
 #include "mesh/Mesh.hpp"
 
 #include <petscksp.h>
+#include <algorithm>
 #include <numeric>
 #include <stdexcept>
 
@@ -23,7 +24,9 @@ struct PetscSolver::Impl {
   Mat A{nullptr};
   Vec b{nullptr}, u{nullptr};
   KSP ksp{nullptr};
-  bool assembled{false};
+  bool dirty{true};
+  int pcInterval{1};
+  int matrixChanges{0};
 
   Impl(const Mesh& m, Comm c, std::vector<Index> g) : mesh(m), comm(c), grow(std::move(g)) {
     nOwned = mesh.nCells();
@@ -115,7 +118,7 @@ struct PetscSolver::Impl {
     }
     chk(MatAssemblyBegin(A, MAT_FINAL_ASSEMBLY), "AssemblyBegin");
     chk(MatAssemblyEnd(A, MAT_FINAL_ASSEMBLY), "AssemblyEnd");
-    assembled = true;
+    dirty = false;
   }
 };
 
@@ -128,9 +131,10 @@ bool PetscSolver::hasHypre() {
 }
 
 PetscSolver::PetscSolver(const Mesh& mesh, Comm comm, std::string config,
-                         std::vector<Index> globalRowOf)
+                         std::vector<Index> globalRowOf, int pcRebuildInterval)
     : impl_(std::make_unique<Impl>(mesh, comm, std::move(globalRowOf))),
       config_(std::move(config)) {
+  impl_->pcInterval = std::max(1, pcRebuildInterval);
   impl_->configure(config_);
 }
 
@@ -139,7 +143,18 @@ PetscSolver::~PetscSolver() = default;
 SolveReport PetscSolver::solve(LinearSystem& sys, ScalarField& x,
                                Real relTol, Real absTol, int maxIter) {
   auto& I = *impl_;
-  I.assemble(sys);
+  // Re-assembling here would also force PETSc to rebuild the preconditioner.
+  // For BoomerAMG that setup is most of the cost, and the pressure corrector
+  // reuses one matrix for every sweep of a step.
+  if (I.dirty) {
+    I.assemble(sys);
+    // Rebuild the preconditioner on the first solve and then only every
+    // pcInterval-th matrix change; reuse it otherwise.
+    const bool rebuild = (I.matrixChanges % I.pcInterval) == 0;
+    chk(KSPSetReusePreconditioner(I.ksp, rebuild ? PETSC_FALSE : PETSC_TRUE),
+        "KSPSetReusePreconditioner");
+    ++I.matrixChanges;
+  }
 
   auto h_src = Kokkos::create_mirror_view_and_copy(HostSpace::memory_space(), sys.source());
   auto h_x   = Kokkos::create_mirror_view_and_copy(HostSpace::memory_space(), x);
@@ -181,7 +196,10 @@ SolveReport PetscSolver::solve(LinearSystem& sys, ScalarField& x,
   chk(VecRestoreArrayRead(I.u, &arr), "VecRestoreArrayRead");
   Kokkos::deep_copy(x, h_x);
   if (const auto* h = I.mesh.halo()) h->exchange(x);
+  record(rep);
   return rep;
 }
+
+void PetscSolver::notifyMatrixChanged() { impl_->dirty = true; }
 
 }  // namespace nsflow
