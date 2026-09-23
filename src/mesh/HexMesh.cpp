@@ -1,4 +1,5 @@
 #include "mesh/HexMesh.hpp"
+#include "mesh/RawMesh.hpp"
 #include "mesh/Geometry.hpp"
 
 #include <fstream>
@@ -94,18 +95,10 @@ void HexMesh::buildTopology(Index nx, Index ny, Index nz) {
 }
 
 void HexMesh::buildCellVertices(Index nx, Index ny, Index nz) {
-  // VTK_HEXAHEDRON vertex order: bottom face counter-clockwise, then top.
-  const Index vy = ny + 1, vz = nz + 1;
-  auto vid = [vy, vz](Index i, Index j, Index k) { return (i * vy + j) * vz + k; };
-  hexes_.resize(static_cast<std::size_t>(nx) * ny * nz);
-  for (Index i = 0; i < nx; ++i)
-    for (Index j = 0; j < ny; ++j)
-      for (Index k = 0; k < nz; ++k)
-        hexes_[(i * ny + j) * nz + k] = {
-            vid(i,     j,     k    ), vid(i + 1, j,     k    ),
-            vid(i + 1, j + 1, k    ), vid(i,     j + 1, k    ),
-            vid(i,     j,     k + 1), vid(i + 1, j,     k + 1),
-            vid(i + 1, j + 1, k + 1), vid(i,     j + 1, k + 1)};
+  // Shared with RawMesh. The two mesh paths must agree on cell numbering and
+  // vertex order or the distributed build silently describes a different mesh
+  // from the serial one.
+  hexes_ = raw::boxConnectivity(nx, ny, nz);
 }
 
 void HexMesh::computeFaceGeometry(const std::vector<Vec3>& verts) {
@@ -136,59 +129,15 @@ Real HexMesh::maxSkewness() const {
 }
 
 HexMesh HexMesh::generate(Index n, Real skew, const std::string& mode) {
-  const Index nv = n + 1;
-  std::vector<Vec3> v(static_cast<std::size_t>(nv) * nv * nv);
-  auto g = [nv](Index i) { return static_cast<Real>(i) / static_cast<Real>(nv - 1); };
-
-  for (Index i = 0; i < nv; ++i)
-    for (Index j = 0; j < nv; ++j)
-      for (Index k = 0; k < nv; ++k)
-        v[(i * nv + j) * nv + k] = {g(i), g(j), g(k)};
-
-  if (skew > 0.0 && mode == "smooth") {
-    // Amplitude is absolute, not a multiple of h: that is what makes the
-    // family a refinement of one geometry. Above about 1/(2 pi) the map stops
-    // being invertible and the cells tangle.
-    const Real amp = 0.2 * skew;
-    for (Index i = 0; i < nv; ++i)
-      for (Index j = 0; j < nv; ++j) {
-        const Real x = g(i), y = g(j);
-        const Real bump = std::sin(M_PI * x) * std::sin(M_PI * y);
-        const Real dx = amp * std::sin(2.0 * M_PI * y) * bump;
-        const Real dy = amp * std::sin(2.0 * M_PI * x) * bump;
-        for (Index k = 0; k < nv; ++k) {
-          v[(i * nv + j) * nv + k].x += dx;
-          v[(i * nv + j) * nv + k].y += dy;
-        }
-      }
-  } else if (skew > 0.0 && mode != "none") {
-    throw std::runtime_error("HexMesh::generate: mode '" + mode +
-                             "' is not generated in C++; use fromVertexFile");
-  }
-  return HexMesh(n, v);
+  return HexMesh(n, raw::generateVertices(n, skew, mode));
 }
 
 HexMesh HexMesh::box(Index nx, Index ny, Index nz, Real Lx, Real Ly, Real Lz) {
-  std::vector<Vec3> v(static_cast<std::size_t>(nx + 1) * (ny + 1) * (nz + 1));
-  for (Index i = 0; i <= nx; ++i)
-    for (Index j = 0; j <= ny; ++j)
-      for (Index k = 0; k <= nz; ++k)
-        v[(i * (ny + 1) + j) * (nz + 1) + k] = {
-            Lx * static_cast<Real>(i) / nx,
-            Ly * static_cast<Real>(j) / ny,
-            Lz * static_cast<Real>(k) / nz};
-  return HexMesh(nx, ny, nz, v);
+  return HexMesh(nx, ny, nz, raw::boxVertices(nx, ny, nz, Lx, Ly, Lz));
 }
 
 HexMesh HexMesh::fromVertexFile(Index n, const std::string& path) {
-  std::ifstream in(path);
-  if (!in) throw std::runtime_error("cannot open vertex file: " + path);
-  std::size_t rows = 0, cols = 0;
-  in >> rows >> cols;
-  if (cols != 3) throw std::runtime_error("vertex file must have 3 columns");
-  std::vector<Vec3> v(rows);
-  for (std::size_t i = 0; i < rows; ++i) in >> v[i].x >> v[i].y >> v[i].z;
-  return HexMesh(n, v);
+  return HexMesh(n, raw::readVertexFile(path));
 }
 
 }  // namespace nsflow

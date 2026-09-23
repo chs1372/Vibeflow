@@ -27,6 +27,39 @@ def run(cmd, cwd=ROOT):
     return subprocess.run(cmd, cwd=cwd, env=ENV).returncode == 0
 
 
+def memory_sweep(ranks=(2, 4)):
+    """The mesh must cost less per rank as ranks are added.
+
+    Every other parallel gate checks the answer, and none of them would notice
+    a partitioner that gets it by building the whole mesh on every rank. This
+    one counts what each rank constructs. Replicating the mesh scores 1.000
+    against a bar of 0.600 on four ranks.
+    """
+    binary = BUILD / "mms_parallel_mem"
+    if not binary.exists():
+        print("  mms_parallel_mem not built"); return None
+    if shutil.which("mpirun") is None:
+        print("  mpirun not available"); return None
+    r = subprocess.run([str(binary)], cwd=ROOT, env=ENV, capture_output=True, text=True)
+    m = re.search(r"cells\s+(\d+)\s+faces", r.stdout)
+    if r.returncode != 0 or not m:
+        print(r.stdout or r.stderr); return False
+    ref = m.group(1)
+    print(r.stdout.rstrip())
+    ok = True
+    for np in ranks:
+        cp = subprocess.run(
+            ["mpirun", "--oversubscribe", "--allow-run-as-root", "-n", str(np),
+             str(binary), ref],
+            cwd=ROOT, env={**ENV, "OMP_NUM_THREADS": "1"},
+            capture_output=True, text=True)
+        print("\n".join(l for l in (cp.stdout or cp.stderr).splitlines()
+                         if "Detected:" not in l and "oversubscrib" not in l).rstrip())
+        ok &= cp.returncode == 0
+    print(f"  memory scaling gate: {'PASS' if ok else 'FAIL'}")
+    return ok
+
+
 def parallel_sweep(ranks=(2, 3, 4), binary_name="mms_parallel", args=()):
     """The answer must not depend on the rank count.
 
@@ -99,6 +132,8 @@ GATES = {
         ("cross-check: python and c++ Navier-Stokes agree",
          lambda: run([PY, str(Path(__file__).parent / "crosscheck_ns.py")]),
          BUILD / "ethier_steinman"),
+        ("mpi: the mesh costs less per rank as ranks are added",
+         memory_sweep, BUILD / "mms_parallel_mem"),
         ("mpi: Navier-Stokes is independent of the rank count",
          lambda: parallel_sweep(binary_name="mms_parallel_ns"),
          BUILD / "mms_parallel_ns"),

@@ -12,7 +12,7 @@
 // rank counts.
 
 #include "core/Parallel.hpp"
-#include "mesh/HexMesh.hpp"
+#include "mesh/RawMesh.hpp"
 #include "mesh/DistributedMesh.hpp"
 #include "discretization/Diffusion.hpp"
 #include "linalg/LinearSystem.hpp"
@@ -43,8 +43,11 @@ int main(int argc, char** argv) {
     const Index n = 16;
 
     // v0 partitioner: every rank reads the whole mesh and keeps its slice.
-    HexMesh global(HexMesh::fromVertexFile(n, dir + "/vertices_n" + std::to_string(n) + "_s25.txt"));
-    DistributedMesh mesh(global, comm, PartitionMethod::RCB);
+    // The RAW description, so only this rank's subdomain gets built.
+    RawMesh raw = RawMesh::fromVertexFile(
+        n, dir + "/vertices_n" + std::to_string(n) + "_s25.txt");
+    const Index globalCells = raw.nCells();
+    DistributedMesh mesh(raw, comm, PartitionMethod::RCB);
 
     const Index nc = mesh.nCells(), nt = mesh.nTotal(), nb = mesh.nBoundaryFaces();
     ScalarField src("src", nt), phiB("phiB", nb), phi("phi", nt), exact("exact", nt);
@@ -87,10 +90,10 @@ int main(int argc, char** argv) {
       }
       std::printf("\n");
     }
-    if (gcells != global.nCells()) {
+    if (gcells != globalCells) {
       if (comm.rank() == 0)
         std::printf("  FAIL: partition lost cells (%d of %d)\n",
-                    static_cast<int>(gcells), static_cast<int>(global.nCells()));
+                    static_cast<int>(gcells), static_cast<int>(globalCells));
       rc = 1;
     }
 #ifdef NSFLOW_HAVE_MPI

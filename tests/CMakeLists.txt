@@ -32,6 +32,10 @@ add_executable(ethier_steinman mms/ethier_steinman.cpp)
 target_link_libraries(ethier_steinman PRIVATE nsflow_physics)
 add_test(NAME ethier_steinman COMMAND ethier_steinman)
 
+add_executable(mms_parallel_mem mms/mms_parallel_mem.cpp)
+target_link_libraries(mms_parallel_mem PRIVATE nsflow_mesh)
+add_test(NAME mms_parallel_mem COMMAND mms_parallel_mem)
+
 add_executable(mms_parallel_ns mms/mms_parallel_ns.cpp)
 target_link_libraries(mms_parallel_ns PRIVATE nsflow_physics)
 add_test(NAME mms_parallel_ns COMMAND mms_parallel_ns)

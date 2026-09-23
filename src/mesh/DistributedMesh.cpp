@@ -1,4 +1,5 @@
 #include "mesh/DistributedMesh.hpp"
+#include "mesh/RawMesh.hpp"
 #include "mesh/Geometry.hpp"
 
 #include <algorithm>
@@ -92,9 +93,9 @@ class MpiHalo final : public HaloExchange {
 
 }  // namespace
 
-std::vector<int> DistributedMesh::partition(const Mesh& global, int nParts,
+std::vector<int> DistributedMesh::partition(const RawMesh& raw, int nParts,
                                             PartitionMethod method) {
-  const Index nc = global.nCells();
+  const Index nc = raw.nCells();
   std::vector<int> part(nc, 0);
   if (nParts <= 1) return part;
 
@@ -103,70 +104,140 @@ std::vector<int> DistributedMesh::partition(const Mesh& global, int nParts,
       part[c] = static_cast<int>(static_cast<long long>(c) * nParts / nc);
     return part;
   }
-
-  auto cc = host(global.cellCentre());
-  std::vector<std::array<Real, 3>> x(nc);
-  for (Index c = 0; c < nc; ++c) x[c] = {cc(c, 0), cc(c, 1), cc(c, 2)};
+  auto x = raw.centroids();
   std::vector<Index> ids(nc);
   std::iota(ids.begin(), ids.end(), 0);
   rcb(ids, x, 0, static_cast<int>(nc), part, 0, nParts);
   return part;
 }
 
-DistributedMesh::DistributedMesh(const Mesh& global, const Comm& comm,
+DistributedMesh::DistributedMesh(const RawMesh& raw, const Comm& comm,
                                  PartitionMethod method)
     : comm_(comm) {
-  const Index gnc = global.nCells();
-  const auto part = partition(global, comm.size(), method);
+  const Index gnc = raw.nCells();
+  const auto part = partition(raw, comm.size(), method);
   const int me = comm.rank();
 
-  // -- owned cells, in global order so results gather deterministically
-  std::vector<Index> localOf(gnc, -1);
+  // -- the subdomain: my cells, then a ring of candidate ghosts.
+  //
+  // Only these get built. Every rank still holds the raw description -- that
+  // is the part this change does not fix (ADR-023) -- but the face table, the
+  // vertex hash that discovers it, and all the geometry are now per-subdomain.
+  std::vector<Index> subGlobal;            // subset id -> global cell
+  std::vector<Index> subOf(gnc, -1);       // global cell -> subset id
   for (Index c = 0; c < gnc; ++c)
-    if (part[c] == me) { localOf[c] = static_cast<Index>(globalId_.size()); globalId_.push_back(c); }
-  nOwned_ = static_cast<Index>(globalId_.size());
+    if (part[c] == me) { subOf[c] = static_cast<Index>(subGlobal.size()); subGlobal.push_back(c); }
+  nOwned_ = static_cast<Index>(subGlobal.size());
+  globalId_ = subGlobal;
 
-  auto g_own = host(global.owner());
-  auto g_nei = host(global.neighbour());
-  auto g_fa  = host(global.faceArea());
-  auto g_fc  = host(global.faceCentre());
-  auto g_bc  = host(global.boundaryCell());
-  auto g_ba  = host(global.boundaryArea());
-  auto g_bcn = host(global.boundaryCentre());
-  auto g_cc  = host(global.cellCentre());
-  auto g_cv  = host(global.cellVolume());
+  for (Index gc : raw.vertexNeighbours(part, me)) {
+    subOf[gc] = static_cast<Index>(subGlobal.size());
+    subGlobal.push_back(gc);
+  }
+  const Index nSub = static_cast<Index>(subGlobal.size());
 
-  // -- ghosts: remote cells across a face from an owned cell
-  std::map<Index, Index> ghostOf;                  // global id -> local id
-  std::map<int, std::vector<Index>> recvGlobal;    // rank -> global ids to receive
-  auto ghost = [&](Index gc) {
-    auto it = ghostOf.find(gc);
-    if (it != ghostOf.end()) return it->second;
-    const Index lid = nOwned_ + static_cast<Index>(ghostOf.size());
-    ghostOf.emplace(gc, lid);
-    recvGlobal[part[gc]].push_back(gc);
-    return lid;
-  };
+  // Subset connectivity, with the points it touches renumbered so the vertex
+  // hash and the point array are both subdomain-sized.
+  std::vector<Index> ptOf(raw.points.size(), -1);
+  std::vector<Vec3> subPts;
+  std::vector<std::array<Index, 8>> subHex(static_cast<std::size_t>(nSub));
+  for (Index c = 0; c < nSub; ++c)
+    for (int t = 0; t < 8; ++t) {
+      const Index gp = raw.hexes[static_cast<std::size_t>(subGlobal[c])][t];
+      if (ptOf[gp] < 0) {
+        ptOf[gp] = static_cast<Index>(subPts.size());
+        subPts.push_back(raw.points[static_cast<std::size_t>(gp)]);
+      }
+      subHex[c][t] = ptOf[gp];
+    }
 
-  struct LFace { Index own, nei, gface; bool flip; };
+  auto topo = geometry::buildFaces(subHex);
+  const Index nSubInt = static_cast<Index>(topo.owner.size());
+  const Index nSubBnd = static_cast<Index>(topo.bCell.size());
+  cellsBuilt_ = nSub;
+  facesBuilt_ = nSubInt + nSubBnd;
+
+  // -- geometry over the WHOLE subset, before any filtering.
+  //
+  // A ghost's volume and centroid need all six of its faces. The ring gives
+  // it them: a face of a ghost whose other side lies outside the subdomain is
+  // seen once and comes back as a subset boundary face, so cellGeometry's
+  // accumulation still closes every cell. Filter first and the ghosts would
+  // get volumes computed from part of their surface.
+  View1<Index> so("so", nSubInt), sn("sn", nSubInt), sbc("sbc", nSubBnd);
+  View2<Index> sfv("sfv", nSubInt, 4), sbv("sbv", nSubBnd, 4);
+  {
+    auto h_o = Kokkos::create_mirror_view(so);
+    auto h_n = Kokkos::create_mirror_view(sn);
+    auto h_b = Kokkos::create_mirror_view(sbc);
+    auto h_fv = Kokkos::create_mirror_view(sfv);
+    auto h_bv = Kokkos::create_mirror_view(sbv);
+    for (Index f = 0; f < nSubInt; ++f) {
+      h_o(f) = topo.owner[f]; h_n(f) = topo.neigh[f];
+      for (int t = 0; t < 4; ++t) h_fv(f, t) = topo.faceVerts[f][t];
+    }
+    for (Index f = 0; f < nSubBnd; ++f) {
+      h_b(f) = topo.bCell[f];
+      for (int t = 0; t < 4; ++t) h_bv(f, t) = topo.bVerts[f][t];
+    }
+    Kokkos::deep_copy(so, h_o); Kokkos::deep_copy(sn, h_n); Kokkos::deep_copy(sbc, h_b);
+    Kokkos::deep_copy(sfv, h_fv); Kokkos::deep_copy(sbv, h_bv);
+  }
+  auto pts = geometry::uploadPoints(subPts);
+  VectorField sfa("sfa", nSubInt, 3), sfc("sfc", nSubInt, 3);
+  VectorField sba("sba", nSubBnd, 3), sbcn("sbcn", nSubBnd, 3);
+  geometry::quadGeometry(pts, sfv, nSubInt, sfa, sfc);
+  geometry::quadGeometry(pts, sbv, nSubBnd, sba, sbcn);
+  VectorField scc("scc", nSub, 3);
+  ScalarField scv("scv", nSub);
+  geometry::cellGeometry(nSub, so, sn, sbc, sfc, sfa, sbcn, sba, scc, scv);
+
+  auto h_sfa = host(sfa); auto h_sfc = host(sfc);
+  auto h_sba = host(sba); auto h_sbcn = host(sbcn);
+  auto h_scc = host(scc); auto h_scv = host(scv);
+
+  // -- keep only what touches an owned cell, with that cell as the owner.
+  std::vector<char> ghostUsed(static_cast<std::size_t>(nSub), 0);
+  for (Index f = 0; f < nSubInt; ++f) {
+    const Index o = topo.owner[f], n = topo.neigh[f];
+    const bool mo = o < nOwned_, mn = n < nOwned_;
+    if (mo && !mn) ghostUsed[n] = 1;
+    else if (!mo && mn) ghostUsed[o] = 1;
+  }
+  // Ghost local ids run in (owning rank, global id) order, which makes each
+  // receive buffer one contiguous run and puts it in the order the sender
+  // builds its send buffer -- both sort by global id, so neither has to be
+  // told the other's ordering.
+  std::vector<Index> used;
+  for (Index s = nOwned_; s < nSub; ++s) if (ghostUsed[s]) used.push_back(s);
+  std::sort(used.begin(), used.end(), [&](Index a, Index b) {
+    const int ra = part[subGlobal[a]], rb = part[subGlobal[b]];
+    return ra != rb ? ra < rb : subGlobal[a] < subGlobal[b];
+  });
+  std::vector<Index> localOfSub(static_cast<std::size_t>(nSub), -1);
+  for (Index s = 0; s < nOwned_; ++s) localOfSub[s] = s;
+  for (std::size_t i = 0; i < used.size(); ++i)
+    localOfSub[used[i]] = nOwned_ + static_cast<Index>(i);
+  nGhost_ = static_cast<Index>(used.size());
+
+  struct LFace { Index own, nei, sf; bool flip; };
   std::vector<LFace> faces;
-  for (Index f = 0; f < global.nInternalFaces(); ++f) {
-    const Index o = g_own(f), n = g_nei(f);
-    const bool mineO = part[o] == me, mineN = part[n] == me;
-    if (mineO && mineN)      faces.push_back({localOf[o], localOf[n], f, false});
-    else if (mineO)          faces.push_back({localOf[o], ghost(n), f, false});
-    else if (mineN)          faces.push_back({localOf[n], ghost(o), f, true});
+  for (Index f = 0; f < nSubInt; ++f) {
+    const Index o = topo.owner[f], n = topo.neigh[f];
+    const bool mo = o < nOwned_, mn = n < nOwned_;
+    if (mo && mn)       faces.push_back({localOfSub[o], localOfSub[n], f, false});
+    else if (mo)        faces.push_back({localOfSub[o], localOfSub[n], f, false});
+    else if (mn)        faces.push_back({localOfSub[n], localOfSub[o], f, true});
   }
   nFaces_ = static_cast<Index>(faces.size());
-  nGhost_ = static_cast<Index>(ghostOf.size());
 
   std::vector<Index> bnd;
-  for (Index f = 0; f < global.nBoundaryFaces(); ++f)
-    if (part[g_bc(f)] == me) bnd.push_back(f);
+  for (Index f = 0; f < nSubBnd; ++f)
+    if (topo.bCell[f] < nOwned_) bnd.push_back(f);
   nBnd_ = static_cast<Index>(bnd.size());
   patches_ = {{"undefined", 0, nBnd_}};
 
-  // -- local views
+  // -- emit
   const Index nt = nTotal();
   owner_ = View1<Index>("owner", nFaces_);
   neigh_ = View1<Index>("neigh", nFaces_);
@@ -184,47 +255,49 @@ DistributedMesh::DistributedMesh(const Mesh& global, const Comm& comm,
   auto h_fc = Kokkos::create_mirror_view(faceCentre_);
   for (Index f = 0; f < nFaces_; ++f) {
     h_o(f) = faces[f].own; h_n(f) = faces[f].nei;
-    const Real s = faces[f].flip ? -1.0 : 1.0;
+    const Real sgn = faces[f].flip ? -1.0 : 1.0;
     for (int k = 0; k < 3; ++k) {
-      h_fa(f, k) = s * g_fa(faces[f].gface, k);
-      h_fc(f, k) = g_fc(faces[f].gface, k);
+      h_fa(f, k) = sgn * h_sfa(faces[f].sf, k);
+      h_fc(f, k) = h_sfc(faces[f].sf, k);
     }
   }
   auto h_b = Kokkos::create_mirror_view(bCell_);
   auto h_ba = Kokkos::create_mirror_view(bArea_);
-  auto h_bc2 = Kokkos::create_mirror_view(bCentre_);
+  auto h_bcn = Kokkos::create_mirror_view(bCentre_);
   for (Index f = 0; f < nBnd_; ++f) {
-    h_b(f) = localOf[g_bc(bnd[f])];
+    h_b(f) = localOfSub[topo.bCell[bnd[f]]];
     for (int k = 0; k < 3; ++k) {
-      h_ba(f, k) = g_ba(bnd[f], k); h_bc2(f, k) = g_bcn(bnd[f], k);
+      h_ba(f, k) = h_sba(bnd[f], k);
+      h_bcn(f, k) = h_sbcn(bnd[f], k);
     }
   }
   auto h_cc = Kokkos::create_mirror_view(cellCentre_);
   auto h_cv = Kokkos::create_mirror_view(cellVolume_);
-  for (Index c = 0; c < nOwned_; ++c) {
-    for (int k = 0; k < 3; ++k) h_cc(c, k) = g_cc(globalId_[c], k);
-    h_cv(c) = g_cv(globalId_[c]);
-  }
-  // Ghost geometry is filled directly rather than exchanged: it never changes,
-  // and the whole global mesh is already here in this v0 partitioner.
-  for (const auto& [gc, lid] : ghostOf) {
-    for (int k = 0; k < 3; ++k) h_cc(lid, k) = g_cc(gc, k);
-    h_cv(lid) = g_cv(gc);
+  for (Index s = 0; s < nSub; ++s) {
+    const Index l = localOfSub[s];
+    if (l < 0) continue;
+    for (int k = 0; k < 3; ++k) h_cc(l, k) = h_scc(s, k);
+    h_cv(l) = h_scv(s);
   }
 
   Kokkos::deep_copy(owner_, h_o); Kokkos::deep_copy(neigh_, h_n);
   Kokkos::deep_copy(faceArea_, h_fa); Kokkos::deep_copy(faceCentre_, h_fc);
   Kokkos::deep_copy(bCell_, h_b); Kokkos::deep_copy(bArea_, h_ba);
-  Kokkos::deep_copy(bCentre_, h_bc2);
+  Kokkos::deep_copy(bCentre_, h_bcn);
   Kokkos::deep_copy(cellCentre_, h_cc); Kokkos::deep_copy(cellVolume_, h_cv);
 
-  // -- halo schedule. The send list mirrors the receive list: rank r needs my
-  // cell c exactly when c is a ghost of r, which is symmetric across the face.
-  std::map<int, std::vector<Index>> sendGlobal;
-  for (Index f = 0; f < global.nInternalFaces(); ++f) {
-    const Index o = g_own(f), n = g_nei(f);
-    if (part[o] == me && part[n] != me) sendGlobal[part[n]].push_back(o);
-    if (part[n] == me && part[o] != me) sendGlobal[part[o]].push_back(n);
+  // -- halo schedule, both sides derived from the same local face list.
+  // rank r sends me the ghosts I use that r owns; symmetrically I send r the
+  // owned cells sitting across a face from one of r's ghosts. Face adjacency
+  // is symmetric, so the two lists are the same set seen from either end, and
+  // sorting both by global cell id is enough to line them up.
+  std::map<int, std::vector<Index>> recvLocal, sendGlobal;
+  for (std::size_t i = 0; i < used.size(); ++i)
+    recvLocal[part[subGlobal[used[i]]]].push_back(nOwned_ + static_cast<Index>(i));
+  for (const auto& f : faces) {
+    if (f.nei < nOwned_) continue;                  // both mine
+    const Index gsub = used[static_cast<std::size_t>(f.nei - nOwned_)];
+    sendGlobal[part[subGlobal[gsub]]].push_back(globalId_[f.own]);
   }
   std::vector<int> sr, rr;
   std::vector<std::vector<Index>> si, ri;
@@ -234,17 +307,10 @@ DistributedMesh::DistributedMesh(const Mesh& global, const Comm& comm,
     sr.push_back(r);
     std::vector<Index> idx;
     idx.reserve(v.size());
-    for (Index gc : v) idx.push_back(localOf[gc]);
+    for (Index gc : v) idx.push_back(subOf[gc]);     // owned: subset id == local id
     si.push_back(std::move(idx));
   }
-  for (auto& [r, v] : recvGlobal) {
-    std::sort(v.begin(), v.end());       // same order the sender builds
-    rr.push_back(r);
-    std::vector<Index> idx;
-    idx.reserve(v.size());
-    for (Index gc : v) idx.push_back(ghostOf.at(gc));
-    ri.push_back(std::move(idx));
-  }
+  for (auto& [r, v] : recvLocal) { rr.push_back(r); ri.push_back(std::move(v)); }
   halo_ = std::make_unique<MpiHalo>(comm, std::move(sr), std::move(si),
                                     std::move(rr), std::move(ri));
 }

@@ -641,3 +641,77 @@ every time the pressure gradient is taken, which is once per sweep.
 
 Neither is addressed here. Both are recorded so the next person to ask "why is
 this slow" starts from a measurement.
+
+## ADR-023 — The partitioner builds only its own subdomain
+**Decided.** `DistributedMesh` takes the raw mesh description — points and
+8-node connectivity — and each rank builds the face table and geometry for its
+own cells plus one ring of ghosts. It no longer takes a fully built `Mesh`.
+
+ADR-006 accepted "every rank reads the whole mesh and keeps a slice" as the v0
+trade: it made the parallel-consistency gate possible without a parallel
+reader. The cost is that the largest mesh the solver can run is the largest
+mesh that fits on one rank, whatever the rank count — adding nodes bought
+speed and no capacity at all.
+
+The built mesh is an order of magnitude larger than the description that
+produces it. Faces outnumber cells three to one and each carries an area, a
+centroid and four vertex ids; the ordered map of sorted vertex quads that
+discovers them is larger still and is the transient peak. Separating the two
+is therefore most of the win, and it needs no new file format:
+
+| | serial | 2 ranks | 4 ranks |
+| --- | --- | --- | --- |
+| faces built, worst rank | 196,800 | 105,208 | 56,773 |
+| fraction of serial | 1.000 | 0.535 | 0.288 |
+| peak RSS | 61 MB | 42 MB | 31 MB |
+
+(64,000 cells, RCB.)
+
+### Three things this needed
+
+**Ghosts are found by shared vertex, not shared face.** Face adjacency would
+need the global face table, which is the thing being avoided. Two cells
+sharing a face necessarily share vertices, so a vertex sweep gives a superset:
+one bitmap over the points and two passes over the connectivity. The extra
+cells — edge and corner neighbours — are dropped once the subdomain's own
+faces reveal which ghosts are actually touched.
+
+**Geometry is computed over the whole subset, before filtering.** A ghost's
+volume and centroid need all six of its faces. The ring provides them: a face
+of a ghost whose other side lies outside the subdomain is seen once by the
+vertex hash and comes back as a subdomain boundary face, so the accumulation
+still closes every cell. Filtering first would give ghosts volumes computed
+from part of their surface — and nothing downstream would complain, because a
+plausible volume produces a plausible answer.
+
+**The halo schedule is derived from the local face list on both sides.**
+Rank A's receive list from B is the ghosts A uses that B owns; B's send list
+to A is the owned cells sitting across a face from one of A's ghosts. Face
+adjacency is symmetric, so those are the same set seen from either end, and
+sorting both by global cell id lines them up without either rank being told
+the other's ordering.
+
+### The gate
+
+`tests/mms/mms_parallel_mem.cpp` counts what each rank *constructs* — cells
+and faces, counted before the faces belonging to another rank are discarded,
+because they were still built. Deterministic and allocator-independent, unlike
+RSS, which the gate reports but does not judge.
+
+The bar is `(1/P + 0.35)` of the serial build on the worst rank; the slack is
+the ghost ring, which is real work that does not shrink as fast as the
+interior. Measured 0.535 and 0.288 against bars of 0.850 and 0.600.
+
+**Verified to fail.** Making the ghost search return every other cell — which
+is precisely the old behaviour — scores 1.000 against a bar of 0.600. The gate
+also refuses a rank that builds fewer cells than it owns, and checks the owned
+cells still sum to the global mesh, so "build nothing" is not a way past it.
+
+### Still replicated
+
+The raw description. Distributing the read as well means each rank touching
+only its own byte range of the file, which needs a format that says where the
+cells are — the current one does not. Until then per-rank memory is
+`O(raw) + O(built/P)`, and since raw is roughly a tenth of built, that ceiling
+is an order of magnitude further out than it was. It is a ceiling all the
+same, and this ADR does not claim otherwise.

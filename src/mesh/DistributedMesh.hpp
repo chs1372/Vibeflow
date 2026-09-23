@@ -20,6 +20,7 @@
 #include "core/Parallel.hpp"
 #include "core/Types.hpp"
 #include "mesh/Mesh.hpp"
+#include "mesh/RawMesh.hpp"
 #include <array>
 #include <memory>
 #include <vector>
@@ -30,7 +31,9 @@ enum class PartitionMethod { Linear, RCB };
 
 class DistributedMesh final : public Mesh {
  public:
-  DistributedMesh(const Mesh& global, const Comm& comm,
+  // Takes the RAW description, not a built mesh: building the whole mesh on
+  // every rank in order to keep a slice of it is the thing this avoids.
+  DistributedMesh(const RawMesh& raw, const Comm& comm,
                   PartitionMethod method = PartitionMethod::RCB);
 
   Index nCells()         const override { return nOwned_; }
@@ -57,12 +60,19 @@ class DistributedMesh final : public Mesh {
   // Global cell id of each owned cell, for gathering results in a fixed order.
   const std::vector<Index>& globalCellId() const { return globalId_; }
 
-  static std::vector<int> partition(const Mesh& global, int nParts,
+  static std::vector<int> partition(const RawMesh& raw, int nParts,
                                     PartitionMethod method);
+
+  // What this rank actually constructed, for the memory-scaling gate. Owned
+  // plus ghost-ring cells, and every face the vertex hash produced for them
+  // -- including the ones later discarded, because they were still built.
+  Index nCellsBuilt() const { return cellsBuilt_; }
+  Index nFacesBuilt() const { return facesBuilt_; }
 
  private:
   Comm comm_;
   Index nOwned_{}, nGhost_{}, nFaces_{}, nBnd_{};
+  Index cellsBuilt_{}, facesBuilt_{};
   std::vector<Index> globalId_;
   std::vector<BoundaryPatch> patches_;
   std::unique_ptr<HaloExchange> halo_;

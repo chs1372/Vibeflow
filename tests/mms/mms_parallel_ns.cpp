@@ -16,7 +16,7 @@
 // Run:  mpirun -n <N> mms_parallel_ns [reference L2]
 
 #include "core/Parallel.hpp"
-#include "mesh/HexMesh.hpp"
+#include "mesh/RawMesh.hpp"
 #include "mesh/DistributedMesh.hpp"
 #include "physics/Piso.hpp"
 #include "linalg/NativeBiCGStab.hpp"
@@ -85,8 +85,9 @@ int main(int argc, char** argv) {
     // of which read gradients at ghost cells -- are actually exercised. On a
     // Cartesian mesh they are identically zero and a wrong ghost gradient
     // costs nothing.
-    HexMesh global = HexMesh::generate(n, 0.3, "smooth");
-    DistributedMesh mesh(global, comm, PartitionMethod::RCB);
+    RawMesh raw = RawMesh::generate(n, 0.3, "smooth");
+    const Index globalCells = raw.nCells();
+    DistributedMesh mesh(raw, comm, PartitionMethod::RCB);
 
     const Index nc = mesh.nCells(), nt = mesh.nTotal(), nb = mesh.nBoundaryFaces();
     const Index nf = mesh.nInternalFaces();
@@ -181,10 +182,10 @@ int main(int argc, char** argv) {
       }
       std::printf("\n");
     }
-    if (gcells != global.nCells()) {
+    if (gcells != globalCells) {
       if (comm.rank() == 0)
         std::printf("  FAIL: partition lost cells (%d of %d)\n",
-                    static_cast<int>(gcells), static_cast<int>(global.nCells()));
+                    static_cast<int>(gcells), static_cast<int>(globalCells));
       rc = 1;
     }
 #ifdef NSFLOW_HAVE_MPI
