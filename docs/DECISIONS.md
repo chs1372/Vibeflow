@@ -305,3 +305,43 @@ because Krylov iteration counts grow and AMG's do not. The crossover is
 somewhere above 32k cells. That is worth re-measuring on real hardware rather
 than guessing at it here.
 
+
+## ADR-018 — Benchmarks answer a different question than exact solutions
+**Decided.** The gate suite carries both, and they are not interchangeable.
+
+An exact or manufactured solution proves the discretisation converges to the
+equations we wrote down. It cannot catch writing down the wrong equations, a
+sign error in a term that the manufactured source silently absorbs, or a
+boundary condition that is self-consistent but not what anyone else means by
+"no-slip wall". A published benchmark catches exactly those, because the
+reference numbers were produced by someone else's code from their reading of
+the same physics.
+
+First benchmark: the lid-driven cavity of Ghia, Ghia & Shin (1982), Tables I
+and II. Ghia's case is 2D; it runs here as a one-cell-thick slab with
+zero-gradient velocity on the two z faces, which needed a per-face velocity
+boundary type (Dirichlet or zero-gradient) and an anisotropic box mesh — both
+of which real cases need anyway.
+
+Measured at 64x64 against Ghia's 129x129:
+
+| Re | rms(u) | rms(v) | max abs diff | steps to steady |
+| --- | --- | --- | --- | --- |
+| 100 | 0.0016 | 0.0044 | 0.0088 | 893 |
+| 1000 | 0.0123 | 0.0127 | 0.0223 | 4152 |
+
+*The gate checks steadiness as well as agreement.* A profile read off a state
+that is still evolving is not a steady-state result however well it happens to
+match, and the first run of this benchmark hit its step cap at Re = 1000 with
+du/dt still at 8e-5 — it would have "passed" on the profile alone.
+
+*One artefact worth recording:* the first comparison reported the lid moving
+at 0.77 instead of 1.0 and an rms of 0.06. Ghia's tables include the wall
+points y = 0 and y = 1, and a profile built from cell centres stops half a
+cell short of both, so the interpolation clamped to the nearest cell value.
+The solver was right and the comparison was wrong — the same class of mistake
+as the mesh-family and decay-interval artefacts in ADR-012 and ADR-013. Three
+of the seven wrong answers this project has produced so far were in the
+measurement, not the code.
+
+*Re = 1000 is opt-in* (`--full`): it is 88% of the runtime.

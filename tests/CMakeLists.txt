@@ -31,3 +31,7 @@ add_test(NAME mms_convection COMMAND mms_convection)
 add_executable(ethier_steinman mms/ethier_steinman.cpp)
 target_link_libraries(ethier_steinman PRIVATE nsflow_physics)
 add_test(NAME ethier_steinman COMMAND ethier_steinman)
+
+add_executable(cavity benchmark/cavity.cpp)
+target_link_libraries(cavity PRIVATE nsflow_physics)
+add_test(NAME cavity COMMAND cavity 64)

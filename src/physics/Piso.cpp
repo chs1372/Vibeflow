@@ -24,7 +24,8 @@ PisoSolver::PisoSolver(const Mesh& mesh, Real nu, Real dt, PisoControls ctl, Com
       FOld_("FOld", mesh.nInternalFaces()), Fb_("Fb", mesh.nBoundaryFaces()),
       bSrc_("bSrc", mesh.nTotal(), 3),
       diag_("diag", mesh.nTotal()),
-      upper_("upper", mesh.nInternalFaces()), lower_("lower", mesh.nInternalFaces()) {
+      upper_("upper", mesh.nInternalFaces()), lower_("lower", mesh.nInternalFaces()),
+      bcType_("bcType", mesh.nBoundaryFaces()) {
   auto own = mesh.owner(); auto nei = mesh.neighbour();
   auto cc = mesh.cellCentre(); auto fc = mesh.faceCentre();
   auto w = w_; auto sk = skew_;
@@ -114,8 +115,12 @@ void PisoSolver::assembleMomentum(const VectorField& uB, const VectorField& src)
       up(f) = -nu * a(f) - Fn;
       lo(f) = -nu * a(f) - Fp;
     });
+  auto bt = bcType_;
   Kokkos::parallel_for("mbnd", Kokkos::RangePolicy<ExecSpace>(0, nb),
-    KOKKOS_LAMBDA(const Index f) { Kokkos::atomic_add(&diag(bc(f)), nu * ab(f)); });
+    KOKKOS_LAMBDA(const Index f) {
+      if (bt(f) == static_cast<int>(VelocityBC::Dirichlet))
+        Kokkos::atomic_add(&diag(bc(f)), nu * ab(f));
+    });
   Kokkos::fence();
   Kokkos::deep_copy(aP_, diag);
 
@@ -167,14 +172,21 @@ void PisoSolver::assembleMomentum(const VectorField& uB, const VectorField& src)
     });
   Kokkos::parallel_for("msrcBnd", Kokkos::RangePolicy<ExecSpace>(0, nb),
     KOKKOS_LAMBDA(const Index f) {
+      const bool dirichlet = bt(f) == static_cast<int>(VelocityBC::Dirichlet);
       for (int d = 0; d < 3; ++d) {
-        Real nonorth = 0.0;
-        for (int i = 0; i < 3; ++i) {
-          const Real gi = d == 0 ? G0(bc(f), i) : d == 1 ? G1(bc(f), i) : G2(bc(f), i);
-          nonorth += kb(f, i) * gi;
+        if (dirichlet) {
+          Real nonorth = 0.0;
+          for (int i = 0; i < 3; ++i) {
+            const Real gi = d == 0 ? G0(bc(f), i) : d == 1 ? G1(bc(f), i) : G2(bc(f), i);
+            nonorth += kb(f, i) * gi;
+          }
+          Kokkos::atomic_add(&b(bc(f), d),
+                             nu * (ab(f) * uB(f, d) + nonorth) - Fb(f) * uB(f, d));
+        } else {
+          // Zero gradient: no diffusive flux through the face. The convective
+          // flux uses the cell value, which is zero when Fb is zero.
+          Kokkos::atomic_add(&b(bc(f), d), -Fb(f) * u(bc(f), d));
         }
-        Kokkos::atomic_add(&b(bc(f), d),
-                           nu * (ab(f) * uB(f, d) + nonorth) - Fb(f) * uB(f, d));
       }
     });
   Kokkos::fence();

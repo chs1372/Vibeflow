@@ -15,8 +15,10 @@ namespace nsflow {
 
 class HexMesh final : public Mesh {
  public:
-  // Vertices in the (i,j,k) ordering of prototype/mesh.py: id = (i*nv + j)*nv + k.
+  // Vertices in the (i,j,k) ordering of prototype/mesh.py:
+  //   id = (i*(ny+1) + j)*(nz+1) + k
   HexMesh(Index n, const std::vector<Vec3>& vertices);
+  HexMesh(Index nx, Index ny, Index nz, const std::vector<Vec3>& vertices);
 
   static HexMesh fromVertexFile(Index n, const std::string& path);
 
@@ -32,6 +34,16 @@ class HexMesh final : public Mesh {
   // fromVertexFile or CGNS.
   static HexMesh generate(Index n, Real skew = 0.0,
                           const std::string& mode = "smooth");
+
+  // Box [0,Lx] x [0,Ly] x [0,Lz] with independent counts per direction. A 2D
+  // benchmark runs as a one-cell-thick slab with slip on the z faces, which
+  // needs ny != nz.
+  static HexMesh box(Index nx, Index ny, Index nz,
+                     Real Lx = 1.0, Real Ly = 1.0, Real Lz = 1.0);
+
+  // Which side of the box each boundary face lies on:
+  // 0 = x-, 1 = x+, 2 = y-, 3 = y+, 4 = z-, 5 = z+.
+  View1<int> boundarySide() const { return bSide_; }
 
   Index nCells()         const override { return nCells_; }
   Index nInternalFaces() const override { return nInternal_; }
@@ -62,16 +74,17 @@ class HexMesh final : public Mesh {
   Real maxClosureError()     const override;
 
  private:
-  void buildTopology(Index n);
-  void buildCellVertices(Index n);
+  void buildTopology(Index nx, Index ny, Index nz);
+  void buildCellVertices(Index nx, Index ny, Index nz);
   void computeFaceGeometry(const std::vector<Vec3>& verts);
   void computeCellGeometry();
 
-  Index n_{}, nCells_{}, nInternal_{}, nBoundary_{};
+  Index n_{}, nx_{}, ny_{}, nz_{}, nCells_{}, nInternal_{}, nBoundary_{};
   std::vector<BoundaryPatch> patches_;
 
   View2<Index> fVerts_, bVerts_;          // (nFaces, 4)
   View1<Index> owner_, neigh_, bCell_;
+  View1<int> bSide_;
   VectorField  faceArea_, faceCentre_, bArea_, bCentre_;
   VectorField  cellCentre_;
   ScalarField  cellVolume_;

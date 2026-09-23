@@ -58,6 +58,7 @@ v1 gates (`python tests/mms/run_gates.py v1`):
 | `c++: Navier-Stokes` | **PASS** — 1.986 orthogonal and 1.895 distorted at 8/16/32 |
 | `cross-check: convection` | Python and C++ agree to 4.6e-13 over six cases |
 | `cross-check: Navier-Stokes` | agree to 2.0e-5 at six outer iterations, 1.5e-6 at forty |
+| `benchmark: Ghia cavity` | **PASS** — rms 0.0016 (Re=100) and 0.0123 (Re=1000) at 64x64 |
 
 The skewed-mesh failure is left failing on purpose. was mostly a broken
 measurement, and finding that out took building the thing that was supposed to

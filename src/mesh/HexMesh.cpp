@@ -7,54 +7,59 @@
 #include <cmath>
 
 namespace nsflow {
-HexMesh::HexMesh(Index n, const std::vector<Vec3>& verts) : n_(n) {
-  const Index nv = n + 1;
-  if (static_cast<Index>(verts.size()) != nv * nv * nv)
-    throw std::runtime_error("HexMesh: vertex count does not match n");
+HexMesh::HexMesh(Index n, const std::vector<Vec3>& verts)
+    : HexMesh(n, n, n, verts) {}
+
+HexMesh::HexMesh(Index nx, Index ny, Index nz, const std::vector<Vec3>& verts)
+    : n_(nx), nx_(nx), ny_(ny), nz_(nz) {
+  if (static_cast<Index>(verts.size()) != (nx + 1) * (ny + 1) * (nz + 1))
+    throw std::runtime_error("HexMesh: vertex count does not match nx,ny,nz");
   points_ = verts;
-  buildTopology(n);
-  buildCellVertices(n);
+  buildTopology(nx, ny, nz);
+  buildCellVertices(nx, ny, nz);
   computeFaceGeometry(verts);
   computeCellGeometry();
 }
 
-void HexMesh::buildTopology(Index n) {
-  const Index nv = n + 1;
-  auto vid = [nv](Index i, Index j, Index k) { return (i * nv + j) * nv + k; };
-  auto cid = [n](Index i, Index j, Index k) { return (i * n + j) * n + k; };
+void HexMesh::buildTopology(Index nx, Index ny, Index nz) {
+  const Index vy = ny + 1, vz = nz + 1;
+  auto vid = [vy, vz](Index i, Index j, Index k) { return (i * vy + j) * vz + k; };
+  auto cid = [ny, nz](Index i, Index j, Index k) { return (i * ny + j) * nz + k; };
 
-  nCells_ = n * n * n;
+  nCells_ = nx * ny * nz;
   std::vector<Index> own, nei, bc;
+  std::vector<int> side;
   std::vector<std::array<Index, 4>> fv, bv;
 
-  // Face vertex order is chosen so the area vector points along the positive
-  // axis; boundary faces on the low side are reversed to point outward.
-  auto emit = [&](bool interior, Index lo, Index hi, bool lowSide,
+  // Face vertex order points the area vector along the positive axis;
+  // low-side boundary faces are reversed so theirs points outward.
+  auto emit = [&](bool interior, Index lo, Index hi, bool lowSide, int sideId,
                   const std::array<Index, 4>& vs) {
     if (interior) { own.push_back(lo); nei.push_back(hi); fv.push_back(vs); }
-    else if (lowSide) { bc.push_back(hi); bv.push_back({vs[3], vs[2], vs[1], vs[0]}); }
-    else { bc.push_back(lo); bv.push_back(vs); }
+    else if (lowSide) {
+      bc.push_back(hi); bv.push_back({vs[3], vs[2], vs[1], vs[0]}); side.push_back(sideId);
+    } else { bc.push_back(lo); bv.push_back(vs); side.push_back(sideId); }
   };
 
-  for (Index i = 0; i <= n; ++i)
-    for (Index j = 0; j < n; ++j)
-      for (Index k = 0; k < n; ++k)
-        emit(i > 0 && i < n, i > 0 ? cid(i - 1, j, k) : 0,
-             i < n ? cid(i, j, k) : 0, i == 0,
+  for (Index i = 0; i <= nx; ++i)
+    for (Index j = 0; j < ny; ++j)
+      for (Index k = 0; k < nz; ++k)
+        emit(i > 0 && i < nx, i > 0 ? cid(i - 1, j, k) : 0,
+             i < nx ? cid(i, j, k) : 0, i == 0, i == 0 ? 0 : 1,
              {vid(i, j, k), vid(i, j + 1, k), vid(i, j + 1, k + 1), vid(i, j, k + 1)});
 
-  for (Index j = 0; j <= n; ++j)
-    for (Index i = 0; i < n; ++i)
-      for (Index k = 0; k < n; ++k)
-        emit(j > 0 && j < n, j > 0 ? cid(i, j - 1, k) : 0,
-             j < n ? cid(i, j, k) : 0, j == 0,
+  for (Index j = 0; j <= ny; ++j)
+    for (Index i = 0; i < nx; ++i)
+      for (Index k = 0; k < nz; ++k)
+        emit(j > 0 && j < ny, j > 0 ? cid(i, j - 1, k) : 0,
+             j < ny ? cid(i, j, k) : 0, j == 0, j == 0 ? 2 : 3,
              {vid(i, j, k), vid(i, j, k + 1), vid(i + 1, j, k + 1), vid(i + 1, j, k)});
 
-  for (Index k = 0; k <= n; ++k)
-    for (Index i = 0; i < n; ++i)
-      for (Index j = 0; j < n; ++j)
-        emit(k > 0 && k < n, k > 0 ? cid(i, j, k - 1) : 0,
-             k < n ? cid(i, j, k) : 0, k == 0,
+  for (Index k = 0; k <= nz; ++k)
+    for (Index i = 0; i < nx; ++i)
+      for (Index j = 0; j < ny; ++j)
+        emit(k > 0 && k < nz, k > 0 ? cid(i, j, k - 1) : 0,
+             k < nz ? cid(i, j, k) : 0, k == 0, k == 0 ? 4 : 5,
              {vid(i, j, k), vid(i + 1, j, k), vid(i + 1, j + 1, k), vid(i, j + 1, k)});
 
   nInternal_ = static_cast<Index>(own.size());
@@ -64,12 +69,14 @@ void HexMesh::buildTopology(Index n) {
   owner_ = View1<Index>("owner", nInternal_);
   neigh_ = View1<Index>("neigh", nInternal_);
   bCell_ = View1<Index>("bCell", nBoundary_);
+  bSide_ = View1<int>("bSide", nBoundary_);
   fVerts_ = View2<Index>("fVerts", nInternal_, 4);
   bVerts_ = View2<Index>("bVerts", nBoundary_, 4);
 
   auto h_own = Kokkos::create_mirror_view(owner_);
   auto h_nei = Kokkos::create_mirror_view(neigh_);
   auto h_bc  = Kokkos::create_mirror_view(bCell_);
+  auto h_sd  = Kokkos::create_mirror_view(bSide_);
   auto h_fv  = Kokkos::create_mirror_view(fVerts_);
   auto h_bv  = Kokkos::create_mirror_view(bVerts_);
 
@@ -78,23 +85,23 @@ void HexMesh::buildTopology(Index n) {
     for (int t = 0; t < 4; ++t) h_fv(f, t) = fv[f][t];
   }
   for (Index f = 0; f < nBoundary_; ++f) {
-    h_bc(f) = bc[f];
+    h_bc(f) = bc[f]; h_sd(f) = side[f];
     for (int t = 0; t < 4; ++t) h_bv(f, t) = bv[f][t];
   }
   Kokkos::deep_copy(owner_, h_own);  Kokkos::deep_copy(neigh_, h_nei);
-  Kokkos::deep_copy(bCell_, h_bc);
+  Kokkos::deep_copy(bCell_, h_bc);   Kokkos::deep_copy(bSide_, h_sd);
   Kokkos::deep_copy(fVerts_, h_fv);  Kokkos::deep_copy(bVerts_, h_bv);
 }
 
-void HexMesh::buildCellVertices(Index n) {
+void HexMesh::buildCellVertices(Index nx, Index ny, Index nz) {
   // VTK_HEXAHEDRON vertex order: bottom face counter-clockwise, then top.
-  const Index nv = n + 1;
-  auto vid = [nv](Index i, Index j, Index k) { return (i * nv + j) * nv + k; };
-  hexes_.resize(static_cast<std::size_t>(n) * n * n);
-  for (Index i = 0; i < n; ++i)
-    for (Index j = 0; j < n; ++j)
-      for (Index k = 0; k < n; ++k)
-        hexes_[(i * n + j) * n + k] = {
+  const Index vy = ny + 1, vz = nz + 1;
+  auto vid = [vy, vz](Index i, Index j, Index k) { return (i * vy + j) * vz + k; };
+  hexes_.resize(static_cast<std::size_t>(nx) * ny * nz);
+  for (Index i = 0; i < nx; ++i)
+    for (Index j = 0; j < ny; ++j)
+      for (Index k = 0; k < nz; ++k)
+        hexes_[(i * ny + j) * nz + k] = {
             vid(i,     j,     k    ), vid(i + 1, j,     k    ),
             vid(i + 1, j + 1, k    ), vid(i,     j + 1, k    ),
             vid(i,     j,     k + 1), vid(i + 1, j,     k + 1),
@@ -159,6 +166,18 @@ HexMesh HexMesh::generate(Index n, Real skew, const std::string& mode) {
                              "' is not generated in C++; use fromVertexFile");
   }
   return HexMesh(n, v);
+}
+
+HexMesh HexMesh::box(Index nx, Index ny, Index nz, Real Lx, Real Ly, Real Lz) {
+  std::vector<Vec3> v(static_cast<std::size_t>(nx + 1) * (ny + 1) * (nz + 1));
+  for (Index i = 0; i <= nx; ++i)
+    for (Index j = 0; j <= ny; ++j)
+      for (Index k = 0; k <= nz; ++k)
+        v[(i * (ny + 1) + j) * (nz + 1) + k] = {
+            Lx * static_cast<Real>(i) / nx,
+            Ly * static_cast<Real>(j) / ny,
+            Lz * static_cast<Real>(k) / nz};
+  return HexMesh(nx, ny, nz, v);
 }
 
 HexMesh HexMesh::fromVertexFile(Index n, const std::string& path) {

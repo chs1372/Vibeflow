@@ -97,8 +97,10 @@ GATES = {
         ("cross-check: python and c++ Navier-Stokes agree",
          lambda: run([PY, str(Path(__file__).parent / "crosscheck_ns.py")]),
          BUILD / "ethier_steinman"),
+        ("benchmark: lid-driven cavity against Ghia et al. (1982)",
+         lambda: run([str(BUILD / "cavity"), "64"]), BUILD / "cavity"),
     ],
-    # v1 remaining: cavity_ghia, cylinder_strouhal
+    # v1 remaining: cylinder_strouhal
     # v2: flat_plate_cf, backward_step, rayleigh_benard
     # v3: sod_shock_tube, naca0012_transonic
     # v4: dam_break, rising_bubble

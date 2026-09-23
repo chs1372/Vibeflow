@@ -30,6 +30,14 @@ namespace nsflow {
 class Mesh;
 class LinearSolver;
 
+// Velocity boundary condition per face.
+//   Dirichlet    - the face value is prescribed (walls, inlets, a moving lid)
+//   ZeroGradient - the face value follows the cell (slip planes, outlets)
+// A zero-gradient face contributes NOTHING to the diffusive matrix or source:
+// treating it as Dirichlet with the cell's own value would leave the diagonal
+// term in place and quietly over-damp the near-boundary cells.
+enum class VelocityBC : int { Dirichlet = 0, ZeroGradient = 1 };
+
 struct PisoControls {
   int correctors = 2;        // PISO pressure correctors
   int nonOrthCorrectors = 40;  // iterated to convergence, not a fixed count
@@ -48,6 +56,9 @@ class PisoSolver {
  public:
   PisoSolver(const Mesh& mesh, Real nu, Real dt, PisoControls controls = {},
              Comm comm = Comm());
+
+  // bcType is one VelocityBC per boundary face; empty means all Dirichlet.
+  void setBoundaryTypes(const View1<int>& bcType) { bcType_ = bcType; }
 
   StepReport advance(const VectorField& uBoundary, const ScalarField& fBoundary,
                      const VectorField& source, LinearSolver& momentumSolver,
@@ -87,6 +98,7 @@ class PisoSolver {
   ScalarField p_, F_, FOld_, Fb_;
   VectorField bSrc_;           // pressure-free momentum right-hand sides
   ScalarField diag_, upper_, lower_;
+  View1<int> bcType_;
   mutable int lastNonOrth_{0};
 };
 
