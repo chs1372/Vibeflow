@@ -581,3 +581,63 @@ the next thing to change, and it is a memory limit rather than a correctness
 one. Communication cost has not been tuned either: on 512 cells the exchanges
 and allreduces dominate, which is expected at that size and says nothing about
 scaling. Neither is measured yet, and neither should be claimed.
+
+## ADR-022 — Cylinder wake at Re = 100, and the time-step limit it exposed
+**Passed.** St = 0.1688, mean Cd = 1.4177, lift amplitude = 0.3636 over 13
+shedding cycles, against Williamson's correlation St = 0.1643 — 2.7% high.
+
+This is the first unsteady benchmark and the first on a body-fitted mesh from
+an external generator, and it tests three things nothing before it could: time
+accuracy against an external number (the cavity is steady, so it says nothing
+about BDF2 beyond reaching the right fixed point), the open-domain path under
+a real flow, and a mesh with 27 degrees of non-orthogonality and cells
+spanning three orders of magnitude in volume.
+
+| quantity | measured | accepted band | literature |
+| --- | --- | --- | --- |
+| Strouhal number | 0.1688 | 0.150 – 0.178 | 0.164 (Williamson) |
+| mean drag | 1.4177 | 1.25 – 1.45 | 1.32 – 1.36 |
+| lift amplitude | 0.3636 | 0.25 – 0.42 | 0.30 – 0.35 |
+
+Drag and lift amplitude both sit at the top of their bands. That is what a
+coarse near-wall mesh does — 6,763 cells with the first cell at D/17, where
+the Re = 100 boundary layer is about D/10 thick — and it should improve with
+refinement rather than be argued away. The bands are wide on purpose: published
+values for this case move by several percent with domain size and blockage.
+
+### The time-step limit
+
+The finer mesh built for this case — 21,811 cells, and *better* quality at
+22.9 degrees against 26.6 — diverged within three steps at the same time step
+that the coarse mesh ran happily for 4,000. That looked like a mesh-quality
+failure and was not. The finest cell went from 0.06 to 0.03, which at U = 1
+and dt = 0.1 takes the convective Courant number from 1.7 to 3.3; at dt = 0.05
+the fine mesh is stable and smooth.
+
+The cause is that the scheme is not as implicit as it looks. The convection
+matrix is first-order upwind and the second-order accuracy comes from a
+*deferred correction* carried on the right-hand side — which is explicit, and
+brings a Courant limit with it that the implicit diffusion and BDF2 time terms
+do not. The limit is set by the smallest cell, so refining a mesh at fixed dt
+is exactly how you meet it.
+
+So the solver now reports the convective Courant number,
+`max_cells 0.5 dt sum|F_f| / V`, every step, and the benchmark warns above 3.
+A number that is only wrong sometimes needs to be visible always; diagnosing
+this from "it diverged" cost more than printing it would have.
+
+Making the deferred correction implicit, or sub-iterating it, is the real fix
+and belongs with the v2 work — it is the same explicit-correction structure as
+the non-orthogonal loop.
+
+### Cost
+
+7,895 s for 4,000 steps at 6,763 cells on two cores — 2.0 s/step, of which the
+pressure stage is 95%: 384,214 pressure solves against 36,000 momentum solves,
+because each of the 3 outer iterations runs 2 correctors and each corrector
+iterates the non-orthogonal loop 16 times. The boundary-pressure extrapolation
+is the next item at 1,231 s, since it runs three least-squares gradient passes
+every time the pressure gradient is taken, which is once per sweep.
+
+Neither is addressed here. Both are recorded so the next person to ask "why is
+this slow" starts from a measurement.

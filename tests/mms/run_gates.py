@@ -106,8 +106,14 @@ GATES = {
          lambda: run([str(BUILD / "open_domain"), "12"]), BUILD / "open_domain"),
         ("benchmark: lid-driven cavity against Ghia et al. (1982)",
          lambda: run([str(BUILD / "cavity"), "64"]), BUILD / "cavity"),
+        # ~2.3 hours: an unsteady case needs a long run before it has any
+        # shedding cycles to measure. Kept in the suite rather than trimmed to
+        # fit, because a shortened version would measure the transient.
+        ("benchmark: cylinder wake vortex shedding at Re = 100",
+         lambda: run([str(BUILD / "cylinder"),
+                      str(ROOT / "cases/cylinder/debug.hex"), "0.05", "200"]),
+         BUILD / "cylinder"),
     ],
-    # v1 remaining: cylinder_strouhal
     # v2: flat_plate_cf, backward_step, rayleigh_benard
     # v3: sod_shock_tube, naca0012_transonic
     # v4: dam_break, rising_bubble

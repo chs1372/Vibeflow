@@ -563,6 +563,27 @@ void PisoSolver::solvePressure(LinearSolver& solver) {
   Kokkos::fence();
 }
 
+Real PisoSolver::courant() const {
+  ScalarField s("sumF", m_.nTotal());
+  auto own = m_.owner(); auto nei = m_.neighbour(); auto bc = m_.boundaryCell();
+  auto F = F_; auto Fb = Fb_; auto vol = m_.cellVolume();
+  Kokkos::parallel_for("coInt", Kokkos::RangePolicy<ExecSpace>(0, m_.nInternalFaces()),
+    KOKKOS_LAMBDA(const Index f) {
+      Kokkos::atomic_add(&s(own(f)), Kokkos::abs(F(f)));
+      Kokkos::atomic_add(&s(nei(f)), Kokkos::abs(F(f)));
+    });
+  Kokkos::parallel_for("coBnd", Kokkos::RangePolicy<ExecSpace>(0, m_.nBoundaryFaces()),
+    KOKKOS_LAMBDA(const Index f) { Kokkos::atomic_add(&s(bc(f)), Kokkos::abs(Fb(f))); });
+  Kokkos::fence();
+  const Real dt = dt_;
+  Real co = 0.0;
+  Kokkos::parallel_reduce("coMax", Kokkos::RangePolicy<ExecSpace>(0, m_.nCells()),
+    KOKKOS_LAMBDA(const Index c, Real& a) {
+      a = Kokkos::max(a, 0.5 * dt * s(c) / vol(c));
+    }, Kokkos::Max<Real>(co));
+  return comm_.max(co);
+}
+
 Real PisoSolver::continuityError(const ScalarField& F, const ScalarField& Fb) const {
   ScalarField div("div", m_.nTotal());
   auto own = m_.owner(); auto nei = m_.neighbour(); auto bc = m_.boundaryCell();
@@ -726,6 +747,7 @@ StepReport PisoSolver::advance(const VectorField& uB, const ScalarField& fB,
   ++step_;
   rep.nonOrthSweeps = lastNonOrth_;
   rep.continuityError = continuityError(F_, Fb_);
+  rep.courant = courant();
   return rep;
 }
 

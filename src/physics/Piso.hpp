@@ -74,6 +74,14 @@ struct PisoTimings {
 
 struct StepReport {
   Real continuityError{};
+  // Convective Courant number, max over cells: 0.5 dt sum|F_f| / V. The
+  // deferred correction that carries the scheme's second order in convection
+  // is EXPLICIT, so the solver has a time-step limit despite being implicit
+  // elsewhere, and the limit tightens with the smallest cell rather than the
+  // average one. Refining a mesh at fixed dt is how you find this: the
+  // cylinder wake ran happily at Courant 1.7 and diverged inside three steps
+  // at 3.3 on a finer mesh of better quality.
+  Real courant{};
   int outerUsed{};
   int nonOrthSweeps{};
 };
@@ -115,6 +123,7 @@ class PisoSolver {
   void setState(const VectorField& u, const ScalarField& p, const ScalarField& F);
 
   Real continuityError(const ScalarField& F, const ScalarField& Fb) const;
+  Real courant() const;
 
   const PisoTimings& timings() const { return t_; }
   void resetTimings() { t_ = PisoTimings{}; }

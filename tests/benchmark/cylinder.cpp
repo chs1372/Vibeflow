@@ -242,7 +242,10 @@ int main(int argc, char** argv) {
     const auto tWall0 = std::chrono::steady_clock::now();
     const Real qA = 0.5 * U_IN * U_IN * D * span;     // dynamic pressure x area
     const int nSteps = static_cast<int>(tEnd / dt);
-    Real maxCont = 0.0;
+    const int reportLines =
+        std::atoi(std::getenv("CYL_REPORT") ? std::getenv("CYL_REPORT") : "25");
+    Real maxCont = 0.0, maxCo = 0.0;
+    bool coWarned = false;
     for (int k = 0; k < nSteps; ++k) {
       const auto rep = solver.advance(ub, fb, src, momentum, *pressure);
       const Real t = (k + 1) * dt;
@@ -251,10 +254,18 @@ int main(int argc, char** argv) {
       cdh.push_back(F.x / qA);
       clh.push_back(F.y / qA);
       if (t > tStats) maxCont = std::max(maxCont, rep.continuityError);
-      if (k % std::max(1, nSteps / 25) == 0)
-        std::printf("    t %7.2f  Cd %8.4f  Cl %8.4f  div %.1e  outer %d  nonOrth %d\n",
-                    t, cdh.back(), clh.back(), rep.continuityError, rep.outerUsed,
-                    rep.nonOrthSweeps);
+      maxCo = std::max(maxCo, rep.courant);
+      if (rep.courant > 3.0 && !coWarned) {
+        coWarned = true;
+        std::printf("    WARNING: Courant %.1f. The convection scheme's "
+                    "deferred correction is explicit; above about 2 this case "
+                    "diverges within a few steps.\n", rep.courant);
+      }
+      if (k % std::max(1, nSteps / reportLines) == 0)
+        std::printf("    t %7.2f  Cd %8.4f  Cl %8.4f  div %.1e  Co %5.2f  "
+                    "outer %d  nonOrth %d\n",
+                    t, cdh.back(), clh.back(), rep.continuityError, rep.courant,
+                    rep.outerUsed, rep.nonOrthSweeps);
     }
 
     {
@@ -305,8 +316,8 @@ int main(int argc, char** argv) {
       {"mean drag Cd", cdMean, 1.25, 1.45},
       {"lift amplitude", clAmp, 0.25, 0.42},
     };
-    std::printf("\n  %d shedding cycles measured after t = %.0f, max div %.1e\n",
-                cycles, tStats, maxCont);
+    std::printf("\n  %d shedding cycles measured after t = %.0f, max div %.1e, "
+                "max Courant %.2f\n", cycles, tStats, maxCont, maxCo);
     std::printf("  %-18s %10s %18s\n", "quantity", "value", "accepted band");
     bool ok = cycles >= 3;
     if (cycles < 3) std::printf("  fewer than 3 shedding cycles: not a measurement\n");
