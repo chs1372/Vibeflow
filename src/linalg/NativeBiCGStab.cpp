@@ -51,7 +51,8 @@ SolveReport NativeBiCGStab::solve(LinearSystem& sys, ScalarField& x,
   SolveReport rep;
   Real rn = std::sqrt(dot(r, r, nc, comm_));
   rep.initialResidual = rn;
-  if (rn < absTol) { rep.converged = true; rep.finalResidual = rn; return rep; }
+  if (rn < absTol) { rep.converged = true; rep.finalResidual = rn; if (const auto* hx = m_.halo()) hx->exchange(x);
+    record(rep); return rep; }
   const Real r0norm = rn;
   Real rho = dot(r0, r, nc, comm_);
 
@@ -98,6 +99,9 @@ SolveReport NativeBiCGStab::solve(LinearSystem& sys, ScalarField& x,
     if (rn < absTol || rn < relTol * r0norm) { rep.converged = true; break; }
   }
   rep.finalResidual = rn;
+  // The last x update happened after the last matrix-vector product, so the
+  // halo is one step stale. See the contract on LinearSolver::solve.
+  if (const auto* hx = m_.halo()) hx->exchange(x);
   rep.wallSeconds = std::chrono::duration<Real>(
       std::chrono::steady_clock::now() - t0).count();
   record(rep);

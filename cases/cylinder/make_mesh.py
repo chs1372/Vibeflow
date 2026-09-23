@@ -38,8 +38,10 @@ DZ = 0.5 * D                   # one cell thick; slip on both z faces
 X_IN = _env("CYL_XIN", -10.0) * D
 X_OUT = _env("CYL_XOUT", 25.0) * D
 Y_HALF = _env("CYL_YHALF", 10.0) * D
-SIZE_MIN = _env("CYL_SIZEMIN", 0.02) * D
-SIZE_MAX = _env("CYL_SIZEMAX", 1.2) * D
+SIZE_MIN = _env("CYL_SIZEMIN", 0.03) * D
+SIZE_MAX = _env("CYL_SIZEMAX", 0.6) * D
+DIST_MAX = _env("CYL_DISTMAX", 20.0) * D
+SMOOTHING = int(_env("CYL_SMOOTH", 30))
 
 
 def build(out_path, show_stats=True):
@@ -74,7 +76,7 @@ def build(out_path, show_stats=True):
     gmsh.model.mesh.field.setNumber(2, "SizeMin", SIZE_MIN)
     gmsh.model.mesh.field.setNumber(2, "SizeMax", SIZE_MAX)
     gmsh.model.mesh.field.setNumber(2, "DistMin", 0.5 * D)
-    gmsh.model.mesh.field.setNumber(2, "DistMax", 12.0 * D)
+    gmsh.model.mesh.field.setNumber(2, "DistMax", DIST_MAX)
     gmsh.model.mesh.field.setAsBackgroundMesh(2)
     gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
     gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
@@ -86,9 +88,23 @@ def build(out_path, show_stats=True):
     # leaves nothing to guess about node ordering.
     gmsh.option.setNumber("Mesh.Algorithm", 8)              # frontal-delaunay quads
     gmsh.option.setNumber("Mesh.RecombineAll", 1)
-    gmsh.option.setNumber("Mesh.RecombinationAlgorithm", 3)
-    gmsh.option.setNumber("Mesh.SubdivisionAlgorithm", 1)   # force all-quad
+    gmsh.option.setNumber("Mesh.RecombinationAlgorithm", 3)  # blossom full-quad
+    # NO SubdivisionAlgorithm. Forcing all-quad by subdivision splits every
+    # element -- a triangle into three quads, a quad into four -- and the
+    # pieces inherit the parent's worst angles. Blossom full-quad recombination
+    # already produces an all-quad mesh (the triangle count is asserted below),
+    # so the subdivision was buying nothing and costing everything: with it the
+    # mesh measured 43.4 degrees non-orthogonality and 0.50 skewness and the
+    # solver's deferred non-orthogonal correction diverged inside three steps.
+    # Without it, and with a gentler size gradient, the same cell count
+    # measures 22.9 degrees and 0.31.
+    gmsh.option.setNumber("Mesh.Smoothing", SMOOTHING)
     gmsh.model.mesh.generate(2)
+    if SMOOTHING:
+        # Laplacian smoothing of the quad mesh. More is not better: 100
+        # iterations fights the size field and the measure goes back up to
+        # 26.5 degrees.
+        gmsh.model.mesh.optimize("Laplace2D", niter=SMOOTHING)
 
     nodeTags, coords, _ = gmsh.model.mesh.getNodes()
     order = np.argsort(nodeTags)
@@ -138,6 +154,8 @@ def build(out_path, show_stats=True):
                            f"{r.min():.5f} < R = {R}")
     if show_stats:
         print(f"wrote {out_path}")
+        print(f"  size {SIZE_MIN:.3f}..{SIZE_MAX:.2f}  distMax {DIST_MAX:.0f}  "
+              f"smoothing {SMOOTHING}")
         print(f"  points {len(pts)}   hexes {len(hexes)}")
         wall = r < R + 1e-9
         print(f"  min radius {r.min():.6f} (cylinder R = {R}); "

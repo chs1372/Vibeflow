@@ -517,3 +517,67 @@ answer by luck.
 
 All pass at 1e-14 to 1e-16 on both mesh families. On the cylinder the
 continuity residual went from 5.2e-01 to 5e-13 and the run stopped diverging.
+
+## ADR-021 — MPI for the PISO solver, and the gate that makes it checkable
+**Decided.** Every cell field the solver reads at a ghost index is exchanged
+explicitly, the linear solvers guarantee a valid halo on return, and a
+rank-count-independence gate covers the full Navier-Stokes path, not just
+diffusion.
+
+v0 made the diffusion operator parallel and gated it. v1 added six more fields
+that get read at ghost cells — the velocity, the momentum diagonal `aP`, `H/aP`,
+the pressure, and the two gradient sets built from them — and shipped without
+extending either. An order study run on four ranks would have reported a clean
+second order around the wrong solution.
+
+What was missing:
+
+* **`aP` was a partial sum at ghosts.** Each rank accumulates only the faces it
+  stores, so a ghost's diagonal is incomplete. `Df` interpolates `aP` to the
+  face and Rhie-Chow reads it from both sides, so the partial value biases
+  every rank-boundary flux.
+* **`H/aP` likewise**, for the same reason and with the same consequence.
+* **`u` and `p`** before any assembly that reads them at `nei(f)`.
+* **The native Krylov solvers left the halo one update stale.** They exchange
+  inside the matrix-vector product, and the final `x += alpha*p` happens after
+  the last product. Callers read `x` at ghosts immediately afterwards — a
+  gradient, a face flux — so `LinearSolver::solve` now carries an explicit
+  contract that `x` has a valid halo on return, and the two native solvers
+  exchange once more before returning. PETSc already did.
+
+The velocity correction now runs over owned cells and exchanges, rather than
+computing ghost values from ghost inputs. Both give the same answer when every
+input is current, and only one of them keeps saying so when an input stops
+being current.
+
+### The gate
+
+`tests/mms/mms_parallel_ns.cpp`: Ethier-Steinman on a *distorted* mesh — the
+non-orthogonal and skewness corrections are the terms that read gradients at
+ghosts, and on a Cartesian mesh they are identically zero, so a Cartesian gate
+would prove nothing. The comparison is against the serial run to ten digits,
+not against the exact solution, because the exact solution has discretisation
+error thousands of times larger than the defect being hunted.
+
+The sweep count is **fixed**, not converged, and the outer tolerance is zero.
+With a tolerance the two runs take different numbers of sweeps whenever the
+residual lands either side of it, and a difference in the answer could then be
+blamed on that. Fixed, both runs perform literally the same sequence of
+operations.
+
+Measured: serial L2 = 1.36666184891033e-02; 2, 3 and 4 ranks agree to
+0, 2.7e-15 and 3.8e-16 relative.
+
+**The gate was verified to fail.** It was written after the fix rather than
+before it, so it had to earn its place: commenting out the single `aP`
+exchange gives L2 = 1.36048e-02, a 0.45% shift. That is the exact failure
+profile the gate exists for — far too small for any accuracy study to notice,
+and immediately visible as a disagreement between rank counts.
+
+### Not done
+
+The v0 partitioner still reads the whole mesh on every rank (ADR-006). That is
+the next thing to change, and it is a memory limit rather than a correctness
+one. Communication cost has not been tuned either: on 512 cells the exchanges
+and allreduces dominate, which is expected at that size and says nothing about
+scaling. Neither is measured yet, and neither should be claimed.

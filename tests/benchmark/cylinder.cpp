@@ -201,8 +201,13 @@ int main(int argc, char** argv) {
     solver.setBoundaryTypes(uType);
     solver.setPressureBoundary(pType, pval);
 
-    // Start from the free stream with a small asymmetric kick, so shedding
-    // begins from a physical instability rather than from round-off.
+    // Start from the free stream with an asymmetric kick, so shedding begins
+    // from a physical instability rather than from round-off. The size of the
+    // kick only sets how long the transient lasts: at Re = 100 the shedding
+    // limit cycle is a global attractor, so the measured Strouhal number,
+    // drag and lift amplitude do not depend on it -- and the statistics
+    // window starts at 0.6 t_end, well after saturation, with a minimum cycle
+    // count enforced besides.
     VectorField u0("u0", nt, 3);
     auto cc = Kokkos::create_mirror_view_and_copy(HostSpace::memory_space(),
                                                   mesh.cellCentre());
@@ -211,7 +216,7 @@ int main(int argc, char** argv) {
       const Real x = cc(c, 0), y = cc(c, 1);
       const Real r = std::hypot(x, y);
       hu(c, 0) = (r > R * 1.001) ? U_IN : 0.0;
-      hu(c, 1) = (r > R && r < 3.0 * R && x > 0.0) ? 0.05 * U_IN : 0.0;
+      hu(c, 1) = (r > R && r < 3.0 * R && x > 0.0) ? 0.20 * U_IN : 0.0;
       hu(c, 2) = 0.0;
     }
     Kokkos::deep_copy(u0, hu);
@@ -263,6 +268,14 @@ int main(int argc, char** argv) {
       std::printf("    pressure  %7.0f s  %8d solves  %10d iters\n",
                   pressure->totalSeconds(), pressure->solveCount(),
                   pressure->totalIterations());
+      const auto& t = solver.timings();
+      std::printf("    phases (s): assemble %.0f  gradient %.0f (%d calls)  "
+                  "boundaryP %.0f (%d calls)\n"
+                  "                HbyA %.0f  RhieChow %.0f  pressureStage %.0f"
+                  "  advance total %.0f\n",
+                  t.assemble, t.gradient, t.gradCalls, t.boundaryP,
+                  t.boundaryPCalls, t.hbya, t.rhieChow, t.pressureAssembly,
+                  t.total);
     }
 
     std::size_t skip = 0;

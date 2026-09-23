@@ -27,19 +27,21 @@ def run(cmd, cwd=ROOT):
     return subprocess.run(cmd, cwd=cwd, env=ENV).returncode == 0
 
 
-def parallel_sweep(ranks=(2, 3, 4)):
+def parallel_sweep(ranks=(2, 3, 4), binary_name="mms_parallel", args=()):
     """The answer must not depend on the rank count.
 
     Catches a wrong halo exchange, which still converges to a plausible-looking
-    but different solution -- no other gate sees it.
+    but different solution -- no other gate sees it. Removing a single exchange
+    from the momentum diagonal shifts the answer by 0.45%: large enough to be
+    wrong, small enough that an order study would still report second order.
     """
-    binary = BUILD / "mms_parallel"
+    binary = BUILD / binary_name
     if not binary.exists():
         print("  mms_parallel not built"); return None
     if shutil.which("mpirun") is None:
         print("  mpirun not available"); return None
 
-    r = subprocess.run([str(binary), str(FIX)], cwd=ROOT, env=ENV,
+    r = subprocess.run([str(binary), *args], cwd=ROOT, env=ENV,
                        capture_output=True, text=True)
     m = re.search(r"L2 ([\d.eE+-]+)", r.stdout)
     if r.returncode != 0 or not m:
@@ -50,7 +52,7 @@ def parallel_sweep(ranks=(2, 3, 4)):
     for np in ranks:
         cp = subprocess.run(
             ["mpirun", "--oversubscribe", "--allow-run-as-root", "-n", str(np),
-             str(binary), str(FIX), ref],
+             str(binary), *args, ref],
             cwd=ROOT, env={**ENV, "OMP_NUM_THREADS": "1"},
             capture_output=True, text=True)
         print((cp.stdout or cp.stderr).rstrip())
@@ -74,7 +76,7 @@ GATES = {
         ("vtu: ParaView output round-trips through meshio",
          lambda: run([PY, str(ROOT / "tests" / "unit" / "check_vtu.py")]), BUILD / "test_vtu"),
         ("mpi: the answer is independent of the rank count",
-         parallel_sweep, BUILD / "mms_parallel"),
+         lambda: parallel_sweep(args=(str(FIX),)), BUILD / "mms_parallel"),
         ("backends: every linear solver gives the same solution",
          lambda: run([str(BUILD / "test_backends"), str(FIX)]), BUILD / "test_backends"),
     ],
@@ -97,6 +99,9 @@ GATES = {
         ("cross-check: python and c++ Navier-Stokes agree",
          lambda: run([PY, str(Path(__file__).parent / "crosscheck_ns.py")]),
          BUILD / "ethier_steinman"),
+        ("mpi: Navier-Stokes is independent of the rank count",
+         lambda: parallel_sweep(binary_name="mms_parallel_ns"),
+         BUILD / "mms_parallel_ns"),
         ("open domain: inlet/outlet conserves mass exactly",
          lambda: run([str(BUILD / "open_domain"), "12"]), BUILD / "open_domain"),
         ("benchmark: lid-driven cavity against Ghia et al. (1982)",

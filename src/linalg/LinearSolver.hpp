@@ -27,6 +27,13 @@ class LinearSolver {
                             Real relTol, Real absTol, int maxIter) = 0;
   virtual std::string backendName() const = 0;
 
+  // CONTRACT: on return, x has a valid halo. Callers read x at ghost cells
+  // immediately -- a gradient, a face flux, a Rhie-Chow interpolation -- and
+  // a stale ghost there produces a plausible wrong answer rather than a
+  // crash. The iterative solvers exchange inside the matrix-vector product,
+  // which leaves the halo one update behind at exit, so each must exchange
+  // once more before returning.
+
   // Called when the coefficients change. A backend that builds something
   // expensive from the matrix -- a factorisation, an AMG hierarchy -- rebuilds
   // it only after this. The non-orthogonal pressure corrector solves the SAME

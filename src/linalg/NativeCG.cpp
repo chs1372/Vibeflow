@@ -79,7 +79,8 @@ SolveReport NativeCG::solve(LinearSystem& sys, ScalarField& x,
   const Real r0 = std::sqrt(dot(r, r, nc, comm_));
   SolveReport rep;
   rep.initialResidual = r0;
-  if (r0 < absTol) { rep.converged = true; rep.finalResidual = r0; return rep; }
+  if (r0 < absTol) { rep.converged = true; rep.finalResidual = r0; if (const auto* hx = m_.halo()) hx->exchange(x);
+    record(rep); return rep; }
 
   Real rz_old = 0.0, rn = r0;
   for (int it = 1; it <= maxIter; ++it) {
@@ -109,6 +110,9 @@ SolveReport NativeCG::solve(LinearSystem& sys, ScalarField& x,
     if (rn < absTol || rn < relTol * r0) { rep.converged = true; break; }
   }
   rep.finalResidual = rn;
+  // The last x update happened after the last matrix-vector product, so the
+  // halo is one step stale. See the contract on LinearSolver::solve.
+  if (const auto* hx = m_.halo()) hx->exchange(x);
   rep.wallSeconds = std::chrono::duration<Real>(
       std::chrono::steady_clock::now() - t0).count();
   record(rep);

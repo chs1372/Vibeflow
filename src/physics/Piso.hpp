@@ -63,6 +63,15 @@ struct PisoControls {
   bool consistentRhieChow = true;
 };
 
+// Coarse phase timings. ADR-016 was written because a sweep count was
+// mistaken for a profile; the same mistake was available again here, where
+// the two linear solvers together account for barely half the wall time.
+struct PisoTimings {
+  Real assemble{}, gradient{}, boundaryP{}, hbya{}, rhieChow{},
+       pressureAssembly{}, momentumSolve{}, pressureSolve{}, total{};
+  int  gradCalls{}, boundaryPCalls{};
+};
+
 struct StepReport {
   Real continuityError{};
   int outerUsed{};
@@ -107,6 +116,9 @@ class PisoSolver {
 
   Real continuityError(const ScalarField& F, const ScalarField& Fb) const;
 
+  const PisoTimings& timings() const { return t_; }
+  void resetTimings() { t_ = PisoTimings{}; }
+
  private:
   void bdf(Real& aP, Real& a1, Real& a2) const;
   void assembleMomentum(const VectorField& uB, const VectorField& src);
@@ -114,6 +126,13 @@ class PisoSolver {
   void rhieChow();
   void solvePressure(LinearSolver& solver);
   ScalarField pressureBoundary(const ScalarField& p) const;
+  // Ghost cells of a cell field, refreshed from the rank that owns them.
+  // No-ops in serial. Every field read at nei(f) or at a ghost index must
+  // pass through one of these first; the list of such fields is short and is
+  // enumerated at each call site below, because a missing exchange does not
+  // crash -- it converges to a different answer.
+  void sync(const ScalarField& f) const;
+  void sync(const VectorField& f) const;
   void gradP(const ScalarField& p, VectorField& g) const;
 
   const Mesh& m_;
@@ -142,6 +161,7 @@ class PisoSolver {
   ScalarField pValue_, FbStar_;
   bool openDomain_{false};
   mutable int lastNonOrth_{0};
+  mutable PisoTimings t_;
 };
 
 }  // namespace nsflow

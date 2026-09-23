@@ -1,4 +1,5 @@
 #include "physics/Piso.hpp"
+#include <chrono>
 #include "linalg/LinearSolver.hpp"
 #include "linalg/LinearSystem.hpp"
 #include "mesh/Mesh.hpp"
@@ -6,6 +7,17 @@
 #include <cmath>
 
 namespace nsflow {
+namespace {
+struct Stopwatch {
+  std::chrono::steady_clock::time_point t0{std::chrono::steady_clock::now()};
+  Real* acc;
+  explicit Stopwatch(Real* a) : acc(a) {}
+  ~Stopwatch() {
+    *acc += std::chrono::duration<Real>(std::chrono::steady_clock::now() - t0).count();
+  }
+};
+}  // namespace
+
 
 PisoSolver::PisoSolver(const Mesh& mesh, Real nu, Real dt, PisoControls ctl, Comm comm)
     : m_(mesh), nu_(nu), dt_(dt), ctl_(ctl), comm_(comm),
@@ -62,6 +74,13 @@ void PisoSolver::setPressureBoundary(const View1<int>& pType,
   openDomain_ = comm_.sum(open) > 0;
 }
 
+void PisoSolver::sync(const ScalarField& f) const {
+  if (const auto* hx = m_.halo()) hx->exchange(f);
+}
+void PisoSolver::sync(const VectorField& f) const {
+  if (const auto* hx = m_.halo()) hx->exchange(f);
+}
+
 void PisoSolver::setState(const VectorField& u, const ScalarField& p,
                           const ScalarField& F) {
   Kokkos::deep_copy(u_, u); Kokkos::deep_copy(uOld_, u); Kokkos::deep_copy(uOld2_, u);
@@ -79,6 +98,8 @@ void PisoSolver::setState(const VectorField& u, const ScalarField& p,
   //
   // Requires setPressureBoundary to have been called first, which is the
   // natural order anyway; without it there is no outlet to seed.
+  sync(u_); sync(uOld_); sync(uOld2_); sync(p_);
+
   if (!openDomain_) return;
   const Index nb = m_.nBoundaryFaces();
   auto bc = m_.boundaryCell(); auto bar = m_.boundaryArea();
@@ -115,6 +136,8 @@ ScalarField PisoSolver::pressureBoundary(const ScalarField& p) const {
   // the gradient operator and the force integral read an extrapolated value
   // that need not equal it. With a constant pressure field the two agree by
   // accident, which is why a uniform-flow check cannot see this.
+  Stopwatch _sw(&t_.boundaryP);
+  ++t_.boundaryPCalls;
   const Index nb = m_.nBoundaryFaces();
   ScalarField v("pb", nb);
   auto bc = m_.boundaryCell(); auto bcen = m_.boundaryCentre(); auto cc = m_.cellCentre();
@@ -142,10 +165,14 @@ ScalarField PisoSolver::pressureBoundary(const ScalarField& p) const {
 }
 
 void PisoSolver::gradP(const ScalarField& p, VectorField& g) const {
-  grad_(p, pressureBoundary(p), g);
+  const ScalarField pb = pressureBoundary(p);
+  Stopwatch _sw(&t_.gradient);
+  ++t_.gradCalls;
+  grad_(p, pb, g);
 }
 
 void PisoSolver::assembleMomentum(const VectorField& uB, const VectorField& src) {
+  Stopwatch _sw(&t_.assemble);
   const Index nc = m_.nCells(), nt = m_.nTotal();
   const Index nf = m_.nInternalFaces(), nb = m_.nBoundaryFaces();
   auto own = m_.owner(); auto nei = m_.neighbour(); auto bc = m_.boundaryCell();
@@ -190,6 +217,10 @@ void PisoSolver::assembleMomentum(const VectorField& uB, const VectorField& src)
     });
   Kokkos::fence();
   Kokkos::deep_copy(aP_, diag);
+  // A ghost's diagonal only accumulated the faces THIS rank stores, so it is
+  // a partial sum. Df_ interpolates aP to the face and Rhie-Chow reads it on
+  // both sides, so the partial value would bias every rank-boundary flux.
+  sync(aP_);
 
   // Gradients of each velocity component, for the skewness and non-orthogonal
   // corrections.
@@ -270,6 +301,7 @@ void PisoSolver::assembleMomentum(const VectorField& uB, const VectorField& src)
 }
 
 void PisoSolver::computeHbyA() {
+  Stopwatch _sw(&t_.hbya);
   // H = b - (A - diag) u, recomputed from the CURRENT u. Recomputing this is
   // the entire point of a second PISO corrector.
   const Index nt = m_.nTotal(), nf = m_.nInternalFaces();
@@ -295,6 +327,9 @@ void PisoSolver::computeHbyA() {
       for (int d = 0; d < 3; ++d) H(c, d) /= aP(c);
     });
   Kokkos::fence();
+  // Hface only summed this rank's faces into a ghost, so ghost H is a partial
+  // sum. rhieChow interpolates H/aP to every face, including rank boundaries.
+  sync(HbyA_);
 
   // H/aP is interpolated to the face in rhieChow, and that face value SETS
   // the mass flux. Plain linear interpolation is first order once the face
@@ -316,6 +351,7 @@ void PisoSolver::computeHbyA() {
 }
 
 void PisoSolver::rhieChow() {
+  Stopwatch _sw(&t_.rhieChow);
   const Index nf = m_.nInternalFaces();
   auto own = m_.owner(); auto nei = m_.neighbour();
   auto fa = m_.faceArea(); auto vol = m_.cellVolume();
@@ -374,6 +410,7 @@ void PisoSolver::rhieChow() {
 }
 
 void PisoSolver::solvePressure(LinearSolver& solver) {
+  Stopwatch _sw(&t_.pressureAssembly);
   const Index nc = m_.nCells(), nt = m_.nTotal(), nf = m_.nInternalFaces();
   const Index nb = m_.nBoundaryFaces();
   auto own = m_.owner(); auto nei = m_.neighbour(); auto bc = m_.boundaryCell();
@@ -619,7 +656,11 @@ StepReport PisoSolver::advance(const VectorField& uB, const ScalarField& fB,
   Kokkos::deep_copy(FOld_, F_);
 
   Kokkos::deep_copy(uBnd_, uB);
+  // Everything downstream reads u at ghost cells: the convection matrix, the
+  // deferred correction, the velocity gradients.
+  sync(u_); sync(p_);
 
+  Stopwatch _sw(&t_.total);
   StepReport rep;
   VectorField uPrev("uPrev", nt, 3);
 
@@ -657,11 +698,15 @@ StepReport PisoSolver::advance(const VectorField& uB, const ScalarField& fB,
       solvePressure(pressureSolver);
       gradP(p_, gp_);
       auto u = u_; auto H = HbyA_; auto g = gp_; auto aP = aP_;
-      Kokkos::parallel_for("uCorrect", Kokkos::RangePolicy<ExecSpace>(0, nt),
+      Kokkos::parallel_for("uCorrect", Kokkos::RangePolicy<ExecSpace>(0, nc),
         KOKKOS_LAMBDA(const Index c) {
           for (int d = 0; d < 3; ++d) u(c, d) = H(c, d) - g(c, d) * vol(c) / aP(c);
         });
       Kokkos::fence();
+      // Correct owned cells and exchange, rather than computing ghosts from
+      // ghost inputs. Both give the same answer when every input is current,
+      // and only one of them keeps saying so when an input stops being.
+      sync(u_);
     }
 
     rep.outerUsed = outer + 1;

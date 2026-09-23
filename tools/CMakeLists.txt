@@ -6,3 +6,6 @@ endif()
 
 add_executable(dump_mesh_vertices dump_mesh_vertices.cpp)
 target_link_libraries(dump_mesh_vertices PRIVATE nsflow_mesh)
+
+add_executable(mesh_quality mesh_quality.cpp)
+target_link_libraries(mesh_quality PRIVATE nsflow_mesh)
