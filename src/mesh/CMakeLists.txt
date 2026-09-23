@@ -1,5 +1,5 @@
 find_package(PkgConfig QUIET)
-add_library(nsflow_mesh Geometry.cpp HexMesh.cpp DistributedMesh.cpp)
+add_library(nsflow_mesh Geometry.cpp HexMesh.cpp DistributedMesh.cpp PolyMesh.cpp)
 target_link_libraries(nsflow_mesh PUBLIC nsflow_core)
 
 # CGNS is optional: without it the solver still runs on generated meshes, it

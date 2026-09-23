@@ -38,9 +38,26 @@ class LinearSolver;
 // term in place and quietly over-damp the near-boundary cells.
 enum class VelocityBC : int { Dirichlet = 0, ZeroGradient = 1 };
 
+// Pressure boundary condition per face.
+//   FixedFlux  - the mass flux through the face is prescribed, so the pressure
+//                takes whatever normal gradient satisfies it. Walls, inlets,
+//                slip planes. This is the only kind a closed domain has, and
+//                it leaves the pressure operator singular.
+//   FixedValue - the pressure is prescribed and the flux is part of the
+//                solution. An outlet. One such face makes the operator
+//                non-singular, which is why the null-space projection is
+//                switched off when any is present.
+enum class PressureBC : int { FixedFlux = 0, FixedValue = 1 };
+
 struct PisoControls {
   int correctors = 2;        // PISO pressure correctors
   int nonOrthCorrectors = 40;  // iterated to convergence, not a fixed count
+  // Convergence threshold for that loop, relative to the largest face flux.
+  // Each sweep is a full pressure solve, so this is the single biggest cost
+  // knob in the solver, and the default is deliberately far tighter than the
+  // discretisation error: a case may loosen it, but only against a measured
+  // comparison with this value.
+  Real nonOrthTol = 1e-12;
   int outer = 1;             // PIMPLE outer iterations
   Real outerTol = 1e-10;
   bool consistentRhieChow = true;
@@ -59,6 +76,25 @@ class PisoSolver {
 
   // bcType is one VelocityBC per boundary face; empty means all Dirichlet.
   void setBoundaryTypes(const View1<int>& bcType) { bcType_ = bcType; }
+
+  // pType is one PressureBC per boundary face, pValue the prescribed pressure
+  // on the FixedValue ones. Calling this switches the solver from the closed
+  // -domain path to the open one.
+  void setPressureBoundary(const View1<int>& pType, const ScalarField& pValue);
+
+  // Boundary mass fluxes as the solver last computed them. On FixedFlux faces
+  // these are what the caller supplied; on FixedValue faces they are solved
+  // for, which is the whole point of an outlet.
+  ScalarField boundaryFlux() const { return Fb_; }
+
+  // Extrapolated boundary pressure, as the solver itself uses it.
+  ScalarField boundaryPressure() const { return pressureBoundary(p_); }
+
+  // Net force the fluid exerts on the faces where mask is non-zero, computed
+  // from the SAME discrete operators the momentum equation uses. Recomputing
+  // the wall stress with an independent formula would measure a different
+  // equation than the one being solved.
+  Vec3 boundaryForce(const View1<int>& mask) const;
 
   StepReport advance(const VectorField& uBoundary, const ScalarField& fBoundary,
                      const VectorField& source, LinearSolver& momentumSolver,
@@ -99,6 +135,12 @@ class PisoSolver {
   VectorField bSrc_;           // pressure-free momentum right-hand sides
   ScalarField diag_, upper_, lower_;
   View1<int> bcType_;
+  VectorField uBnd_;           // last prescribed boundary velocity, so the
+                               // force integral can rebuild the same gradient
+                               // field the momentum equation used
+  View1<int> pType_;
+  ScalarField pValue_, FbStar_;
+  bool openDomain_{false};
   mutable int lastNonOrth_{0};
 };
 

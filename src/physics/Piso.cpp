@@ -25,7 +25,11 @@ PisoSolver::PisoSolver(const Mesh& mesh, Real nu, Real dt, PisoControls ctl, Com
       bSrc_("bSrc", mesh.nTotal(), 3),
       diag_("diag", mesh.nTotal()),
       upper_("upper", mesh.nInternalFaces()), lower_("lower", mesh.nInternalFaces()),
-      bcType_("bcType", mesh.nBoundaryFaces()) {
+      bcType_("bcType", mesh.nBoundaryFaces()),
+      pType_("pType", mesh.nBoundaryFaces()),
+      pValue_("pValue", mesh.nBoundaryFaces()),
+      FbStar_("FbStar", mesh.nBoundaryFaces()),
+      uBnd_("uBnd", mesh.nBoundaryFaces(), 3) {
   auto own = mesh.owner(); auto nei = mesh.neighbour();
   auto cc = mesh.cellCentre(); auto fc = mesh.faceCentre();
   auto w = w_; auto sk = skew_;
@@ -44,11 +48,49 @@ PisoSolver::PisoSolver(const Mesh& mesh, Real nu, Real dt, PisoControls ctl, Com
   Kokkos::fence();
 }
 
+void PisoSolver::setPressureBoundary(const View1<int>& pType,
+                                     const ScalarField& pValue) {
+  Kokkos::deep_copy(pType_, pType);
+  Kokkos::deep_copy(pValue_, pValue);
+  Index open = 0;
+  auto pt = pType_;
+  Kokkos::parallel_reduce("openCount",
+    Kokkos::RangePolicy<ExecSpace>(0, m_.nBoundaryFaces()),
+    KOKKOS_LAMBDA(const Index f, Index& a) {
+      a += (pt(f) == static_cast<int>(PressureBC::FixedValue)) ? 1 : 0;
+    }, open);
+  openDomain_ = comm_.sum(open) > 0;
+}
+
 void PisoSolver::setState(const VectorField& u, const ScalarField& p,
                           const ScalarField& F) {
   Kokkos::deep_copy(u_, u); Kokkos::deep_copy(uOld_, u); Kokkos::deep_copy(uOld2_, u);
   Kokkos::deep_copy(p_, p);
   Kokkos::deep_copy(F_, F); Kokkos::deep_copy(FOld_, F);
+
+  // On a FixedValue face the mass flux is a STATE VARIABLE -- the caller does
+  // not prescribe it, the pressure equation solves for it -- so an initial
+  // state that leaves it at zero is inconsistent with the velocity field the
+  // caller just supplied. The momentum matrix is assembled before the first
+  // pressure solve, so that first assembly sees a cell whose fluxes do not
+  // sum to zero and picks up a spurious source worth the entire outlet mass
+  // flow. Seed it the way a zero-gradient outlet is defined: the cell value
+  // carried to the face.
+  //
+  // Requires setPressureBoundary to have been called first, which is the
+  // natural order anyway; without it there is no outlet to seed.
+  if (!openDomain_) return;
+  const Index nb = m_.nBoundaryFaces();
+  auto bc = m_.boundaryCell(); auto bar = m_.boundaryArea();
+  auto pt = pType_; auto fb = Fb_; auto uu = u_;
+  Kokkos::parallel_for("fbSeed", Kokkos::RangePolicy<ExecSpace>(0, nb),
+    KOKKOS_LAMBDA(const Index f) {
+      if (pt(f) != static_cast<int>(PressureBC::FixedValue)) return;
+      Real s = 0.0;
+      for (int i = 0; i < 3; ++i) s += uu(bc(f), i) * bar(f, i);
+      fb(f) = s;
+    });
+  Kokkos::fence();
 }
 
 void PisoSolver::bdf(Real& aP, Real& a1, Real& a2) const {
@@ -65,17 +107,31 @@ ScalarField PisoSolver::pressureBoundary(const ScalarField& p) const {
   // quadratic fit is more accurate inside its stencil and less accurate
   // outside it, and using it here dropped the measured velocity order from
   // 1.44 to 1.29.
+  //
+  // Extrapolation is for FixedFlux faces only. Where the pressure is
+  // PRESCRIBED the answer is already known, and extrapolating there makes the
+  // solver impose two different outlet conditions at once: the pressure
+  // equation drives the flux towards p_out through its boundary term while
+  // the gradient operator and the force integral read an extrapolated value
+  // that need not equal it. With a constant pressure field the two agree by
+  // accident, which is why a uniform-flow check cannot see this.
   const Index nb = m_.nBoundaryFaces();
   ScalarField v("pb", nb);
   auto bc = m_.boundaryCell(); auto bcen = m_.boundaryCentre(); auto cc = m_.cellCentre();
+  auto pt = pType_; auto pvals = pValue_;
+  const bool open = openDomain_;
   Kokkos::parallel_for("pb0", Kokkos::RangePolicy<ExecSpace>(0, nb),
-    KOKKOS_LAMBDA(const Index f) { v(f) = p(bc(f)); });
+    KOKKOS_LAMBDA(const Index f) {
+      v(f) = (open && pt(f) == static_cast<int>(PressureBC::FixedValue))
+                 ? pvals(f) : p(bc(f));
+    });
   Kokkos::fence();
   VectorField g("gpb", m_.nTotal(), 3);
   for (int it = 0; it < 3; ++it) {
     grad_(p, v, g);
     Kokkos::parallel_for("pbIt", Kokkos::RangePolicy<ExecSpace>(0, nb),
       KOKKOS_LAMBDA(const Index f) {
+        if (open && pt(f) == static_cast<int>(PressureBC::FixedValue)) return;
         Real acc = 0.0;
         for (int i = 0; i < 3; ++i) acc += g(bc(f), i) * (bcen(f, i) - cc(bc(f), i));
         v(f) = p(bc(f)) + acc;
@@ -116,10 +172,21 @@ void PisoSolver::assembleMomentum(const VectorField& uB, const VectorField& src)
       lo(f) = -nu * a(f) - Fp;
     });
   auto bt = bcType_;
+  auto FbA = Fb_;
   Kokkos::parallel_for("mbnd", Kokkos::RangePolicy<ExecSpace>(0, nb),
     KOKKOS_LAMBDA(const Index f) {
-      if (bt(f) == static_cast<int>(VelocityBC::Dirichlet))
+      if (bt(f) == static_cast<int>(VelocityBC::Dirichlet)) {
         Kokkos::atomic_add(&diag(bc(f)), nu * ab(f));
+      } else {
+        // Zero gradient: the face value IS the cell value, so the convective
+        // flux through it is implicit. Leaving it on the right-hand side makes
+        // outflow an explicit source that feeds itself -- the cylinder case
+        // reached a continuity residual of 1.7 and a lift amplitude of 15
+        // within a hundred steps. Backflow (Fb < 0) would give a negative
+        // diagonal contribution, so only the outflow part goes implicit and
+        // any inflow is handled explicitly against the cell value.
+        Kokkos::atomic_add(&diag(bc(f)), Kokkos::max(FbA(f), 0.0));
+      }
     });
   Kokkos::fence();
   Kokkos::deep_copy(aP_, diag);
@@ -133,7 +200,16 @@ void PisoSolver::assembleMomentum(const VectorField& uB, const VectorField& src)
     Kokkos::parallel_for("ex", Kokkos::RangePolicy<ExecSpace>(0, nt),
       KOKKOS_LAMBDA(const Index c) { comp(c) = u(c, d); });
     Kokkos::parallel_for("exb", Kokkos::RangePolicy<ExecSpace>(0, nb),
-      KOKKOS_LAMBDA(const Index f) { compB(f) = uB(f, d); });
+      KOKKOS_LAMBDA(const Index f) {
+        // A zero-gradient face's value is the CELL's, not the caller's uB,
+        // which is meaningless there and is usually left at zero. Feeding
+        // that zero to the gradient operator invents a velocity gradient of
+        // order u/h along every slip plane and outlet. It is invisible on a
+        // Cartesian mesh, where the corrections this gradient feeds are
+        // identically zero, and it is not invisible on a distorted one.
+        compB(f) = (bt(f) == static_cast<int>(VelocityBC::ZeroGradient))
+                       ? u(bc(f), d) : uB(f, d);
+      });
     Kokkos::fence();
     grad_(comp, compB, *gs[d]);
   }
@@ -183,9 +259,10 @@ void PisoSolver::assembleMomentum(const VectorField& uB, const VectorField& src)
           Kokkos::atomic_add(&b(bc(f), d),
                              nu * (ab(f) * uB(f, d) + nonorth) - Fb(f) * uB(f, d));
         } else {
-          // Zero gradient: no diffusive flux through the face. The convective
-          // flux uses the cell value, which is zero when Fb is zero.
-          Kokkos::atomic_add(&b(bc(f), d), -Fb(f) * u(bc(f), d));
+          // No diffusive flux. The outflow part of the convective flux is in
+          // the matrix; only backflow is left here.
+          const Real back = Kokkos::min(Fb(f), 0.0);
+          Kokkos::atomic_add(&b(bc(f), d), -back * u(bc(f), d));
         }
       }
     });
@@ -278,6 +355,22 @@ void PisoSolver::rhieChow() {
       Fstar(f) = flux;
     });
   Kokkos::fence();
+
+  // Predicted flux through an outlet: H/aP extrapolated to the face. The
+  // pressure solve then corrects it, exactly as it corrects an internal face.
+  if (openDomain_) {
+    auto bc = m_.boundaryCell(); auto bar = m_.boundaryArea();
+    auto fbs = FbStar_; auto pt = pType_; auto fb = Fb_;
+    auto Hb = HbyA_;
+    Kokkos::parallel_for("rcBnd", Kokkos::RangePolicy<ExecSpace>(0, m_.nBoundaryFaces()),
+      KOKKOS_LAMBDA(const Index f) {
+        if (pt(f) != static_cast<int>(PressureBC::FixedValue)) { fbs(f) = fb(f); return; }
+        Real s = 0.0;
+        for (int i = 0; i < 3; ++i) s += Hb(bc(f), i) * bar(f, i);
+        fbs(f) = s;
+      });
+    Kokkos::fence();
+  }
 }
 
 void PisoSolver::solvePressure(LinearSolver& solver) {
@@ -287,6 +380,11 @@ void PisoSolver::solvePressure(LinearSolver& solver) {
   auto ap = pdiff_.aInt(); auto kInt = pdiff_.kInt();
   auto w = w_; auto Df = Df_; auto Fstar = Fstar_; auto Fb = Fb_; auto F = F_;
   auto p = p_;
+  // FbStar_ is only populated on the open path; a closed domain has no
+  // solved boundary flux and Fb_ is the whole story.
+  auto Fbs = openDomain_ ? FbStar_ : Fb_;
+  auto pvals = pValue_;
+  const bool open = openDomain_;
 
   LinearSystem sys(m_);
   sys.zero();
@@ -298,6 +396,16 @@ void PisoSolver::solvePressure(LinearSolver& solver) {
       Kokkos::atomic_add(&diag(nei(f)), a);
       up(f) = -a; lo(f) = -a;
     });
+  auto apb = pdiff_.aBnd(); auto pt = pType_; auto aPv = aP_;
+  auto volAll = m_.cellVolume();
+  if (openDomain_) {
+    Kokkos::parallel_for("pmatBnd", Kokkos::RangePolicy<ExecSpace>(0, nb),
+      KOKKOS_LAMBDA(const Index f) {
+        if (pt(f) != static_cast<int>(PressureBC::FixedValue)) return;
+        const Real Dfb = volAll(bc(f)) / aPv(bc(f));
+        Kokkos::atomic_add(&diag(bc(f)), apb(f) * Dfb);
+      });
+  }
   Kokkos::fence();
   // The coefficients are now fixed for every sweep below, so tell the backend
   // once. A backend that builds an AMG hierarchy would otherwise rebuild it
@@ -318,32 +426,60 @@ void PisoSolver::solvePressure(LinearSolver& solver) {
         Kokkos::atomic_add(&src(own(f)), -q);
         Kokkos::atomic_add(&src(nei(f)), q);
       });
+    // The right-hand side must contain the flux that the correction step
+    // will actually correct. On a FixedValue face that is FbStar, not Fb:
+    // Fb still holds last step's solved outlet flux, while the correction
+    // updates FbStar. Subtracting one and adding the other leaves every
+    // outlet cell with a divergence of exactly FbStar -- the whole outlet
+    // mass flow, constant from the first step, which is what this looked
+    // like in the cylinder wake. On a FixedFlux face the two arrays are
+    // equal by construction (see rcBnd), so FbStar is right everywhere.
+    //
+    // The prescribed pressure enters here too. The matrix carries the
+    // diagonal apb*Dfb; without the matching apb*Dfb*p_out on the source the
+    // solver quietly imposes p_out = 0 whatever the caller asked for, and a
+    // case that prescribes zero cannot tell the difference.
     Kokkos::parallel_for("pdivBnd", Kokkos::RangePolicy<ExecSpace>(0, nb),
-      KOKKOS_LAMBDA(const Index f) { Kokkos::atomic_add(&src(bc(f)), -Fb(f)); });
+      KOKKOS_LAMBDA(const Index f) {
+        Kokkos::atomic_add(&src(bc(f)), -Fbs(f));
+        // pType_ is an empty view on a closed domain, so it must not be
+        // indexed there.
+        if (open && pt(f) == static_cast<int>(PressureBC::FixedValue)) {
+          const Real Dfb = volAll(bc(f)) / aPv(bc(f));
+          Kokkos::atomic_add(&src(bc(f)), apb(f) * Dfb * pvals(f));
+        }
+      });
     // With Dirichlet velocity everywhere the pressure operator is pure
     // Neumann and singular, its null space the constants. CG stalls on a
     // right-hand side that has a component along that null space, so project
     // it out first. Pinning a cell instead would break the symmetry CG needs.
+    // One FixedValue face removes the null space, and projecting then would
+    // shift the answer away from the prescribed level.
     Real rmean = 0.0;
+    if (!openDomain_) {
     Kokkos::parallel_reduce("rmean", Kokkos::RangePolicy<ExecSpace>(0, nc),
       KOKKOS_LAMBDA(const Index c, Real& a) { a += src(c); }, rmean);
     rmean = comm_.sum(rmean) / static_cast<Real>(comm_.sum(nc));
     Kokkos::parallel_for("rproj", Kokkos::RangePolicy<ExecSpace>(0, nc),
       KOKKOS_LAMBDA(const Index c) { src(c) -= rmean; });
     Kokkos::fence();
+    }
 
     // A p = -div(F*): solving A p = +div doubles the divergence.
     solver.solve(sys, p, 1e-14, 1e-20, 5000);
 
     // Remove the constant null-space component instead of pinning a cell:
-    // pinning makes the matrix non-symmetric and breaks CG.
-    Real mean = 0.0;
-    Kokkos::parallel_reduce("pmean", Kokkos::RangePolicy<ExecSpace>(0, nc),
-      KOKKOS_LAMBDA(const Index c, Real& a) { a += p(c); }, mean);
-    mean = comm_.sum(mean) / static_cast<Real>(comm_.sum(nc));
-    Kokkos::parallel_for("pshift", Kokkos::RangePolicy<ExecSpace>(0, nt),
-      KOKKOS_LAMBDA(const Index c) { p(c) -= mean; });
-    Kokkos::fence();
+    // pinning makes the matrix non-symmetric and breaks CG. With an outlet the
+    // level is set by the boundary and must not be shifted.
+    if (!openDomain_) {
+      Real mean = 0.0;
+      Kokkos::parallel_reduce("pmean", Kokkos::RangePolicy<ExecSpace>(0, nc),
+        KOKKOS_LAMBDA(const Index c, Real& a) { a += p(c); }, mean);
+      mean = comm_.sum(mean) / static_cast<Real>(comm_.sum(nc));
+      Kokkos::parallel_for("pshift", Kokkos::RangePolicy<ExecSpace>(0, nt),
+        KOKKOS_LAMBDA(const Index c) { p(c) -= mean; });
+      Kokkos::fence();
+    }
 
     gradP(p, g);
     Real delta = 0.0, scale = 1e-300;
@@ -370,7 +506,7 @@ void PisoSolver::solvePressure(LinearSolver& solver) {
     // The threshold has to sit above the linear solver's own noise floor.
     // At 1e-14 the loop chased residual noise, used all 40 sweeps, and still
     // reported 8.9e-9 continuity error.
-    if (comm_.max(delta) < 1e-12 * scale) break;
+    if (comm_.max(delta) < ctl_.nonOrthTol * scale) break;
   }
   lastNonOrth_ = sweeps;
 
@@ -378,6 +514,15 @@ void PisoSolver::solvePressure(LinearSolver& solver) {
     KOKKOS_LAMBDA(const Index f) {
       F(f) = Fstar(f) - ap(f) * Df(f) * (p(nei(f)) - p(own(f))) - nonorth(f);
     });
+  if (openDomain_) {
+    auto fbs = FbStar_; auto pv = pValue_; auto fbOut = Fb_;
+    Kokkos::parallel_for("fluxCorrectBnd", Kokkos::RangePolicy<ExecSpace>(0, nb),
+      KOKKOS_LAMBDA(const Index f) {
+        if (pt(f) != static_cast<int>(PressureBC::FixedValue)) return;
+        const Real Dfb = volAll(bc(f)) / aPv(bc(f));
+        fbOut(f) = fbs(f) - apb(f) * Dfb * (pv(f) - p(bc(f)));
+      });
+  }
   Kokkos::fence();
 }
 
@@ -399,16 +544,81 @@ Real PisoSolver::continuityError(const ScalarField& F, const ScalarField& Fb) co
   return comm_.max(m);
 }
 
+Vec3 PisoSolver::boundaryForce(const View1<int>& mask) const {
+  const Index nb = m_.nBoundaryFaces(), nt = m_.nTotal();
+  auto bc = m_.boundaryCell(); auto bar = m_.boundaryArea();
+  auto ab = diff_.aBnd(); auto kb = diff_.kBnd();
+  auto u = u_;
+  const ScalarField pb = pressureBoundary(p_);
+  const Real nu = nu_;
+
+  // Velocity gradients for the non-orthogonal part of the wall stress.
+  VectorField g0("g0", nt, 3), g1("g1", nt, 3), g2("g2", nt, 3);
+  VectorField* gs[3] = {&g0, &g1, &g2};
+  for (int d = 0; d < 3; ++d) {
+    ScalarField comp("comp", nt), compB("compB", nb);
+    Kokkos::parallel_for("fex", Kokkos::RangePolicy<ExecSpace>(0, nt),
+      KOKKOS_LAMBDA(const Index c) { comp(c) = u(c, d); });
+    // The same boundary values the momentum equation used. Hard-coding a
+    // no-slip wall here was right for the cavity, where every boundary is
+    // one, and wrong for any case with an inlet, an outlet or a slip plane:
+    // it reconstructs a different velocity field from the one being solved,
+    // and the force it reports is the force in that other field.
+    auto bt = bcType_; auto ubv = uBnd_; auto bcl = m_.boundaryCell();
+    Kokkos::parallel_for("fexb", Kokkos::RangePolicy<ExecSpace>(0, nb),
+      KOKKOS_LAMBDA(const Index f) {
+        compB(f) = (bt(f) == static_cast<int>(VelocityBC::ZeroGradient))
+                       ? u(bcl(f), d) : ubv(f, d);
+      });
+    Kokkos::fence();
+    grad_(comp, compB, *gs[d]);
+  }
+  auto G0 = g0, G1 = g1, G2 = g2;
+
+  Real fx = 0.0, fy = 0.0, fz = 0.0;
+  auto accumulate = [&](int d, const VectorField& G) {
+    Real acc = 0.0;
+    Kokkos::parallel_reduce("force", Kokkos::RangePolicy<ExecSpace>(0, nb),
+      KOKKOS_LAMBDA(const Index f, Real& a) {
+        if (!mask(f)) return;
+        // Pressure acts along the outward normal; the viscous term is the
+        // diffusive flux the momentum equation applies through this face,
+        // with the sign flipped to give the force ON the body.
+        Real visc = ab(f) * (0.0 - u(bc(f), d));
+        for (int i = 0; i < 3; ++i) visc += kb(f, i) * G(bc(f), i);
+        a += pb(f) * bar(f, d) - nu * visc;
+      }, acc);
+    return acc;
+  };
+  fx = accumulate(0, G0); fy = accumulate(1, G1); fz = accumulate(2, G2);
+  return {comm_.sum(fx), comm_.sum(fy), comm_.sum(fz)};
+}
+
 StepReport PisoSolver::advance(const VectorField& uB, const ScalarField& fB,
                                const VectorField& src, LinearSolver& momentumSolver,
                                LinearSolver& pressureSolver) {
   const Index nc = m_.nCells(), nt = m_.nTotal();
   auto vol = m_.cellVolume();
-  Kokkos::deep_copy(Fb_, fB);
+  if (openDomain_) {
+    // Take the caller's flux only where it is prescribed. On a FixedValue
+    // face the flux is part of the solution, and copying the input over it
+    // resets the outlet to zero at the start of every step -- the inflow then
+    // has nowhere to go and the continuity residual sits at O(0.1).
+    auto fbIn = fB; auto fbOut = Fb_; auto pt = pType_;
+    Kokkos::parallel_for("fbIn", Kokkos::RangePolicy<ExecSpace>(0, m_.nBoundaryFaces()),
+      KOKKOS_LAMBDA(const Index f) {
+        if (pt(f) != static_cast<int>(PressureBC::FixedValue)) fbOut(f) = fbIn(f);
+      });
+    Kokkos::fence();
+  } else {
+    Kokkos::deep_copy(Fb_, fB);
+  }
   // Time levels shift ONCE per step, not once per outer iteration.
   Kokkos::deep_copy(uOld2_, uOld_);
   Kokkos::deep_copy(uOld_, u_);
   Kokkos::deep_copy(FOld_, F_);
+
+  Kokkos::deep_copy(uBnd_, uB);
 
   StepReport rep;
   VectorField uPrev("uPrev", nt, 3);

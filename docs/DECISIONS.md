@@ -345,3 +345,175 @@ of the seven wrong answers this project has produced so far were in the
 measurement, not the code.
 
 *Re = 1000 is opt-in* (`--full`): it is 88% of the runtime.
+
+## ADR-019 — When to add AMR
+**Assessed, not scheduled. Recommendation: after v2, before v4, and only once
+three things below are true.**
+
+Adaptive mesh refinement is attractive for every case this solver is aimed at
+— the cylinder wake wants cells where the vortices are, a compressible run
+wants them at the shock, a VOF run wants them at the interface. It is also the
+single change that breaks the most of what is already built, so the question
+is not whether but when, and what has to be in place first.
+
+### What AMR breaks here
+
+| Piece | What changes |
+| --- | --- |
+| `Mesh` interface | Cell and face counts stop being constant. Every field allocation, every `View` sized at construction, and the `nCells`/`nGhost`/`nTotal` contract become time-dependent. |
+| Hanging nodes | A refined face meets a coarse one. The face-based operators assume one owner and one neighbour per face; a 2:1 interface has one coarse face against four fine ones. Every flux assembly needs a second path. |
+| `LinearSystem` | Face-based storage (diag + upper + lower) assumes a fixed sparsity pattern. Refinement changes it, so the matrix and any preconditioner are rebuilt from scratch, which ADR-017 already shows is the expensive part. |
+| Conservation on adapt | Interpolating fields onto a new mesh must conserve mass, momentum and the face flux field simultaneously. A flux field that is divergence-free before adaptation is not afterwards unless the projection is done deliberately. |
+| `DistributedMesh` | Refinement unbalances the partition, so AMR and load rebalancing arrive together, not separately. |
+| Every gate | Order studies assume a fixed refinement family. An adaptive run has no single `h`, so the existing spatial gates cannot express what correctness means for it. |
+
+### What has to exist first
+
+1. **A parallel partitioner that can be re-run cheaply** (ADR-006 replacement).
+   The current one reads the whole mesh on every rank; rebalancing on top of
+   that is meaningless.
+2. **A conservative field-transfer step with its own gate** — refine and
+   coarsen a uniform flow and require the mass, momentum and discrete
+   divergence to be unchanged to machine precision. That gate is cheap to
+   write and would catch most of what goes wrong.
+3. **A second-order treatment of hanging-node faces, verified on its own.**
+   The natural test is the existing MMS diffusion gate run on a mesh with one
+   refinement level in the middle: if it does not stay second order there, no
+   amount of adaption logic will help.
+
+### Why not sooner
+
+* Before v2 the solver has no case whose cost AMR would actually relieve. The
+  cylinder at 42k cells and the cavity at 4k both run on a laptop; adding AMR
+  now optimises nothing and complicates everything.
+* v2 (turbulence, heat transfer) adds transported scalars. Every one of them
+  needs the same refine/coarsen transfer, so building the transfer once after
+  the scalar set is settled is cheaper than rebuilding it per variable.
+* v4 (VOF) is the case that genuinely needs it — an interface is a
+  measure-zero feature and uniform refinement is hopeless. Arriving at v4
+  without AMR would mean either accepting a badly resolved interface or
+  building AMR under schedule pressure.
+
+### The alternative worth pricing first
+
+Static local refinement — a mesh refined once, by the mesher, where the
+physics is known to be — gets a large part of the benefit for none of the
+architectural cost, because gmsh already produces it and the solver already
+reads it (the cylinder mesh spans three orders of magnitude in cell volume).
+The honest comparison is "AMR versus a better static mesh", and for everything
+through v3 the static mesh probably wins. That comparison should be made with
+numbers on the first case that is actually too slow, not in the abstract.
+
+### If AMR is adopted
+
+Use AMReX rather than writing it. It is the block-structured AMR framework the
+ExaWind stack builds on (ADR-003 already names it as a reference), it is
+Kokkos-compatible, and it carries the rebalancing and the hanging-node
+machinery. The cost is that block-structured AMR wants a Cartesian base grid,
+which conflicts with the unstructured body-fitted meshes this solver reads —
+so adopting AMReX probably means an overset or embedded-boundary approach for
+geometry, which is its own large decision. Writing cell-based unstructured AMR
+instead keeps the geometry path but is a multi-month project on its own.
+
+That fork — block-structured with embedded boundaries, or unstructured
+cell-based — is the real decision, and it should be made deliberately when
+there is a case that forces it, not as a side effect of wanting finer cells in
+a wake.
+
+## ADR-020 — The open-domain path needed a gate of its own
+**Decided.** Inlet/outlet boundaries get their own verification gate, separate
+from the MMS and benchmark gates, and it demands machine precision.
+
+Every gate up to this point ran a closed box: the cavity, both MMS families,
+Ethier-Steinman. A closed box cannot see anything wrong with an outlet, and
+worse, it cannot see anything wrong with the *structure* of the pressure
+equation at a boundary, because when every boundary flux is prescribed the
+term subtracted from the right-hand side and the term added back by the flux
+correction are literally the same array. Open the domain and they become two
+different arrays, and the whole class of defects below becomes reachable.
+
+The first case run on that path — the cylinder wake — reported a continuity
+residual of 5.2e-01 from its first step to its last, never decaying, while
+producing a drag coefficient of 1.51 that sat close enough to the literature
+value to look like a working solver for several hundred steps before it
+diverged to NaN. That is the failure mode these gates exist to prevent: a
+plausible answer from a broken scheme.
+
+Four defects, all invisible to every existing gate:
+
+1. **The pressure right-hand side used the wrong boundary flux.** It
+   subtracted `Fb`, last step's solved outlet flux, while the correction step
+   updated `FbStar`, the predicted one. Working through a boundary cell's
+   balance, the leftover divergence comes out to exactly `Σ FbStar` — the
+   entire outlet mass flow, constant from the first step. That is the 5.2e-01.
+
+2. **The prescribed outlet pressure never reached the source.** The matrix
+   carried the boundary diagonal `apb*Dfb` with no matching `apb*Dfb*p_out` on
+   the right, so the solver silently imposed `p_out = 0` whatever the caller
+   asked. Every case so far prescribed zero, so it gave the right answer for
+   the wrong reason.
+
+3. **The outlet face pressure was extrapolated, not prescribed.** The pressure
+   equation drove the flux towards `p_out` through its boundary term while the
+   gradient operator and the force integral read a value extrapolated from the
+   interior, which need not equal it. Two different outlet conditions applied
+   at once.
+
+4. **The solved boundary flux was not part of the initial state.** On a
+   FixedValue face the flux is a state variable — the caller does not supply
+   it — and `setState` left it at zero. The first momentum assembly therefore
+   saw an outlet cell whose fluxes did not sum to zero and picked up a
+   spurious source worth the whole outlet mass flow. This one is subtle: it
+   perturbs the field, the pressure solve redistributes the perturbation
+   *conservatively*, and the continuity residual stays clean while the
+   velocity is wrong.
+
+Two more were found by reading the code the gate pointed at, and are wrong for
+the same reason — a boundary value being used where the boundary condition
+says something else:
+
+5. `assembleMomentum` fed the caller's `uB` to the velocity gradient on every
+   boundary face, including zero-gradient ones where `uB` is meaningless and
+   is conventionally left at zero. That invents a velocity gradient of order
+   `u/h` along every slip plane and outlet. It is identically invisible on a
+   Cartesian mesh, because the corrections that gradient feeds — non-orthogonal
+   and skewness — are zero there, which is why the cavity never saw it.
+
+6. `boundaryForce` hard-coded the boundary velocity to zero, "no-slip wall".
+   True for the cavity, where every boundary is one; false for any case with
+   an inlet or an outlet, and it means the reported force is the force in a
+   different velocity field from the one being solved.
+
+### What the gate checks
+
+Uniform flow through a box is an exact *discrete* fixed point, not merely an
+exact solution of the differential equations: convection of a constant field
+carries a factor of the cell's net flux, which is zero; diffusion is zero on
+every face including the Dirichlet ones; the least-squares gradient of a
+constant is identically zero; and the Rhie-Chow flux collapses to `u.S`. So the
+gate starts *at* the uniform field and demands that nothing moves, to round-off,
+on a distorted mesh as well as a Cartesian one.
+
+Starting from rest instead would have measured a transient rather than the
+scheme — the first draft of this gate did exactly that, reported a 5e-04
+"failure" that was mostly an unconverged start-up, and had to be rewritten. A
+gate that cannot say what the right answer is to machine precision is a gate
+that will be argued with later.
+
+Four checks, each catching something the others cannot:
+
+| | check | catches |
+| --- | --- | --- |
+| A | uniform flow is a fixed point, `p_out = 0` | (1), (4), (5) |
+| B | same with `p_out = 7`: same velocity, `p = 7` | (2) |
+| C | profiled inflow, transient: zero divergence in every cell, and inflow equals outflow, every step | (1), conservation generally |
+| D | outlet face pressure equals the prescribed value under a real pressure gradient | (3) |
+| E | raising `p_out` by 7 shifts pressure by exactly 7 and leaves velocity untouched | (2), (3) |
+
+C needs no exact solution: conservation is a property of the scheme, not of
+the flow, so it holds from the first step. D and E are the reason B is not
+enough — with a constant pressure field an extrapolation lands on the right
+answer by luck.
+
+All pass at 1e-14 to 1e-16 on both mesh families. On the cylinder the
+continuity residual went from 5.2e-01 to 5e-13 and the run stopped diverging.

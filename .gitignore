@@ -3,3 +3,6 @@ __pycache__/
 *.pyc
 .spack-env/
 spack.lock
+*.vtu
+*.pvtu
+cases/cylinder/*.hex

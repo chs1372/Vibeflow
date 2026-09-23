@@ -97,6 +97,8 @@ GATES = {
         ("cross-check: python and c++ Navier-Stokes agree",
          lambda: run([PY, str(Path(__file__).parent / "crosscheck_ns.py")]),
          BUILD / "ethier_steinman"),
+        ("open domain: inlet/outlet conserves mass exactly",
+         lambda: run([str(BUILD / "open_domain"), "12"]), BUILD / "open_domain"),
         ("benchmark: lid-driven cavity against Ghia et al. (1982)",
          lambda: run([str(BUILD / "cavity"), "64"]), BUILD / "cavity"),
     ],
