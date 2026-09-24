@@ -778,3 +778,77 @@ over the whole field, and a norm is how five wrong answers survived this long.
 The switches used here are kept — `deferredCorrection`, `diffusionNonOrth`,
 `consistentRhieChow`, `pressureExtrapolation` on `PisoControls` — because each
 one converted an argument into a run.
+
+## ADR-025 — The pressure stage was 95% of the run, and most of it bought nothing
+**Decided.** Three changes, each measured, together 2.06x on the cylinder
+benchmark: 2.23 s/step to 1.08 s/step with the drag identical to four decimals.
+
+The profile said the pressure stage was 95% of wall time — 384,214 pressure
+solves against 36,000 momentum ones. What it did not say, and what mattered,
+is that the solves were cheap individually (9.3 iterations each) and simply
+too numerous: three outer iterations times two correctors times sixteen
+non-orthogonality sweeps is ninety-six pressure solves per step.
+
+### 1. The non-orthogonal correction restarted from zero every time
+
+`solvePressure` allocated a fresh, zeroed correction field on each call and
+re-converged it. It is the fixed point of a deferred-correction loop whose
+answer moves only a little from one solve to the next, so the previous
+answer is the best possible starting point and it was being thrown away a
+hundred times a step. The same applied to the pressure itself, explicitly
+zeroed before each solve.
+
+Keeping both: 2.23 to 1.70 s/step, sweeps 16 to 12. This one is free in the
+strict sense — the loop still converges to the same fixed point to the same
+tolerance, only the path changes.
+
+### 2. The loop tolerance was six orders tighter than the answer
+
+1e-12, relative to the largest face flux. Measured on the Ethier-Steinman
+order study, where loosening it would show first:
+
+| tolerance | L2 error (distorted, n=16) | order | sweeps | pressure time |
+| --- | --- | --- | --- | --- |
+| 1e-12 | 2.171843814672e-03 | 1.695 | 24 | 14.7 s |
+| 1e-8 | 2.171844960169e-03 | 1.695 | 11 | 7.8 s |
+| 1e-6 | 2.171902983645e-03 | 1.695 | 4 | 2.9 s |
+
+At 1e-8 the L2 error moves by 3e-7 relative — four orders below the
+discretisation error the study exists to measure — and the pressure time
+halves. Default is now 1e-8. 1e-6 is another 2.7x and still 300 times below
+the error, and is left to cases that want it rather than taken as the
+default, because the margin at 1e-8 will survive several more refinements and
+the margin at 1e-6 will not.
+
+### 3. Each sweep was solved to fourteen digits
+
+An intermediate sweep of a fixed-point iteration solved to 1e-14 is fourteen
+digits of an answer the next sweep changes. The constraint is a floor, not a
+ceiling: looser than the loop's own threshold and the loop chases solver
+noise, which is exactly the mistake behind ADR-016. Two orders tighter than
+`nonOrthTol` satisfies both, so the default is 1e-10.
+
+Measured: 12,511 linear iterations against 7,980, same drag to four decimals.
+A case that loosens `nonOrthTol` must loosen this with it.
+
+### Measured and rejected
+
+**Rebuilding the AMG hierarchy less often.** The obvious suspect, and wrong.
+Reusing the preconditioner across six matrix changes saves 1 s; reusing it
+indefinitely *costs* 8 s, because a stale hierarchy needs 20,174 iterations
+where a fresh one needs 12,511. Setup is not where the time goes.
+
+**A fixed small sweep count instead of a tolerance.** Tempting: with the warm
+start in place, one fixed sweep gives 0.35 s/step, six times faster than the
+original, and the cylinder drag is unchanged to four decimals. Rejected as a
+default because the benchmark is not where it would break — an order study on
+a distorted mesh with two time steps has no history for the warm start to
+carry, so the correction would never converge and the second-order term would
+be the thing left out. A tolerance adapts to both; a count does not.
+
+### Left on the table
+
+The boundary-pressure extrapolation, now 19% of the run, still restarts cold
+and runs three least-squares gradient passes on every pressure gradient. The
+same warm start should take it to one. It was not done here because verifying
+the three changes above mattered more than a fourth unverified one.

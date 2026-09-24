@@ -143,6 +143,20 @@ Result run(Index n, Real skew, Real pOut, bool uniform, int steps, Real dt) {
   PisoControls ctl;
   ctl.outer = 3;
   ctl.outerTol = 1e-12;
+  // TIGHTER than the shipped defaults, deliberately. The checks below assert
+  // exactness to round-off, and a check tighter than the linear solver's own
+  // convergence tolerance measures that solver's noise floor rather than the
+  // property it names. At the production defaults (ADR-025) the invariance
+  // check lands at 2.8e-10, which is the solver converging as promised, not
+  // the scheme losing the property -- confirmed by running both.
+  //
+  // A gate exists to measure the discretisation, so it runs the solver where
+  // the discretisation is what is left. NSFLOW_NONORTH_TOL and
+  // NSFLOW_PSOLVE_TOL override these to check the shipped defaults instead.
+  ctl.nonOrthTol = 1e-12;
+  ctl.pressureSolveTol = 1e-14;
+  if (const char* e = std::getenv("NSFLOW_NONORTH_TOL")) ctl.nonOrthTol = std::atof(e);
+  if (const char* e = std::getenv("NSFLOW_PSOLVE_TOL")) ctl.pressureSolveTol = std::atof(e);
   PisoSolver solver(mesh, nu, dt, ctl);
   solver.setBoundaryTypes(uType);
   solver.setPressureBoundary(pType, pval);

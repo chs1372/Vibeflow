@@ -101,6 +101,10 @@ Row run(Index n, Real dt, int nsteps, Real nu, Real skew, int outer = 6) {
 
   PisoControls ctl;
   ctl.outer = outer;
+  // The non-orthogonal loop's cost is the solver's single biggest, and its
+  // tolerance is the knob. An order study is where loosening it would show
+  // first, so the knob is exposed here and the sweep is recorded in ADR-025.
+  if (const char* e = std::getenv("NSFLOW_NONORTH_TOL")) ctl.nonOrthTol = std::atof(e);
   PisoSolver solver(mesh, nu, dt, ctl);
 
   VectorField u0("u0", nt, 3);

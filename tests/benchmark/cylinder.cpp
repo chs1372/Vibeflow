@@ -61,7 +61,13 @@ std::unique_ptr<LinearSolver> makePressureSolver(const Mesh& mesh) {
   const std::string cfg = e ? e : "cg+hypre";
   if (cfg == "native") return std::make_unique<NativeCG>(mesh, Comm(), false);
 #ifdef NSFLOW_HAVE_PETSC
-  return std::make_unique<PetscSolver>(mesh, Comm(), cfg);
+  // How often the AMG hierarchy is rebuilt, in matrix changes. The pressure
+  // matrix changes once per corrector because aP moves, but the hierarchy it
+  // produces is nearly the same each time -- so rebuilding it every time may
+  // be paying setup for nothing. Measurable, so measured.
+  const char* pi = std::getenv("NSFLOW_PC_INTERVAL");
+  return std::make_unique<PetscSolver>(mesh, Comm(), cfg, std::vector<Index>{},
+                                       pi ? std::atoi(pi) : 1);
 #else
   return std::make_unique<NativeCG>(mesh, Comm(), false);
 #endif
@@ -201,6 +207,7 @@ int main(int argc, char** argv) {
     ctl.outerTol = 1e-7;
     if (const char* e = std::getenv("CYL_NONORTH")) ctl.nonOrthCorrectors = std::atoi(e);
     if (const char* e = std::getenv("CYL_NONORTH_TOL")) ctl.nonOrthTol = std::atof(e);
+    if (const char* e = std::getenv("CYL_PSOLVE_TOL")) ctl.pressureSolveTol = std::atof(e);
     if (std::getenv("CYL_UPWIND")) ctl.deferredCorrection = false;
     if (std::getenv("CYL_NO_DIFF_NONORTH")) ctl.diffusionNonOrth = false;
     if (std::getenv("CYL_NAIVE_RC")) ctl.consistentRhieChow = false;

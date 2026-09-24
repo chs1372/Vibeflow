@@ -53,11 +53,27 @@ struct PisoControls {
   int correctors = 2;        // PISO pressure correctors
   int nonOrthCorrectors = 40;  // iterated to convergence, not a fixed count
   // Convergence threshold for that loop, relative to the largest face flux.
-  // Each sweep is a full pressure solve, so this is the single biggest cost
-  // knob in the solver, and the default is deliberately far tighter than the
-  // discretisation error: a case may loosen it, but only against a measured
-  // comparison with this value.
-  Real nonOrthTol = 1e-12;
+  // Each sweep is a full pressure solve plus a boundary-pressure
+  // extrapolation, so this is the single biggest cost knob in the solver.
+  //
+  // 1e-8, measured rather than assumed (ADR-025). On the Ethier-Steinman
+  // order study it moves the L2 error by 3e-7 relative -- four orders below
+  // the discretisation error being measured -- and halves the pressure time.
+  // The old 1e-12 bought nothing: it drove the residual six orders below the
+  // point where the answer stopped changing.
+  Real nonOrthTol = 1e-8;
+  // Relative tolerance of each pressure linear solve. Every sweep of the loop
+  // above pays it, and the sweeps are a fixed-point iteration -- solving an
+  // intermediate sweep to fourteen digits is fourteen digits of an answer
+  // that the next sweep changes.
+  //
+  // 1e-10: two orders tighter than nonOrthTol, which is the rule that matters.
+  // Looser than the loop's own threshold and the loop starts chasing solver
+  // noise (the mistake behind ADR-016); much tighter than it and every sweep
+  // buys digits the next sweep discards. Measured: 1e-14 costs 12,511 linear
+  // iterations where 1e-10 costs 7,980, for the same drag to four decimals.
+  // A case that loosens nonOrthTol should loosen this with it.
+  Real pressureSolveTol = 1e-10;
   int outer = 1;             // PIMPLE outer iterations
   Real outerTol = 1e-10;
   bool consistentRhieChow = true;
@@ -180,6 +196,13 @@ class PisoSolver {
   LeastSquaresGradient grad_;
 
   ScalarField w_, aP_, Df_, Fstar_;
+  // The non-orthogonal correction, kept ACROSS calls. It is the fixed point of
+  // a deferred-correction loop whose answer moves only a little from one
+  // pressure solve to the next, so starting from the last one costs nothing
+  // and saves nearly all the sweeps. Starting from zero each time re-derived
+  // the same field from scratch a hundred times a step, and every sweep is a
+  // full pressure solve plus a boundary-pressure extrapolation.
+  ScalarField nonorth_;
   VectorField skew_;
 
   VectorField u_, uOld_, uOld2_, HbyA_, gp_;

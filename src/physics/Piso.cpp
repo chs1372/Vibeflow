@@ -25,6 +25,7 @@ PisoSolver::PisoSolver(const Mesh& mesh, Real nu, Real dt, PisoControls ctl, Com
       w_("w", mesh.nInternalFaces()),
       aP_("aP", mesh.nTotal()),
       Df_("Df", mesh.nInternalFaces()),
+      nonorth_("nonorth", mesh.nInternalFaces()),
       Fstar_("Fstar", mesh.nInternalFaces()),
       skew_("skew", mesh.nInternalFaces(), 3),
       u_("u", mesh.nTotal(), 3), uOld_("uOld", mesh.nTotal(), 3),
@@ -453,9 +454,12 @@ void PisoSolver::solvePressure(LinearSolver& solver) {
   // 20-40 times per corrector for nothing.
   solver.notifyMatrixChanged();
 
-  ScalarField nonorth("nonorth", nf);
+  // Warm start, both of them. The correction carries over from the last solve
+  // (see the member), and the pressure keeps whatever the last solve left --
+  // zeroing it threw away the best initial guess available and made the first
+  // sweep of every call pay for a cold start.
+  auto nonorth = nonorth_;
   VectorField g("gp", nt, 3);
-  Kokkos::deep_copy(p, 0.0);
   auto src = sys.source();
   int sweeps = 0;
 
@@ -507,7 +511,7 @@ void PisoSolver::solvePressure(LinearSolver& solver) {
     }
 
     // A p = -div(F*): solving A p = +div doubles the divergence.
-    solver.solve(sys, p, 1e-14, 1e-20, 5000);
+    solver.solve(sys, p, ctl_.pressureSolveTol, 1e-20, 5000);
 
     // Remove the constant null-space component instead of pinning a cell:
     // pinning makes the matrix non-symmetric and breaks CG. With an outlet the
