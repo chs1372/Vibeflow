@@ -150,7 +150,8 @@ ScalarField PisoSolver::pressureBoundary(const ScalarField& p) const {
     });
   Kokkos::fence();
   VectorField g("gpb", m_.nTotal(), 3);
-  for (int it = 0; it < 3; ++it) {
+  const int sweeps = ctl_.pressureExtrapolation ? ctl_.pressureExtrapSweeps : 0;
+  for (int it = 0; it < sweeps; ++it) {
     grad_(p, v, g);
     Kokkos::parallel_for("pbIt", Kokkos::RangePolicy<ExecSpace>(0, nb),
       KOKKOS_LAMBDA(const Index f) {
@@ -183,6 +184,8 @@ void PisoSolver::assembleMomentum(const VectorField& uB, const VectorField& src)
   auto w = w_; auto sk = skew_; auto F = F_; auto Fb = Fb_;
   auto b = bSrc_; auto u = u_; auto uo = uOld_; auto uo2 = uOld2_;
   const Real nu = nu_;
+  const bool deferred = ctl_.deferredCorrection;
+  const bool dNonOrth = ctl_.diffusionNonOrth;
   Real aPt, a1, a2; bdf(aPt, a1, a2);
   (void)nc;
 
@@ -267,12 +270,12 @@ void PisoSolver::assembleMomentum(const VectorField& uB, const VectorField& src)
           const Real go = d == 0 ? G0(own(f), i) : d == 1 ? G1(own(f), i) : G2(own(f), i);
           const Real gn = d == 0 ? G0(nei(f), i) : d == 1 ? G1(nei(f), i) : G2(nei(f), i);
           gfo[i] = wo(f) * go + (1.0 - wo(f)) * gn;
-          nonorth += k(f, i) * gfo[i];
+          if (dNonOrth) nonorth += k(f, i) * gfo[i];
           ho += gf[i] * sk(f, i);
         }
         ho += w(f) * u(own(f), d) + (1.0 - w(f)) * u(nei(f), d);
         const Real ud = F(f) > 0.0 ? u(own(f), d) : u(nei(f), d);
-        const Real dc = F(f) * (ho - ud);
+        const Real dc = deferred ? F(f) * (ho - ud) : 0.0;
         Kokkos::atomic_add(&b(own(f), d), nu * nonorth - dc);
         Kokkos::atomic_add(&b(nei(f), d), -nu * nonorth + dc);
       }
@@ -283,10 +286,11 @@ void PisoSolver::assembleMomentum(const VectorField& uB, const VectorField& src)
       for (int d = 0; d < 3; ++d) {
         if (dirichlet) {
           Real nonorth = 0.0;
-          for (int i = 0; i < 3; ++i) {
-            const Real gi = d == 0 ? G0(bc(f), i) : d == 1 ? G1(bc(f), i) : G2(bc(f), i);
-            nonorth += kb(f, i) * gi;
-          }
+          if (dNonOrth)
+            for (int i = 0; i < 3; ++i) {
+              const Real gi = d == 0 ? G0(bc(f), i) : d == 1 ? G1(bc(f), i) : G2(bc(f), i);
+              nonorth += kb(f, i) * gi;
+            }
           Kokkos::atomic_add(&b(bc(f), d),
                              nu * (ab(f) * uB(f, d) + nonorth) - Fb(f) * uB(f, d));
         } else {
@@ -748,6 +752,22 @@ StepReport PisoSolver::advance(const VectorField& uB, const ScalarField& fB,
   rep.nonOrthSweeps = lastNonOrth_;
   rep.continuityError = continuityError(F_, Fb_);
   rep.courant = courant();
+  {
+    auto u = u_; auto cc = m_.cellCentre();
+    using Reducer = Kokkos::MaxLoc<Real, Index>;
+    Reducer::value_type best;
+    Kokkos::parallel_reduce("uMax", Kokkos::RangePolicy<ExecSpace>(0, nc),
+      KOKKOS_LAMBDA(const Index c, Reducer::value_type& a) {
+        const Real m = Kokkos::sqrt(u(c,0)*u(c,0) + u(c,1)*u(c,1) + u(c,2)*u(c,2));
+        if (m > a.val) { a.val = m; a.loc = c; }
+      }, Reducer(best));
+    Kokkos::fence();
+    rep.uMax = best.val;
+    if (best.loc >= 0 && best.loc < nc) {
+      auto hcc = Kokkos::create_mirror_view_and_copy(HostSpace::memory_space(), cc);
+      for (int i = 0; i < 3; ++i) rep.uMaxAt[i] = hcc(best.loc, i);
+    }
+  }
   return rep;
 }
 

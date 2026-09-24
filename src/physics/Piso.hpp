@@ -61,6 +61,27 @@ struct PisoControls {
   int outer = 1;             // PIMPLE outer iterations
   Real outerTol = 1e-10;
   bool consistentRhieChow = true;
+  // Second-order convection is carried as a deferred correction on the
+  // right-hand side, which is explicit. Turning it off leaves first-order
+  // upwind: wrong, but unconditionally stable in the convective term. It is
+  // here as a diagnostic -- when a run grows without bound, this says in one
+  // experiment whether the explicit correction is what is growing.
+  bool deferredCorrection = true;
+  // The non-orthogonal part of the momentum DIFFUSION flux, also carried
+  // explicitly on the right-hand side -- and, unlike the pressure equation's
+  // non-orthogonal loop, not iterated at all. Its stability limit scales like
+  // nu*dt/h^2, not like the Courant number, which is why refining a mesh can
+  // destabilise a run whose Courant number looks unremarkable. A diagnostic
+  // switch, same as above: off means the diffusion operator keeps only its
+  // orthogonal part.
+  bool diffusionNonOrth = true;
+  // Extrapolate the wall pressure from the interior gradient (ADR: assuming
+  // zero normal gradient makes the near-wall cells first order). The
+  // extrapolation is a fixed-point iteration whose least-squares weights go
+  // like 1/d^2, so as the near-wall cell shrinks the boundary value comes to
+  // dominate its own gradient. Switchable to test exactly that.
+  bool pressureExtrapolation = true;
+  int  pressureExtrapSweeps = 3;
 };
 
 // Coarse phase timings. ADR-016 was written because a sweep count was
@@ -82,6 +103,11 @@ struct StepReport {
   // cylinder wake ran happily at Courant 1.7 and diverged inside three steps
   // at 3.3 on a finer mesh of better quality.
   Real courant{};
+  // Where the fastest cell is, and how fast. A growing norm says a run is
+  // going wrong; it does not say whether the trouble starts at the wall, in
+  // the wake or at an outlet, and those have nothing in common to fix.
+  Real uMax{};
+  Real uMaxAt[3]{};
   int outerUsed{};
   int nonOrthSweeps{};
 };

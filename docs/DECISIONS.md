@@ -607,28 +607,24 @@ values for this case move by several percent with domain size and blockage.
 
 ### The time-step limit
 
-The finer mesh built for this case — 21,811 cells, and *better* quality at
-22.9 degrees against 26.6 — diverged within three steps at the same time step
-that the coarse mesh ran happily for 4,000. That looked like a mesh-quality
-failure and was not. The finest cell went from 0.06 to 0.03, which at U = 1
-and dt = 0.1 takes the convective Courant number from 1.7 to 3.3; at dt = 0.05
-the fine mesh is stable and smooth.
+**This section was wrong. See ADR-024.** It is left standing rather than
+edited away, because the way it was wrong is the point.
 
-The cause is that the scheme is not as implicit as it looks. The convection
-matrix is first-order upwind and the second-order accuracy comes from a
-*deferred correction* carried on the right-hand side — which is explicit, and
-brings a Courant limit with it that the implicit diffusion and BDF2 time terms
-do not. The limit is set by the smallest cell, so refining a mesh at fixed dt
-is exactly how you meet it.
+What it said: the finer mesh diverged because halving the near-wall cell took
+the convective Courant number from 1.7 to 3.3, past the limit imposed by the
+explicit deferred correction in the convection term.
 
-So the solver now reports the convective Courant number,
-`max_cells 0.5 dt sum|F_f| / V`, every step, and the benchmark warns above 3.
-A number that is only wrong sometimes needs to be visible always; diagnosing
-this from "it diverged" cost more than printing it would have.
+Both numbers were arithmetic on cell size and free-stream speed, written up in
+the voice of a measurement. When the solver was made to report the Courant
+number it actually runs at, the coarse mesh turned out to be stable at 14.9
+and the fine mesh unstable at 6 — so the quantity named as the cause does not
+even order the two cases correctly. The mechanism was disproved separately:
+with the deferred correction switched off entirely the fine mesh diverges just
+the same, at the same rate.
 
-Making the deferred correction implicit, or sub-iterating it, is the real fix
-and belongs with the v2 work — it is the same explicit-correction structure as
-the non-orthogonal loop.
+The one part worth keeping is the instrument. The solver reports
+`max_cells 0.5 dt sum|F_f| / V` every step, which is what made the error
+visible. A number that is only wrong sometimes needs to be visible always.
 
 ### Cost
 
@@ -715,3 +711,70 @@ cells are — the current one does not. Until then per-rank memory is
 `O(raw) + O(built/P)`, and since raw is roughly a tenth of built, that ceiling
 is an order of magnitude further out than it was. It is a ceiling all the
 same, and this ADR does not claim otherwise.
+
+## ADR-024 — The fine cylinder mesh is unstable, and five explanations are not the reason
+**Open.** Recorded because the investigation ruled things out, not because it
+finished.
+
+The 21,811-cell cylinder mesh diverges where the 6,763-cell one runs 4,000
+steps to a passing benchmark. ADR-022 attributed this to a convective Courant
+limit and gave numbers for it. Those numbers were estimates presented as
+measurements, and they are wrong; this ADR exists so the next person does not
+start from them.
+
+### What the failure actually looks like
+
+Drag climbs smoothly and geometrically — 1.53, 1.56, 1.66, 1.77, 1.91, 2.37 —
+while the maximum velocity in the domain grows at the same rate, and stays in
+**one cell**, at (−0.16, 0.57), r = 0.59. That is the cylinder surface about
+106 degrees round from the stagnation point, where the flow accelerates most.
+The cell does not move as the mode grows: this is a stationary local mode, not
+something convecting out of the wake.
+
+### Ruled out, each by its own run
+
+| Candidate | Test | Result |
+| --- | --- | --- |
+| Convective Courant limit | dt ladder on the coarse mesh | stable to **Co 14.9**; the fine mesh fails at 6 |
+| Deferred correction (the ADR-022 mechanism) | first-order upwind, correction entirely off | grows identically |
+| Explicit terms needing sub-iteration | outer iterations 3 → 10 | diverges **sooner** (t≈5 → t≈1) |
+| Momentum non-orthogonal diffusion correction | switched off | grows identically |
+| Rhie-Chow old-flux (Choi) term | naive formulation instead | grows identically |
+| Mesh pathology | volumes, angles, skewness, LSQ conditioning | nothing: no non-positive volume, no face over 30°, worst gradient stencil 0.83 of isotropic |
+
+The growth rate is *the same* in the upwind, no-non-orth and naive-Rhie-Chow
+runs. A mode indifferent to all three is not caused by any of them.
+
+That the outer loop diverges faster when iterated harder is the most
+informative single result: it means the iteration is converging, and what it
+converges to is unstable. So this is not a lagged term that needs more
+sweeps — it is a property of the converged discrete system at this dt on this
+mesh.
+
+### What did change something
+
+Dropping the wall pressure extrapolation to plain zero-gradient holds the drag
+at 1.46 — a plausible value, near the coarse mesh's 1.41 — for as long as it
+was run, while the local velocity spike still grows. So the extrapolation is
+carrying the local mode into the global answer, and is not the source of it.
+Zero-gradient wall pressure is not a fix: ADR-012 rejected it for dropping the
+near-wall cells to first order.
+
+It is also time-step dependent: at dt = 0.0125 the fine mesh is quiet, Courant
+1.5, drag settling smoothly through the window where dt = 0.05 has already
+turned.
+
+### Where to look next
+
+A stationary mode at one wall cell, indifferent to the convection scheme and
+to every explicit correction, surviving outer-loop convergence, and sensitive
+to dt. The remaining structural suspects are the wall treatment itself and the
+pressure–velocity coupling at a Dirichlet-velocity, fixed-flux-pressure
+boundary. The instrument to build first is a local one: the momentum and
+continuity budget for that single cell and its neighbours, term by term, over
+the steps in which the mode doubles. Every diagnostic so far has been a norm
+over the whole field, and a norm is how five wrong answers survived this long.
+
+The switches used here are kept — `deferredCorrection`, `diffusionNonOrth`,
+`consistentRhieChow`, `pressureExtrapolation` on `PisoControls` — because each
+one converted an argument into a run.

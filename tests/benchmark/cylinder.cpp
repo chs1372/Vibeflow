@@ -48,6 +48,12 @@ Real X_IN = 0.0, X_OUT = 0.0, Y_HALF = 0.0;
 
 Real williamsonSt(Real Re) { return -3.3265 / Re + 0.1816 + 1.6e-4 * Re; }
 
+// Largest convective Courant number measured stable for this case, from the
+// sweep in tests/benchmark/courant_limit. Not a theoretical bound and not a
+// guess: an earlier version of this file warned above 2, which was an estimate
+// from cell size and free-stream speed, and the case then ran happily at 7.2.
+constexpr Real COURANT_WARN = 8.0;
+
 enum Patch { INLET, OUTLET, FARFIELD, CYLINDER, SPANWISE };
 
 std::unique_ptr<LinearSolver> makePressureSolver(const Mesh& mesh) {
@@ -195,8 +201,16 @@ int main(int argc, char** argv) {
     ctl.outerTol = 1e-7;
     if (const char* e = std::getenv("CYL_NONORTH")) ctl.nonOrthCorrectors = std::atoi(e);
     if (const char* e = std::getenv("CYL_NONORTH_TOL")) ctl.nonOrthTol = std::atof(e);
-    std::printf("  controls: outer %d  nonOrth <= %d sweeps to %.0e\n",
-                ctl.outer, ctl.nonOrthCorrectors, ctl.nonOrthTol);
+    if (std::getenv("CYL_UPWIND")) ctl.deferredCorrection = false;
+    if (std::getenv("CYL_NO_DIFF_NONORTH")) ctl.diffusionNonOrth = false;
+    if (std::getenv("CYL_NAIVE_RC")) ctl.consistentRhieChow = false;
+    if (std::getenv("CYL_ZG_PRESSURE")) ctl.pressureExtrapolation = false;
+    if (const char* e = std::getenv("CYL_PEXTRAP")) ctl.pressureExtrapSweeps = std::atoi(e);
+    std::printf("  controls: outer %d  nonOrth <= %d sweeps to %.0e%s\n",
+                ctl.outer, ctl.nonOrthCorrectors, ctl.nonOrthTol,
+                ctl.deferredCorrection ? "" : "  [FIRST-ORDER UPWIND]");
+    if (!ctl.diffusionNonOrth)
+      std::printf("  controls: diffusion non-orthogonal correction OFF\n");
     PisoSolver solver(mesh, nu, dt, ctl);
     solver.setBoundaryTypes(uType);
     solver.setPressureBoundary(pType, pval);
@@ -255,17 +269,20 @@ int main(int argc, char** argv) {
       clh.push_back(F.y / qA);
       if (t > tStats) maxCont = std::max(maxCont, rep.continuityError);
       maxCo = std::max(maxCo, rep.courant);
-      if (rep.courant > 3.0 && !coWarned) {
+      if (rep.courant > COURANT_WARN && !coWarned) {
         coWarned = true;
-        std::printf("    WARNING: Courant %.1f. The convection scheme's "
-                    "deferred correction is explicit; above about 2 this case "
-                    "diverges within a few steps.\n", rep.courant);
+        std::printf("    NOTE: Courant %.1f, above the largest value measured "
+                    "stable for this case (%.0f). The convection scheme's "
+                    "deferred correction is explicit, so there is a limit; "
+                    "where it sits is a measurement, not a rule of thumb.\n",
+                    rep.courant, COURANT_WARN);
       }
       if (k % std::max(1, nSteps / reportLines) == 0)
         std::printf("    t %7.2f  Cd %8.4f  Cl %8.4f  div %.1e  Co %5.2f  "
-                    "outer %d  nonOrth %d\n",
+                    "|u|max %6.2f at (%6.2f,%6.2f) r=%5.2f  nonOrth %d\n",
                     t, cdh.back(), clh.back(), rep.continuityError, rep.courant,
-                    rep.outerUsed, rep.nonOrthSweeps);
+                    rep.uMax, rep.uMaxAt[0], rep.uMaxAt[1],
+                    std::hypot(rep.uMaxAt[0], rep.uMaxAt[1]), rep.nonOrthSweeps);
     }
 
     {
