@@ -846,6 +846,23 @@ a distorted mesh with two time steps has no history for the warm start to
 carry, so the correction would never converge and the second-order term would
 be the thing left out. A tolerance adapts to both; a count does not.
 
+### Measured on the full benchmark
+
+The cylinder wake gate, 4,000 steps, before and after:
+
+| | before | after |
+| --- | --- | --- |
+| wall time | 7,895 s | **3,392 s** |
+| per step | 2.0 s | 0.85 s |
+| pressure solves | 384,214 | 170,141 |
+| Strouhal | 0.1688 | 0.1688 |
+| mean drag | 1.4177 | 1.4177 |
+| lift amplitude | 0.3636 | 0.3636 |
+
+2.33x, and the three measured quantities are unchanged to four decimals. That
+is the claim worth making: not that it got faster, but that it got faster and
+the answer did not move.
+
 ### Left on the table
 
 The boundary-pressure extrapolation, now 19% of the run, still restarts cold
