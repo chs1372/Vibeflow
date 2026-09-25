@@ -10,7 +10,7 @@
 #include "core/Parallel.hpp"
 #include "core/Types.hpp"
 
-namespace nsflow {
+namespace vibeflow {
 
 class Mesh;
 
@@ -37,4 +37,4 @@ class NativeCG final : public LinearSolver {
   void projectOut(ScalarField& v) const;
 };
 
-}  // namespace nsflow
+}  // namespace vibeflow

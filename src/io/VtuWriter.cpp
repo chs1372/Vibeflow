@@ -3,7 +3,7 @@
 #include <sstream>
 #include <stdexcept>
 
-namespace nsflow {
+namespace vibeflow {
 namespace {
 
 const char* B64 =
@@ -142,4 +142,4 @@ std::string VtuWriter::writeParallel(const std::string& basename,
   return piece;
 }
 
-}  // namespace nsflow
+}  // namespace vibeflow

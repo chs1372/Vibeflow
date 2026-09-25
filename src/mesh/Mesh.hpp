@@ -10,7 +10,7 @@
 #include <string>
 #include <vector>
 
-namespace nsflow {
+namespace vibeflow {
 
 // A named group of boundary faces carrying one boundary condition.
 struct BoundaryPatch {
@@ -67,4 +67,4 @@ class Mesh {
   virtual Real maxClosureError()     const = 0;  // must be ~machine epsilon
 };
 
-}  // namespace nsflow
+}  // namespace vibeflow

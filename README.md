@@ -1,4 +1,4 @@
-# nsflow
+# Vibeflow
 
 3D unstructured finite-volume Navier–Stokes solver, assembled from open-source
 libraries, targeting workstation CPU + GPU.

@@ -17,7 +17,7 @@
 #include <functional>
 #include <vector>
 
-namespace nsflow {
+namespace vibeflow {
 
 class HexMesh;
 
@@ -42,4 +42,4 @@ void averageBoundaryValue(const HexMesh& mesh, const VectorFn& u, VectorField& u
 Real maxDiscreteDivergence(const HexMesh& mesh, const ScalarField& fInternal,
                            const ScalarField& fBoundary);
 
-}  // namespace nsflow
+}  // namespace vibeflow

@@ -19,7 +19,7 @@
 #include <string>
 #include <vector>
 
-namespace nsflow {
+namespace vibeflow {
 
 struct RawMesh {
   std::vector<Vec3> points;
@@ -60,4 +60,4 @@ std::vector<Vec3> readVertexFile(const std::string& path);
 std::vector<std::array<Index, 8>> boxConnectivity(Index nx, Index ny, Index nz);
 
 }  // namespace raw
-}  // namespace nsflow
+}  // namespace vibeflow

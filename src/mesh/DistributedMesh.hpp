@@ -25,7 +25,7 @@
 #include <memory>
 #include <vector>
 
-namespace nsflow {
+namespace vibeflow {
 
 enum class PartitionMethod { Linear, RCB };
 
@@ -82,4 +82,4 @@ class DistributedMesh final : public Mesh {
   ScalarField cellVolume_;
 };
 
-}  // namespace nsflow
+}  // namespace vibeflow

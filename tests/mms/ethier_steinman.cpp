@@ -14,7 +14,7 @@
 #include "physics/Piso.hpp"
 #include "linalg/NativeBiCGStab.hpp"
 #include "linalg/NativeCG.hpp"
-#ifdef NSFLOW_HAVE_PETSC
+#ifdef VIBEFLOW_HAVE_PETSC
 #include "linalg/PetscSolver.hpp"
 #include <petscsys.h>
 #endif
@@ -26,7 +26,7 @@
 #include <string>
 #include <vector>
 
-using namespace nsflow;
+using namespace vibeflow;
 
 namespace {
 
@@ -75,7 +75,7 @@ struct Row {
 // discretisation does not change, so the L2 errors must not either -- that is
 // what makes this a safe optimisation rather than a rewrite.
 std::string backendName() {
-  const char* e = std::getenv("NSFLOW_PRESSURE");
+  const char* e = std::getenv("VIBEFLOW_PRESSURE");
   return e ? e : "native";
 }
 
@@ -83,13 +83,13 @@ std::unique_ptr<LinearSolver> makePressureSolver(const Mesh& mesh) {
   const std::string cfg = backendName();
   // The pressure operator is pure Neumann, hence singular.
   if (cfg == "native") return std::make_unique<NativeCG>(mesh, Comm(), true);
-#ifdef NSFLOW_HAVE_PETSC
+#ifdef VIBEFLOW_HAVE_PETSC
   int interval = 1;
-  if (const char* e = std::getenv("NSFLOW_PC_REUSE")) interval = std::stoi(e);
+  if (const char* e = std::getenv("VIBEFLOW_PC_REUSE")) interval = std::stoi(e);
   return std::make_unique<PetscSolver>(mesh, Comm(), cfg,
                                        std::vector<Index>{}, interval);
 #else
-  std::fprintf(stderr, "built without PETSc; NSFLOW_PRESSURE=%s unavailable\n",
+  std::fprintf(stderr, "built without PETSc; VIBEFLOW_PRESSURE=%s unavailable\n",
                cfg.c_str());
   std::exit(2);
 #endif
@@ -104,7 +104,7 @@ Row run(Index n, Real dt, int nsteps, Real nu, Real skew, int outer = 6) {
   // The non-orthogonal loop's cost is the solver's single biggest, and its
   // tolerance is the knob. An order study is where loosening it would show
   // first, so the knob is exposed here and the sweep is recorded in ADR-025.
-  if (const char* e = std::getenv("NSFLOW_NONORTH_TOL")) ctl.nonOrthTol = std::atof(e);
+  if (const char* e = std::getenv("VIBEFLOW_NONORTH_TOL")) ctl.nonOrthTol = std::atof(e);
   PisoSolver solver(mesh, nu, dt, ctl);
 
   VectorField u0("u0", nt, 3);
@@ -222,7 +222,7 @@ bool report(const char* label, const std::vector<Row>& rows, Real lo, Real hi,
 }  // namespace
 
 int main(int argc, char** argv) {
-#ifdef NSFLOW_HAVE_PETSC
+#ifdef VIBEFLOW_HAVE_PETSC
   PetscInitialize(&argc, &argv, nullptr, nullptr);
 #endif
   Kokkos::initialize(argc, argv);
@@ -232,12 +232,12 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) grids.push_back(std::stoi(argv[i]));
     if (grids.empty()) grids = {8, 16, 32};
     int outer = 6;
-    if (const char* e = std::getenv("NSFLOW_OUTER")) outer = std::stoi(e);
+    if (const char* e = std::getenv("VIBEFLOW_OUTER")) outer = std::stoi(e);
 
     bool ok = true;
     std::printf("pressure backend: %s (pc rebuild interval %s)\n",
                 backendName().c_str(),
-                std::getenv("NSFLOW_PC_REUSE") ? std::getenv("NSFLOW_PC_REUSE") : "1");
+                std::getenv("VIBEFLOW_PC_REUSE") ? std::getenv("VIBEFLOW_PC_REUSE") : "1");
     std::vector<Row> ortho, dist;
     for (Index n : grids) ortho.push_back(run(n, 2e-4, 2, 0.05, 0.0, outer));
     ok &= report("spatial order / orthogonal  (dt=2e-4, 2 steps)", ortho, 1.85, 2.15, false);
@@ -249,7 +249,7 @@ int main(int argc, char** argv) {
     rc = ok ? 0 : 1;
   }
   Kokkos::finalize();
-#ifdef NSFLOW_HAVE_PETSC
+#ifdef VIBEFLOW_HAVE_PETSC
   PetscFinalize();
 #endif
   return rc;

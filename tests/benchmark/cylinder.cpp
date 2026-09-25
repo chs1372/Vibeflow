@@ -22,7 +22,7 @@
 #include "io/VtuWriter.hpp"
 #include "linalg/NativeBiCGStab.hpp"
 #include "linalg/NativeCG.hpp"
-#ifdef NSFLOW_HAVE_PETSC
+#ifdef VIBEFLOW_HAVE_PETSC
 #include "linalg/PetscSolver.hpp"
 #include <petscsys.h>
 #endif
@@ -35,7 +35,7 @@
 #include <string>
 #include <vector>
 
-using namespace nsflow;
+using namespace vibeflow;
 
 namespace {
 
@@ -58,15 +58,15 @@ constexpr Real COURANT_WARN = 30.0;
 enum Patch { INLET, OUTLET, FARFIELD, CYLINDER, SPANWISE };
 
 std::unique_ptr<LinearSolver> makePressureSolver(const Mesh& mesh) {
-  const char* e = std::getenv("NSFLOW_PRESSURE");
+  const char* e = std::getenv("VIBEFLOW_PRESSURE");
   const std::string cfg = e ? e : "cg+hypre";
   if (cfg == "native") return std::make_unique<NativeCG>(mesh, Comm(), false);
-#ifdef NSFLOW_HAVE_PETSC
+#ifdef VIBEFLOW_HAVE_PETSC
   // How often the AMG hierarchy is rebuilt, in matrix changes. The pressure
   // matrix changes once per corrector because aP moves, but the hierarchy it
   // produces is nearly the same each time -- so rebuilding it every time may
   // be paying setup for nothing. Measurable, so measured.
-  const char* pi = std::getenv("NSFLOW_PC_INTERVAL");
+  const char* pi = std::getenv("VIBEFLOW_PC_INTERVAL");
   return std::make_unique<PetscSolver>(mesh, Comm(), cfg, std::vector<Index>{},
                                        pi ? std::atoi(pi) : 1);
 #else
@@ -95,7 +95,7 @@ Real strouhalFromLift(const std::vector<Real>& t, const std::vector<Real>& cl,
 }  // namespace
 
 int main(int argc, char** argv) {
-#ifdef NSFLOW_HAVE_PETSC
+#ifdef VIBEFLOW_HAVE_PETSC
   PetscInitialize(&argc, &argv, nullptr, nullptr);
 #endif
   Kokkos::initialize(argc, argv);
@@ -416,7 +416,7 @@ int main(int argc, char** argv) {
     rc = ok ? 0 : 1;
   }
   Kokkos::finalize();
-#ifdef NSFLOW_HAVE_PETSC
+#ifdef VIBEFLOW_HAVE_PETSC
   PetscFinalize();
 #endif
   return rc;

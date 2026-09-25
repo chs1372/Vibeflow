@@ -6,3 +6,5 @@ spack.lock
 *.vtu
 *.pvtu
 cases/cylinder/*.hex
+*.log
+.venv/

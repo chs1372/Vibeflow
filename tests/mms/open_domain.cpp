@@ -46,7 +46,7 @@
 #include "physics/Piso.hpp"
 #include "linalg/NativeBiCGStab.hpp"
 #include "linalg/NativeCG.hpp"
-#ifdef NSFLOW_HAVE_PETSC
+#ifdef VIBEFLOW_HAVE_PETSC
 #include "linalg/PetscSolver.hpp"
 #include <petscsys.h>
 #endif
@@ -57,7 +57,7 @@
 #include <string>
 #include <vector>
 
-using namespace nsflow;
+using namespace vibeflow;
 
 namespace {
 
@@ -67,10 +67,10 @@ constexpr Real U_IN = 1.0;
 // but spends thousands of iterations per non-orthogonality sweep, which turns
 // a gate that should take seconds into one nobody runs.
 std::unique_ptr<LinearSolver> makePressureSolver(const Mesh& mesh) {
-  const char* e = std::getenv("NSFLOW_PRESSURE");
+  const char* e = std::getenv("VIBEFLOW_PRESSURE");
   const std::string cfg = e ? e : "cg+hypre";
   if (cfg == "native") return std::make_unique<NativeCG>(mesh, Comm(), false);
-#ifdef NSFLOW_HAVE_PETSC
+#ifdef VIBEFLOW_HAVE_PETSC
   return std::make_unique<PetscSolver>(mesh, Comm(), cfg);
 #else
   return std::make_unique<NativeCG>(mesh, Comm(), false);
@@ -151,12 +151,12 @@ Result run(Index n, Real skew, Real pOut, bool uniform, int steps, Real dt) {
   // the scheme losing the property -- confirmed by running both.
   //
   // A gate exists to measure the discretisation, so it runs the solver where
-  // the discretisation is what is left. NSFLOW_NONORTH_TOL and
-  // NSFLOW_PSOLVE_TOL override these to check the shipped defaults instead.
+  // the discretisation is what is left. VIBEFLOW_NONORTH_TOL and
+  // VIBEFLOW_PSOLVE_TOL override these to check the shipped defaults instead.
   ctl.nonOrthTol = 1e-12;
   ctl.pressureSolveTol = 1e-14;
-  if (const char* e = std::getenv("NSFLOW_NONORTH_TOL")) ctl.nonOrthTol = std::atof(e);
-  if (const char* e = std::getenv("NSFLOW_PSOLVE_TOL")) ctl.pressureSolveTol = std::atof(e);
+  if (const char* e = std::getenv("VIBEFLOW_NONORTH_TOL")) ctl.nonOrthTol = std::atof(e);
+  if (const char* e = std::getenv("VIBEFLOW_PSOLVE_TOL")) ctl.pressureSolveTol = std::atof(e);
   PisoSolver solver(mesh, nu, dt, ctl);
   solver.setBoundaryTypes(uType);
   solver.setPressureBoundary(pType, pval);
@@ -286,7 +286,7 @@ bool check(const char* what, Real value, Real tol) {
 }  // namespace
 
 int main(int argc, char** argv) {
-#ifdef NSFLOW_HAVE_PETSC
+#ifdef VIBEFLOW_HAVE_PETSC
   PetscInitialize(&argc, &argv, nullptr, nullptr);
 #endif
   Kokkos::initialize(argc, argv);
@@ -345,7 +345,7 @@ int main(int argc, char** argv) {
     std::printf("\nopen-domain GATE: %s\n", ok ? "PASS" : "FAIL");
   }
   Kokkos::finalize();
-#ifdef NSFLOW_HAVE_PETSC
+#ifdef VIBEFLOW_HAVE_PETSC
   PetscFinalize();
 #endif
   return ok ? 0 : 1;

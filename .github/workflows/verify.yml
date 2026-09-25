@@ -1,10 +1,15 @@
 name: verification gates
 
-on: [push, pull_request]
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
 
 jobs:
   gates:
-    runs-on: ubuntu-latest
+    # Pinned rather than ubuntu-latest: the apt package names below and the
+    # locally verified configuration are both Ubuntu 24.04.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -12,7 +17,7 @@ jobs:
       - run: pip install numpy scipy meshio h5py
 
       - name: System libraries
-        run: sudo apt-get update -q && sudo apt-get install -y -q libcgns-dev libopenmpi-dev openmpi-bin libpetsc-real-dev libhypre-dev
+        run: sudo apt-get update -q && sudo apt-get install -y -q pkg-config libcgns-dev libopenmpi-dev openmpi-bin libpetsc-real-dev libhypre-dev
 
       - name: Cache Kokkos
         id: kokkos-cache
@@ -21,20 +26,23 @@ jobs:
           path: ~/kokkos-install
           key: kokkos-5.2.2-serial-openmp-${{ runner.os }}
 
+      # $HOME, not ~: bash does not expand a tilde in the middle of a word such
+      # as -DCMAKE_INSTALL_PREFIX=~/..., and CMake does not expand it either,
+      # so Kokkos would be installed into a directory literally named "~".
       - name: Build Kokkos
         if: steps.kokkos-cache.outputs.cache-hit != 'true'
         run: |
           git clone --depth 1 --branch 5.2.2 https://github.com/kokkos/kokkos.git /tmp/kokkos
           cmake -S /tmp/kokkos -B /tmp/kokkos-build \
-            -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=~/kokkos-install \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=$HOME/kokkos-install \
             -DKokkos_ENABLE_SERIAL=ON -DKokkos_ENABLE_OPENMP=ON \
             -DKokkos_ENABLE_TESTS=OFF -DCMAKE_CXX_STANDARD=20
           cmake --build /tmp/kokkos-build -j$(nproc)
           cmake --install /tmp/kokkos-build
 
-      - name: Build nsflow
+      - name: Build Vibeflow
         run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DKokkos_ROOT=~/kokkos-install
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DKokkos_ROOT=$HOME/kokkos-install
           cmake --build build -j$(nproc)
 
       - name: Fixtures are current
@@ -42,5 +50,9 @@ jobs:
           python prototype/dump_fixtures.py > /dev/null
           git diff --exit-code tests/fixtures/
 
+      # v0 only: minutes, not hours. The v1 suite includes an unsteady wake
+      # benchmark that needs about two hours of shedding before there is
+      # anything to measure; it is run locally and its results are recorded
+      # in docs/DECISIONS.md.
       - name: Run active verification gates
         run: python tests/mms/run_gates.py v0

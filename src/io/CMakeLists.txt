@@ -1,2 +1,2 @@
-add_library(nsflow_io VtuWriter.cpp)
-target_link_libraries(nsflow_io PUBLIC nsflow_core nsflow_mesh)
+add_library(vibeflow_io VtuWriter.cpp)
+target_link_libraries(vibeflow_io PUBLIC vibeflow_core vibeflow_mesh)

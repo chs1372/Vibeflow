@@ -11,7 +11,7 @@
 #include "core/Types.hpp"
 #include "discretization/Gradient.hpp"
 
-namespace nsflow {
+namespace vibeflow {
 
 class Mesh;
 class LinearSystem;
@@ -50,4 +50,4 @@ class DiffusionOperator {
   LeastSquaresGradient grad_;
 };
 
-}  // namespace nsflow
+}  // namespace vibeflow

@@ -94,6 +94,21 @@ def parallel_sweep(ranks=(2, 3, 4), binary_name="mms_parallel", args=()):
     return ok
 
 
+def cylinder_wake():
+    """Shedding frequency, drag and lift on the 6,763-cell cylinder mesh.
+
+    The mesh is generated, not stored (cases/cylinder/*.hex is ignored), so a
+    fresh checkout has to make it first. Without it the gate is skipped and
+    says how, rather than failing on a missing file.
+    """
+    mesh = ROOT / "cases" / "cylinder" / "debug.hex"
+    if not mesh.exists():
+        print("  cases/cylinder/debug.hex missing; generate the meshes with "
+              "sh cases/cylinder/make_meshes.sh")
+        return None
+    return run([str(BUILD / "cylinder"), str(mesh), "0.05", "200"])
+
+
 GATES = {
     "v0": [
         ("python: MMS diffusion is second order",
@@ -148,9 +163,7 @@ GATES = {
         # shedding cycles to measure. Kept in the suite rather than trimmed to
         # fit, because a shortened version would measure the transient.
         ("benchmark: cylinder wake vortex shedding at Re = 100",
-         lambda: run([str(BUILD / "cylinder"),
-                      str(ROOT / "cases/cylinder/debug.hex"), "0.05", "200"]),
-         BUILD / "cylinder"),
+         cylinder_wake, BUILD / "cylinder"),
     ],
     # v2: flat_plate_cf, backward_step, rayleigh_benard
     # v3: sod_shock_tube, naca0012_transonic

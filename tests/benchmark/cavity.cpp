@@ -18,7 +18,7 @@
 #include "physics/Piso.hpp"
 #include "linalg/NativeBiCGStab.hpp"
 #include "linalg/NativeCG.hpp"
-#ifdef NSFLOW_HAVE_PETSC
+#ifdef VIBEFLOW_HAVE_PETSC
 #include "linalg/PetscSolver.hpp"
 #include <petscsys.h>
 #endif
@@ -30,7 +30,7 @@
 #include <string>
 #include <vector>
 
-using namespace nsflow;
+using namespace vibeflow;
 
 namespace {
 
@@ -62,10 +62,10 @@ const Real GHIA_V1000[] = {0.00000, 0.27485, 0.29012, 0.30353, 0.32627, 0.37095,
 constexpr int NREF = 17;
 
 std::unique_ptr<LinearSolver> makePressureSolver(const Mesh& mesh) {
-  const char* e = std::getenv("NSFLOW_PRESSURE");
+  const char* e = std::getenv("VIBEFLOW_PRESSURE");
   const std::string cfg = e ? e : "native";
   if (cfg == "native") return std::make_unique<NativeCG>(mesh, Comm(), true);
-#ifdef NSFLOW_HAVE_PETSC
+#ifdef VIBEFLOW_HAVE_PETSC
   return std::make_unique<PetscSolver>(mesh, Comm(), cfg);
 #else
   std::fprintf(stderr, "built without PETSc\n"); std::exit(2);
@@ -184,7 +184,7 @@ Result run(Index N, Real Re, Real dt, int maxSteps, Real tol, bool verbose) {
 }  // namespace
 
 int main(int argc, char** argv) {
-#ifdef NSFLOW_HAVE_PETSC
+#ifdef VIBEFLOW_HAVE_PETSC
   PetscInitialize(&argc, &argv, nullptr, nullptr);
 #endif
   Kokkos::initialize(argc, argv);
@@ -192,7 +192,7 @@ int main(int argc, char** argv) {
   {
     Index N = 64;
     if (argc > 1 && argv[1][0] != '-') N = std::stoi(argv[1]);
-    const bool verbose = std::getenv("NSFLOW_VERBOSE") != nullptr;
+    const bool verbose = std::getenv("VIBEFLOW_VERBOSE") != nullptr;
 
     struct Case { Real Re, dt, tolRms, tolSteady; int maxSteps; };
     // Ghia used a 129x129 uniform grid. At a coarser one the thin near-wall
@@ -228,7 +228,7 @@ int main(int argc, char** argv) {
     rc = ok ? 0 : 1;
   }
   Kokkos::finalize();
-#ifdef NSFLOW_HAVE_PETSC
+#ifdef VIBEFLOW_HAVE_PETSC
   PetscFinalize();
 #endif
   return rc;

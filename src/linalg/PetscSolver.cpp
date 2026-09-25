@@ -7,7 +7,7 @@
 #include <numeric>
 #include <stdexcept>
 
-namespace nsflow {
+namespace vibeflow {
 namespace {
 
 void chk(PetscErrorCode e, const char* what) {
@@ -40,7 +40,7 @@ struct PetscSolver::Impl {
     const Index nGlobal = comm.sum(nOwned);
 
     MPI_Comm mc = PETSC_COMM_SELF;
-#ifdef NSFLOW_HAVE_MPI
+#ifdef VIBEFLOW_HAVE_MPI
     if (comm.parallel()) mc = MPI_COMM_WORLD;
 #endif
     chk(MatCreate(mc, &A), "MatCreate");
@@ -202,4 +202,4 @@ SolveReport PetscSolver::solve(LinearSystem& sys, ScalarField& x,
 
 void PetscSolver::notifyMatrixChanged() { impl_->dirty = true; }
 
-}  // namespace nsflow
+}  // namespace vibeflow

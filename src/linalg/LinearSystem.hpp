@@ -6,7 +6,7 @@
 
 #include "core/Types.hpp"
 
-namespace nsflow {
+namespace vibeflow {
 
 class Mesh;
 
@@ -26,4 +26,4 @@ class LinearSystem {
   ScalarField diag_, upper_, lower_, source_;
 };
 
-}  // namespace nsflow
+}  // namespace vibeflow

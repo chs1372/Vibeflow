@@ -10,7 +10,7 @@
 #include "core/Types.hpp"
 #include "linalg/LinearSystem.hpp"
 
-namespace nsflow {
+namespace vibeflow {
 
 class Mesh;
 
@@ -32,4 +32,4 @@ class FluxScheme {
   virtual int correctorSweeps() const = 0;
 };
 
-}  // namespace nsflow
+}  // namespace vibeflow

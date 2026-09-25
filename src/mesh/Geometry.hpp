@@ -9,7 +9,7 @@
 #include <array>
 #include <vector>
 
-namespace nsflow::geometry {
+namespace vibeflow::geometry {
 
 // Area vector and centroid of quadrilateral faces, by fan triangulation from
 // the vertex average. Exact for planar quads, consistent for warped ones.
@@ -58,4 +58,4 @@ struct FaceTopology {
 };
 FaceTopology buildFaces(const std::vector<std::array<Index, 8>>& hexes);
 
-}  // namespace nsflow::geometry
+}  // namespace vibeflow::geometry

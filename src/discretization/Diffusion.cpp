@@ -4,7 +4,7 @@
 #include "mesh/Mesh.hpp"
 #include <cmath>
 
-namespace nsflow {
+namespace vibeflow {
 
 DiffusionOperator::DiffusionOperator(const Mesh& mesh, Real gamma, Comm comm)
     : m_(mesh), gamma_(gamma), comm_(comm),
@@ -141,4 +141,4 @@ int DiffusionOperator::solve(LinearSystem& sys, LinearSolver& solver,
   return maxSweeps;
 }
 
-}  // namespace nsflow
+}  // namespace vibeflow

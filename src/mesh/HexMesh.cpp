@@ -7,7 +7,7 @@
 #include <stdexcept>
 #include <cmath>
 
-namespace nsflow {
+namespace vibeflow {
 HexMesh::HexMesh(Index n, const std::vector<Vec3>& verts)
     : HexMesh(n, n, n, verts) {}
 
@@ -140,4 +140,4 @@ HexMesh HexMesh::fromVertexFile(Index n, const std::string& path) {
   return HexMesh(n, raw::readVertexFile(path));
 }
 
-}  // namespace nsflow
+}  // namespace vibeflow

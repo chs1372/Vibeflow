@@ -14,7 +14,7 @@
 #include <string>
 #include <vector>
 
-namespace nsflow {
+namespace vibeflow {
 
 class PolyMesh final : public Mesh {
  public:
@@ -56,4 +56,4 @@ class PolyMesh final : public Mesh {
   ScalarField cellVolume_;
 };
 
-}  // namespace nsflow
+}  // namespace vibeflow

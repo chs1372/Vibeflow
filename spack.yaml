@@ -1,9 +1,15 @@
-# Reproducible dependency environment.
+# Spack environment for the full dependency set.
 #   spack env activate -d .
 #   spack install
+#
+# Not yet exercised. The configuration every gate has actually been run on is
+# Ubuntu 24.04 system packages (OpenMPI 4.1, PETSc 3.19, hypre 2.28, CGNS 3.4)
+# plus Kokkos 5.2.2 built from source -- see "Build" in README.md. The versions
+# below are newer targets, not verified ones; adios2, paraview and parmetis are
+# for stages that do not exist yet.
 spack:
   specs:
-    - kokkos@4.4: +openmp
+    - kokkos@5.2.2: +openmp
     - petsc@3.22: +mpi+hypre+hdf5 ~debug
     - hypre@2.32: +mpi
     - cgns@4.4: +mpi+hdf5
@@ -15,6 +21,6 @@ spack:
   concretizer:
     unify: true
 
-  # GPU build: swap the kokkos and petsc specs for
-  #   - kokkos@4.4: +cuda+cuda_lambda cuda_arch=89
+  # GPU build (v2.5, not attempted yet): swap the kokkos and petsc specs for
+  #   - kokkos@5.2.2: +cuda+cuda_lambda cuda_arch=89
   #   - petsc@3.22: +mpi+hypre+cuda ~debug

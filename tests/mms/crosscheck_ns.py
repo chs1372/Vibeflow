@@ -36,8 +36,8 @@ PROTO = ROOT / "prototype"
 BIN = ROOT / "build" / "tests" / "ethier_steinman"
 REL_TOL = 1e-4
 import os
-OUTER = os.environ.get("NSFLOW_OUTER", "6")
-ENV = {"OMP_PROC_BIND": "false", "PATH": "/usr/bin:/bin", "NSFLOW_OUTER": OUTER}
+OUTER = os.environ.get("VIBEFLOW_OUTER", "6")
+ENV = {"OMP_PROC_BIND": "false", "PATH": "/usr/bin:/bin", "VIBEFLOW_OUTER": OUTER}
 GRIDS = (6, 12)
 
 ROW = re.compile(r"^\s*(\d+)\s+([\d.]+)\s+([\d.eE+-]+)")

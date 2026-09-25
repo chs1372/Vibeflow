@@ -1,9 +1,9 @@
 #include "core/Parallel.hpp"
 
-namespace nsflow {
+namespace vibeflow {
 
 ParallelScope::ParallelScope(int& argc, char**& argv) {
-#ifdef NSFLOW_HAVE_MPI
+#ifdef VIBEFLOW_HAVE_MPI
   int inited = 0;
   MPI_Initialized(&inited);
   if (!inited) MPI_Init(&argc, &argv);
@@ -13,7 +13,7 @@ ParallelScope::ParallelScope(int& argc, char**& argv) {
 }
 
 ParallelScope::~ParallelScope() {
-#ifdef NSFLOW_HAVE_MPI
+#ifdef VIBEFLOW_HAVE_MPI
   int finalized = 0;
   MPI_Finalized(&finalized);
   if (!finalized) MPI_Finalize();
@@ -22,7 +22,7 @@ ParallelScope::~ParallelScope() {
 
 Comm Comm::world() {
   Comm c;
-#ifdef NSFLOW_HAVE_MPI
+#ifdef VIBEFLOW_HAVE_MPI
   MPI_Comm_rank(MPI_COMM_WORLD, &c.rank_);
   MPI_Comm_size(MPI_COMM_WORLD, &c.size_);
 #endif
@@ -30,21 +30,21 @@ Comm Comm::world() {
 }
 
 Real Comm::sum(Real v) const {
-#ifdef NSFLOW_HAVE_MPI
+#ifdef VIBEFLOW_HAVE_MPI
   if (size_ > 1) { Real o = 0.0; MPI_Allreduce(&v, &o, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD); return o; }
 #endif
   return v;
 }
 
 Real Comm::max(Real v) const {
-#ifdef NSFLOW_HAVE_MPI
+#ifdef VIBEFLOW_HAVE_MPI
   if (size_ > 1) { Real o = 0.0; MPI_Allreduce(&v, &o, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD); return o; }
 #endif
   return v;
 }
 
 Index Comm::sum(Index v) const {
-#ifdef NSFLOW_HAVE_MPI
+#ifdef VIBEFLOW_HAVE_MPI
   if (size_ > 1) { long long i = v, o = 0; MPI_Allreduce(&i, &o, 1, MPI_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
                    return static_cast<Index>(o); }
 #endif
@@ -55,7 +55,7 @@ void Comm::exchange(const std::vector<int>& sendRanks,
                     const std::vector<std::vector<Real>>& sendBufs,
                     const std::vector<int>& recvRanks,
                     std::vector<std::vector<Real>>& recvBufs) const {
-#ifdef NSFLOW_HAVE_MPI
+#ifdef VIBEFLOW_HAVE_MPI
   if (size_ <= 1) return;
   std::vector<MPI_Request> reqs;
   reqs.reserve(sendRanks.size() + recvRanks.size());
@@ -75,4 +75,4 @@ void Comm::exchange(const std::vector<int>& sendRanks,
 #endif
 }
 
-}  // namespace nsflow
+}  // namespace vibeflow

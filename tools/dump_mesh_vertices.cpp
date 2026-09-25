@@ -13,7 +13,7 @@ int main(int argc, char** argv) {
     const int n = argc > 1 ? std::stoi(argv[1]) : 8;
     const double skew = argc > 2 ? std::stod(argv[2]) : 0.25;
     const std::string mode = argc > 3 ? argv[3] : "smooth";
-    auto m = nsflow::HexMesh::generate(n, skew, mode);
+    auto m = vibeflow::HexMesh::generate(n, skew, mode);
     std::printf("%zu 3\n", m.points().size());
     for (const auto& p : m.points())
       std::printf("%.17g %.17g %.17g\n", p.x, p.y, p.z);

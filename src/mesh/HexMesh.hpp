@@ -11,7 +11,7 @@
 #include "mesh/Mesh.hpp"
 #include <string>
 
-namespace nsflow {
+namespace vibeflow {
 
 class HexMesh final : public Mesh {
  public:
@@ -92,4 +92,4 @@ class HexMesh final : public Mesh {
   std::vector<std::array<Index, 8>> hexes_;
 };
 
-}  // namespace nsflow
+}  // namespace vibeflow

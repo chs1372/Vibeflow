@@ -5,7 +5,7 @@
 #include <fstream>
 #include <stdexcept>
 
-namespace nsflow {
+namespace vibeflow {
 
 std::vector<std::array<Real, 3>> RawMesh::centroids() const {
   std::vector<std::array<Real, 3>> c(hexes.size());
@@ -146,4 +146,4 @@ std::vector<Vec3> readVertexFile(const std::string& path) {
 }
 
 }  // namespace raw
-}  // namespace nsflow
+}  // namespace vibeflow

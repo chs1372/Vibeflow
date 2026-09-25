@@ -7,7 +7,7 @@
 #include <numeric>
 #include <stdexcept>
 
-namespace nsflow {
+namespace vibeflow {
 namespace {
 
 // Host copies of the global mesh, which the partitioner needs on the CPU.
@@ -328,4 +328,4 @@ Real DistributedMesh::maxSkewness() const {
   return comm_.max(geometry::maxSkewness(owner_, neigh_, cellCentre_, faceCentre_));
 }
 
-}  // namespace nsflow
+}  // namespace vibeflow

@@ -3,7 +3,7 @@
 #include <fstream>
 #include <stdexcept>
 
-namespace nsflow {
+namespace vibeflow {
 
 PolyMesh::PolyMesh(std::vector<Vec3> pts, std::vector<std::array<Index, 8>> hexes)
     : points_(std::move(pts)), hexes_(std::move(hexes)) {
@@ -78,4 +78,4 @@ Real PolyMesh::maxSkewness() const {
   return geometry::maxSkewness(owner_, neigh_, cellCentre_, faceCentre_);
 }
 
-}  // namespace nsflow
+}  // namespace vibeflow

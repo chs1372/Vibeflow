@@ -15,7 +15,7 @@
 #include "discretization/Diffusion.hpp"
 #include "discretization/Gradient.hpp"
 
-namespace nsflow {
+namespace vibeflow {
 
 class Mesh;
 class LinearSystem;
@@ -48,4 +48,4 @@ class ConvectionDiffusion {
   LeastSquaresGradient grad_;
 };
 
-}  // namespace nsflow
+}  // namespace vibeflow

@@ -12,7 +12,7 @@
 #include "core/Types.hpp"
 #include "linalg/LinearSolver.hpp"
 
-namespace nsflow {
+namespace vibeflow {
 
 class Mesh;
 
@@ -30,4 +30,4 @@ class NativeBiCGStab final : public LinearSolver {
   ScalarField r_, r0_, p_, v_, s_, t_, ph_, sh_;
 };
 
-}  // namespace nsflow
+}  // namespace vibeflow

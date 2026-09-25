@@ -13,7 +13,7 @@ int main(int argc, char** argv) {
   Kokkos::initialize(argc, argv);
   int rc = 0;
   {
-    auto mesh = nsflow::PolyMesh::fromHexFile(argv[1]);
+    auto mesh = vibeflow::PolyMesh::fromHexFile(argv[1]);
     std::printf("%s\n  cells %d  faces %d/%d  non-orth %.1f deg  skew %.2f  "
                 "closure %.1e\n",
                 argv[1], static_cast<int>(mesh.nCells()),
@@ -25,11 +25,11 @@ int main(int argc, char** argv) {
     // A maximum hides the shape of the distribution, and it is the shape that
     // decides whether a solver survives: one tangled cell in twenty thousand
     // does not move the max skewness much and will still wreck a run.
-    auto vol = Kokkos::create_mirror_view_and_copy(nsflow::HostSpace::memory_space(),
+    auto vol = Kokkos::create_mirror_view_and_copy(vibeflow::HostSpace::memory_space(),
                                                    mesh.cellVolume());
-    nsflow::Real vmin = 1e300, vmax = -1e300;
+    vibeflow::Real vmin = 1e300, vmax = -1e300;
     int negative = 0;
-    for (nsflow::Index c = 0; c < mesh.nCells(); ++c) {
+    for (vibeflow::Index c = 0; c < mesh.nCells(); ++c) {
       vmin = std::min(vmin, vol(c));
       vmax = std::max(vmax, vol(c));
       if (vol(c) <= 0.0) ++negative;
@@ -42,39 +42,39 @@ int main(int argc, char** argv) {
     }
 
     // Per-face non-orthogonality and skewness histograms.
-    auto own = Kokkos::create_mirror_view_and_copy(nsflow::HostSpace::memory_space(),
+    auto own = Kokkos::create_mirror_view_and_copy(vibeflow::HostSpace::memory_space(),
                                                    mesh.owner());
-    auto nei = Kokkos::create_mirror_view_and_copy(nsflow::HostSpace::memory_space(),
+    auto nei = Kokkos::create_mirror_view_and_copy(vibeflow::HostSpace::memory_space(),
                                                    mesh.neighbour());
-    auto cc = Kokkos::create_mirror_view_and_copy(nsflow::HostSpace::memory_space(),
+    auto cc = Kokkos::create_mirror_view_and_copy(vibeflow::HostSpace::memory_space(),
                                                   mesh.cellCentre());
-    auto fa = Kokkos::create_mirror_view_and_copy(nsflow::HostSpace::memory_space(),
+    auto fa = Kokkos::create_mirror_view_and_copy(vibeflow::HostSpace::memory_space(),
                                                   mesh.faceArea());
-    auto fc = Kokkos::create_mirror_view_and_copy(nsflow::HostSpace::memory_space(),
+    auto fc = Kokkos::create_mirror_view_and_copy(vibeflow::HostSpace::memory_space(),
                                                   mesh.faceCentre());
     const int NB = 5;
-    const nsflow::Real edges[NB] = {30.0, 45.0, 60.0, 70.0, 80.0};
+    const vibeflow::Real edges[NB] = {30.0, 45.0, 60.0, 70.0, 80.0};
     int above[NB] = {0, 0, 0, 0, 0};
     int skewAbove = 0;
-    const nsflow::Index nf = mesh.nInternalFaces();
-    for (nsflow::Index f = 0; f < nf; ++f) {
-      nsflow::Real d[3], a[3], dd = 0.0, aa = 0.0, da = 0.0;
+    const vibeflow::Index nf = mesh.nInternalFaces();
+    for (vibeflow::Index f = 0; f < nf; ++f) {
+      vibeflow::Real d[3], a[3], dd = 0.0, aa = 0.0, da = 0.0;
       for (int i = 0; i < 3; ++i) {
         d[i] = cc(nei(f), i) - cc(own(f), i);
         a[i] = fa(f, i);
         dd += d[i] * d[i]; aa += a[i] * a[i]; da += d[i] * a[i];
       }
-      const nsflow::Real ang = std::acos(std::min(1.0, std::abs(da) /
+      const vibeflow::Real ang = std::acos(std::min(1.0, std::abs(da) /
                                    (std::sqrt(dd) * std::sqrt(aa)))) * 180.0 / M_PI;
       for (int b = 0; b < NB; ++b) if (ang > edges[b]) ++above[b];
       // skewness: distance from the face centre to the owner-neighbour line,
       // as a fraction of that line's length
-      nsflow::Real t = 0.0;
+      vibeflow::Real t = 0.0;
       for (int i = 0; i < 3; ++i) t += (fc(f, i) - cc(own(f), i)) * d[i];
       t /= dd;
-      nsflow::Real s2 = 0.0;
+      vibeflow::Real s2 = 0.0;
       for (int i = 0; i < 3; ++i) {
-        const nsflow::Real e = fc(f, i) - (cc(own(f), i) + t * d[i]);
+        const vibeflow::Real e = fc(f, i) - (cc(own(f), i) + t * d[i]);
         s2 += e * e;
       }
       if (std::sqrt(s2 / dd) > 0.5) ++skewAbove;
@@ -92,41 +92,41 @@ int main(int argc, char** argv) {
     // a gradient amplified by 1/det -- garbage in one cell, every step, in the
     // same place. Scaled against (trace/3)^3 this is dimensionless: an
     // isotropic stencil scores order 1, a degenerate one scores zero.
-    auto bcl = Kokkos::create_mirror_view_and_copy(nsflow::HostSpace::memory_space(),
+    auto bcl = Kokkos::create_mirror_view_and_copy(vibeflow::HostSpace::memory_space(),
                                                    mesh.boundaryCell());
-    auto bcn = Kokkos::create_mirror_view_and_copy(nsflow::HostSpace::memory_space(),
+    auto bcn = Kokkos::create_mirror_view_and_copy(vibeflow::HostSpace::memory_space(),
                                                    mesh.boundaryCentre());
-    const nsflow::Index ncell = mesh.nCells();
-    std::array<nsflow::Real, 9> zero9{};
-    std::vector<std::array<nsflow::Real, 9>> A(static_cast<std::size_t>(ncell), zero9);
-    auto accum = [&](nsflow::Index c, const nsflow::Real* d) {
-      nsflow::Real dd = d[0]*d[0] + d[1]*d[1] + d[2]*d[2];
+    const vibeflow::Index ncell = mesh.nCells();
+    std::array<vibeflow::Real, 9> zero9{};
+    std::vector<std::array<vibeflow::Real, 9>> A(static_cast<std::size_t>(ncell), zero9);
+    auto accum = [&](vibeflow::Index c, const vibeflow::Real* d) {
+      vibeflow::Real dd = d[0]*d[0] + d[1]*d[1] + d[2]*d[2];
       if (dd <= 0.0) return;
-      const nsflow::Real w = 1.0 / dd;
+      const vibeflow::Real w = 1.0 / dd;
       for (int a2 = 0; a2 < 3; ++a2)
         for (int b2 = 0; b2 < 3; ++b2) A[c][a2*3+b2] += w * d[a2] * d[b2];
     };
-    for (nsflow::Index f = 0; f < nf; ++f) {
-      nsflow::Real d[3];
+    for (vibeflow::Index f = 0; f < nf; ++f) {
+      vibeflow::Real d[3];
       for (int i = 0; i < 3; ++i) d[i] = cc(nei(f), i) - cc(own(f), i);
       accum(own(f), d);
       accum(nei(f), d);
     }
-    for (nsflow::Index f = 0; f < mesh.nBoundaryFaces(); ++f) {
-      nsflow::Real d[3];
+    for (vibeflow::Index f = 0; f < mesh.nBoundaryFaces(); ++f) {
+      vibeflow::Real d[3];
       for (int i = 0; i < 3; ++i) d[i] = bcn(f, i) - cc(bcl(f), i);
       accum(bcl(f), d);
     }
-    nsflow::Real worst = 1e300;
-    nsflow::Index worstCell = -1;
+    vibeflow::Real worst = 1e300;
+    vibeflow::Index worstCell = -1;
     int belowE3 = 0, belowE6 = 0;
-    for (nsflow::Index c = 0; c < ncell; ++c) {
+    for (vibeflow::Index c = 0; c < ncell; ++c) {
       const auto& m = A[c];
-      const nsflow::Real det = m[0]*(m[4]*m[8] - m[5]*m[7])
+      const vibeflow::Real det = m[0]*(m[4]*m[8] - m[5]*m[7])
                              - m[1]*(m[3]*m[8] - m[5]*m[6])
                              + m[2]*(m[3]*m[7] - m[4]*m[6]);
-      const nsflow::Real tr = (m[0] + m[4] + m[8]) / 3.0;
-      const nsflow::Real q = (tr > 0.0) ? det / (tr*tr*tr) : 0.0;
+      const vibeflow::Real tr = (m[0] + m[4] + m[8]) / 3.0;
+      const vibeflow::Real q = (tr > 0.0) ? det / (tr*tr*tr) : 0.0;
       if (q < 1e-3) ++belowE3;
       if (q < 1e-6) ++belowE6;
       if (q < worst) { worst = q; worstCell = c; }

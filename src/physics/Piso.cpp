@@ -6,7 +6,7 @@
 #include <algorithm>
 #include <cmath>
 
-namespace nsflow {
+namespace vibeflow {
 namespace {
 struct Stopwatch {
   std::chrono::steady_clock::time_point t0{std::chrono::steady_clock::now()};
@@ -848,4 +848,4 @@ StepReport PisoSolver::advance(const VectorField& uB, const ScalarField& fB,
   return rep;
 }
 
-}  // namespace nsflow
+}  // namespace vibeflow

@@ -1,7 +1,7 @@
 #include "linalg/LinearSystem.hpp"
 #include "mesh/Mesh.hpp"
 
-namespace nsflow {
+namespace vibeflow {
 
 LinearSystem::LinearSystem(const Mesh& mesh)
     // Sized over TOTAL cells: face loops write into ghost rows. Those rows are
@@ -18,4 +18,4 @@ void LinearSystem::zero() {
   Kokkos::deep_copy(source_, 0.0);
 }
 
-}  // namespace nsflow
+}  // namespace vibeflow

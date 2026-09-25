@@ -5,7 +5,7 @@
 
 #include "core/Types.hpp"
 
-namespace nsflow {
+namespace vibeflow {
 
 class Mesh;
 
@@ -23,4 +23,4 @@ class LeastSquaresGradient {
   ScalarField wInt_, wBnd_;
 };
 
-}  // namespace nsflow
+}  // namespace vibeflow

@@ -3,7 +3,7 @@
 #include <cmath>
 #include <map>
 
-namespace nsflow::geometry {
+namespace vibeflow::geometry {
 
 VectorField uploadPoints(const std::vector<Vec3>& pts) {
   VectorField v("points", pts.size(), 3);
@@ -192,4 +192,4 @@ FaceTopology buildFaces(const std::vector<std::array<Index, 8>>& hexes) {
   return t;
 }
 
-}  // namespace nsflow::geometry
+}  // namespace vibeflow::geometry

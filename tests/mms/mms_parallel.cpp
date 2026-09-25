@@ -22,7 +22,7 @@
 #include <cstdlib>
 #include <string>
 
-using namespace nsflow;
+using namespace vibeflow;
 
 namespace {
 
@@ -96,7 +96,7 @@ int main(int argc, char** argv) {
                     static_cast<int>(gcells), static_cast<int>(globalCells));
       rc = 1;
     }
-#ifdef NSFLOW_HAVE_MPI
+#ifdef VIBEFLOW_HAVE_MPI
     int g = rc; MPI_Allreduce(&g, &rc, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
 #endif
   }

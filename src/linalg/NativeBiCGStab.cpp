@@ -4,7 +4,7 @@
 #include <chrono>
 #include <cmath>
 
-namespace nsflow {
+namespace vibeflow {
 namespace {
 Real dot(const ScalarField& a, const ScalarField& b, Index n, const Comm& c) {
   Real s = 0.0;
@@ -108,4 +108,4 @@ SolveReport NativeBiCGStab::solve(LinearSystem& sys, ScalarField& x,
   return rep;
 }
 
-}  // namespace nsflow
+}  // namespace vibeflow

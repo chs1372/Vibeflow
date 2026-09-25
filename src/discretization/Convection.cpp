@@ -4,7 +4,7 @@
 #include "mesh/Mesh.hpp"
 #include <cmath>
 
-namespace nsflow {
+namespace vibeflow {
 
 ConvectionDiffusion::ConvectionDiffusion(const Mesh& mesh, Real gamma,
                                          const ScalarField& fi, const ScalarField& fb)
@@ -179,4 +179,4 @@ Real ConvectionDiffusion::maxPeclet() const {
   return m;
 }
 
-}  // namespace nsflow
+}  // namespace vibeflow

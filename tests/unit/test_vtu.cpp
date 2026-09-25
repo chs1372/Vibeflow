@@ -8,7 +8,7 @@
 #include <cstdio>
 #include <string>
 
-using namespace nsflow;
+using namespace vibeflow;
 
 int main(int argc, char** argv) {
   Kokkos::initialize(argc, argv);

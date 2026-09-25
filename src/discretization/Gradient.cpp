@@ -1,7 +1,7 @@
 #include "discretization/Gradient.hpp"
 #include "mesh/Mesh.hpp"
 
-namespace nsflow {
+namespace vibeflow {
 
 LeastSquaresGradient::LeastSquaresGradient(const Mesh& mesh)
     : m_(mesh),
@@ -105,4 +105,4 @@ void LeastSquaresGradient::operator()(const ScalarField& phi, const ScalarField&
   if (const auto* h = m_.halo()) h->exchange(grad);
 }
 
-}  // namespace nsflow
+}  // namespace vibeflow

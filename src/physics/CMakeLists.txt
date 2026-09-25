@@ -1,2 +1,2 @@
-add_library(nsflow_physics Piso.cpp)
-target_link_libraries(nsflow_physics PUBLIC nsflow_discretization nsflow_linalg)
+add_library(vibeflow_physics Piso.cpp)
+target_link_libraries(vibeflow_physics PUBLIC vibeflow_discretization vibeflow_linalg)

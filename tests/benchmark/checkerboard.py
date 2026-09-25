@@ -64,11 +64,12 @@ def main():
         print("  cylinder not built")
         return None
     if not MESH.exists():
-        print(f"  {MESH.name} missing; generate it with cases/cylinder/make_mesh.py")
+        print(f"  {MESH.name} missing; generate the meshes with "
+              "sh cases/cylinder/make_meshes.sh")
         return None
 
     env = {**os.environ, "OMP_PROC_BIND": "false", "OMP_NUM_THREADS": "2",
-           "NSFLOW_PRESSURE": "cg+hypre", "CYL_REPORT": str(STEPS)}
+           "VIBEFLOW_PRESSURE": "cg+hypre", "CYL_REPORT": str(STEPS)}
     form = env.get("CYL_RC_FORM", "standard")
     try:
         r = subprocess.run([str(BIN), str(MESH), str(DT), str(DT * STEPS)],

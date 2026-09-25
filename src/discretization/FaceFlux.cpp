@@ -2,7 +2,7 @@
 #include "mesh/HexMesh.hpp"
 #include <cmath>
 
-namespace nsflow {
+namespace vibeflow {
 namespace {
 
 // Two-point Gauss-Legendre on [0, 1].
@@ -132,4 +132,4 @@ Real maxDiscreteDivergence(const HexMesh& mesh, const ScalarField& fi,
   return m;
 }
 
-}  // namespace nsflow
+}  // namespace vibeflow

@@ -19,7 +19,7 @@
 #include <string>
 #include <vector>
 
-namespace nsflow {
+namespace vibeflow {
 
 class Mesh;
 
@@ -53,4 +53,4 @@ class PetscSolver final : public LinearSolver {
   std::string config_;
 };
 
-}  // namespace nsflow
+}  // namespace vibeflow

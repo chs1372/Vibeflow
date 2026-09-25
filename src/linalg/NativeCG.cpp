@@ -4,7 +4,7 @@
 #include <chrono>
 #include <cmath>
 
-namespace nsflow {
+namespace vibeflow {
 
 NativeCG::NativeCG(const Mesh& mesh, Comm comm, bool singularNullSpace)
     : m_(mesh), comm_(comm), nullSpace_(singularNullSpace),
@@ -119,4 +119,4 @@ SolveReport NativeCG::solve(LinearSystem& sys, ScalarField& x,
   return rep;
 }
 
-}  // namespace nsflow
+}  // namespace vibeflow

@@ -8,7 +8,7 @@
 #include "core/Types.hpp"
 #include <string>
 
-namespace nsflow {
+namespace vibeflow {
 
 class LinearSystem;
 
@@ -61,4 +61,4 @@ class LinearSolver {
  public:
 };
 
-}  // namespace nsflow
+}  // namespace vibeflow

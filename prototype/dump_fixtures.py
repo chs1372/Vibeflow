@@ -34,7 +34,7 @@ def main():
     n, skew, seed = 8, 0.25, 1
     m = HexMesh(n, skew=skew, seed=seed)
 
-    manifest = [f"# nsflow v0 fixtures  n={n} skew={skew} seed={seed}",
+    manifest = [f"# Vibeflow v0 fixtures  n={n} skew={skew} seed={seed}",
                 f"# cells={m.nc} internal_faces={len(m.owner)} boundary_faces={len(m.b_cell)}",
                 f"# max_nonorthogonality_deg={m.non_orthogonality():.17g}",
                 f"# closure_error={m.closure_error():.17g}",

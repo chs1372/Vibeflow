@@ -11,7 +11,7 @@
 #include "discretization/Diffusion.hpp"
 #include "linalg/LinearSystem.hpp"
 #include "linalg/NativeCG.hpp"
-#ifdef NSFLOW_HAVE_PETSC
+#ifdef VIBEFLOW_HAVE_PETSC
 #include "linalg/PetscSolver.hpp"
 #include <petscsys.h>
 #endif
@@ -21,7 +21,7 @@
 #include <string>
 #include <vector>
 
-using namespace nsflow;
+using namespace vibeflow;
 
 namespace {
 constexpr Real PI = 3.14159265358979323846;
@@ -32,7 +32,7 @@ int failures = 0;
 
 int main(int argc, char** argv) {
   ParallelScope mpi(argc, argv);
-#ifdef NSFLOW_HAVE_PETSC
+#ifdef VIBEFLOW_HAVE_PETSC
   PetscInitialize(&argc, &argv, nullptr, nullptr);
 #endif
   Kokkos::initialize(argc, argv);
@@ -87,7 +87,7 @@ int main(int argc, char** argv) {
     NativeCG native(mesh, comm);
     doRun(native.backendName(), native);
 
-#ifdef NSFLOW_HAVE_PETSC
+#ifdef VIBEFLOW_HAVE_PETSC
     std::printf("PETSc built with hypre: %s\n", PetscSolver::hasHypre() ? "yes" : "no");
     for (const char* cfg : {"cg+jacobi", "cg+ilu", "cg+hypre", "gmres+hypre"}) {
       if (std::string(cfg).find("hypre") != std::string::npos && !PetscSolver::hasHypre())
@@ -113,7 +113,7 @@ int main(int argc, char** argv) {
     std::printf("\nbackend equivalence gate: %s\n", failures ? "FAIL" : "PASS");
   }
   Kokkos::finalize();
-#ifdef NSFLOW_HAVE_PETSC
+#ifdef VIBEFLOW_HAVE_PETSC
   PetscFinalize();
 #endif
   return failures ? 1 : 0;

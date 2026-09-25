@@ -5,7 +5,7 @@
 #include <Kokkos_Core.hpp>
 #include <cstdint>
 
-namespace nsflow {
+namespace vibeflow {
 
 using Real  = double;
 using Index = std::int32_t;   // local indices; global ids are Int64
@@ -31,4 +31,4 @@ struct Vec3 {
   KOKKOS_INLINE_FUNCTION Real mag2() const { return dot(*this); }
 };
 
-}  // namespace nsflow
+}  // namespace vibeflow

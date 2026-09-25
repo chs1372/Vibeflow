@@ -16,7 +16,7 @@
 #include <string>
 #include <vector>
 
-namespace nsflow {
+namespace vibeflow {
 
 class Mesh;
 
@@ -47,4 +47,4 @@ class VtuWriter {
   std::vector<Field> fields_;
 };
 
-}  // namespace nsflow
+}  // namespace vibeflow

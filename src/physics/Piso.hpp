@@ -26,7 +26,7 @@
 #include "discretization/Diffusion.hpp"
 #include "discretization/Gradient.hpp"
 
-namespace nsflow {
+namespace vibeflow {
 
 class Mesh;
 class LinearSolver;
@@ -280,4 +280,4 @@ class PisoSolver {
   View2<Real> rcComp_;        // per internal face: HfS, D gpf, D snGrad, Choi
 };
 
-}  // namespace nsflow
+}  // namespace vibeflow

@@ -6,7 +6,7 @@
 // which HexMesh bypasses by knowing its own topology.
 
 #include "mesh/HexMesh.hpp"
-#ifdef NSFLOW_HAVE_CGNS
+#ifdef VIBEFLOW_HAVE_CGNS
 #include "mesh/CgnsMesh.hpp"
 #endif
 #include <algorithm>
@@ -15,9 +15,9 @@
 #include <string>
 #include <vector>
 
-using namespace nsflow;
+using namespace vibeflow;
 
-#ifdef NSFLOW_HAVE_CGNS
+#ifdef VIBEFLOW_HAVE_CGNS
 namespace {
 
 int failures = 0;
@@ -55,7 +55,7 @@ template <class V> std::vector<Real> mags(const V& v) {
 #endif
 
 int main(int argc, char** argv) {
-#ifndef NSFLOW_HAVE_CGNS
+#ifndef VIBEFLOW_HAVE_CGNS
   (void)argc; (void)argv;
   std::printf("built without CGNS -- skipping\n");
   return 0;

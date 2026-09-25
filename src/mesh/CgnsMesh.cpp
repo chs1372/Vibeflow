@@ -5,7 +5,7 @@
 #include <stdexcept>
 #include <string>
 
-namespace nsflow {
+namespace vibeflow {
 namespace {
 
 void check(int ierr, const char* what) {
@@ -147,4 +147,4 @@ Real CgnsMesh::maxSkewness() const {
   return geometry::maxSkewness(owner_, neigh_, cellCentre_, faceCentre_);
 }
 
-}  // namespace nsflow
+}  // namespace vibeflow

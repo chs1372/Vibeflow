@@ -1,4 +1,4 @@
-# nsflow v0 fixtures  n=8 skew=0.25 seed=1
+# Vibeflow v0 fixtures  n=8 skew=0.25 seed=1
 # cells=512 internal_faces=1344 boundary_faces=384
 # max_nonorthogonality_deg=25.650505504806468
 # closure_error=7.8062556418956319e-18

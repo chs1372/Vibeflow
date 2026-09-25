@@ -7,11 +7,11 @@
 #include "core/Types.hpp"
 #include <vector>
 
-#ifdef NSFLOW_HAVE_MPI
+#ifdef VIBEFLOW_HAVE_MPI
 #include <mpi.h>
 #endif
 
-namespace nsflow {
+namespace vibeflow {
 
 class Comm {
  public:
@@ -41,4 +41,4 @@ struct ParallelScope {
   ~ParallelScope();
 };
 
-}  // namespace nsflow
+}  // namespace vibeflow
