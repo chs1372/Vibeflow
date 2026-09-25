@@ -11,8 +11,8 @@ jobs:
     # locally verified configuration are both Ubuntu 24.04.
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with: { python-version: "3.12" }
       - run: pip install numpy scipy meshio h5py
 
@@ -21,7 +21,7 @@ jobs:
 
       - name: Cache Kokkos
         id: kokkos-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/kokkos-install
           key: kokkos-5.2.2-serial-openmp-${{ runner.os }}

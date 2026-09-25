@@ -1081,3 +1081,77 @@ Strouhal number and the drag, and both sit 3–4% high on both meshes. That is
 a hypothesis, recorded as one: it is tested by one run with the lateral
 boundaries at ±20 D, and it should be tested before any further refinement,
 because refinement has just been shown not to be the lever.
+
+## ADR-028 — Published as Vibeflow
+**Decided.** The project is public, under the name Vibeflow, at
+github.com/chs1372/Vibeflow. "nsflow" was a working name, marked in the README
+as a placeholder from the first commit. The rename is complete and has no
+compatibility aliases, because nothing outside this repository ever used the
+old names:
+
+| | before | after |
+| --- | --- | --- |
+| C++ namespace | `nsflow` | `vibeflow` |
+| CMake project, targets | `nsflow`, `nsflow_core`, … | `Vibeflow`, `vibeflow_core`, … |
+| CMake option | `NSFLOW_BUILD_TESTS` | `VIBEFLOW_BUILD_TESTS` |
+| compile definitions | `NSFLOW_HAVE_MPI` / `_PETSC` / `_CGNS` | `VIBEFLOW_HAVE_…` |
+| environment knobs | `NSFLOW_PRESSURE`, `NSFLOW_OUTER`, … | `VIBEFLOW_PRESSURE`, `VIBEFLOW_OUTER`, … |
+
+Commits before the rename keep the old name. They are the record, and this
+log refers to them as they were.
+
+*Why the name:* the solver is written by vibe coding — an AI assistant writes
+the implementation — and the gate-first rule is what makes that acceptable
+for numerical code. The name says how it was made; the gates say whether it
+works.
+
+### Found by reading the repository as a stranger would
+
+None of these could have been caught by a gate, because none of them is in
+the solver. Each is something a new user would have hit.
+
+* **A build option that could only break the build.** `NSFLOW_WITH_PETSC`
+  defaulted to off and did nothing, because `src/linalg` detects PETSc through
+  pkg-config regardless; switching it on called `find_package(PETSc
+  REQUIRED)`, which fails against the pkg-config install that every PETSc run
+  in this log actually used. Removed. MPI, CGNS and PETSc are each detected
+  where they are used.
+* **A CI workflow that had never run.** It installed Kokkos with
+  `-DCMAKE_INSTALL_PREFIX=~/kokkos-install`; neither bash nor CMake expands a
+  tilde in the middle of a word, so Kokkos would have gone into a directory
+  literally named `~` and the next step would not have found it. Now `$HOME`,
+  pinned to `ubuntu-24.04`, and replayed step for step before the first push:
+  a fresh clone, Kokkos 5.2.2 cloned from its tag and built with the
+  workflow's own flags, fixtures regenerated with no diff, every v0 gate
+  passing — 147 s end to end on two cores. Its actions also moved to their
+  current major versions, which run on Node 24; the replay covers the run
+  steps, not the actions themselves, so the first run on GitHub is still the
+  first real test of those.
+* **A benchmark mesh nobody could regenerate.** The cylinder meshes are
+  generated, not stored, and the settings of the 6,763-cell one were never
+  written down. Recovered by search: `CYL_SIZEMIN=0.06 CYL_SIZEMAX=1.0`
+  reproduces it byte for byte with gmsh 4.15.2, as the defaults reproduce the
+  21,811-cell one. `cases/cylinder/make_meshes.sh` now makes both and records
+  their checksums, and the wake gate skips with that instruction rather than
+  failing on a missing file.
+* **A licence GitHub could not read.** The policy note on GPL tools stood in
+  for the licence. `LICENSE` is now the canonical Apache-2.0 text and the note
+  is `docs/LICENSING.md`.
+* **A dependency file that had never been used.** `spack.yaml` named Kokkos
+  4.4 while everything was built against 5.2.2. It now names 5.2.2 and says
+  it has not been exercised; the README gives the configuration that has.
+
+Re-run from that fresh clone under the new name, the whole suite passes: the
+8 v0 gates inside the 147 s replay, then the 13 v1 gates in 54 minutes on the
+meshes the new script generated. The coarse cylinder gives Strouhal 0.1698,
+drag 1.4233 and lift amplitude 0.3671, the same in every printed digit as
+ADR-026; a rename that changed a number would have been a defect. The opt-in
+Re = 1000 cavity had not been run since the Rhie-Chow change of ADR-026 and
+was run now for the README: rms 0.0121 and 0.0126 against Ghia, from 0.0123
+and 0.0127 in ADR-018.
+
+The authorship of every commit is the publishing account's GitHub no-reply
+address. The AI co-author trailers are unchanged.
+
+*Reverses if:* nothing technical. A rename costs one commit only until other
+people depend on the names, which from this commit on they may.
