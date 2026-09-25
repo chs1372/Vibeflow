@@ -971,16 +971,40 @@ been put down to the two implementations' linear algebra. It was the
 near-neutral mode amplifying round-off differences between them; with the mode
 gone they agree to round-off.
 
-**The distorted-mesh error constant is about 9% larger** at n = 6 and 12
-(1.263e-2 against 1.162e-2 at n = 6). The order is unchanged — 1.98 orthogonal,
-1.69 distorted for 6→12. The extra term happened to reduce the error on a
-smooth manufactured solution; it also made the scheme unstable. That is the
-trade, and it is not close.
+**The order study came out better, not worse.** At the coarsest meshes the
+standard form's error is larger on the distorted family, and the first
+version of this ADR reported that alone ("about 9% larger"). The full C++
+study shows the gap closing with refinement and the order rising:
 
-**Every benchmark number predating this ADR was computed with the defective
-form** — the coarse cylinder's St 0.1688, Cd 1.4177 and the Ghia comparison
-included. They are re-measured by the gate suite run that follows this change,
-not assumed to carry over.
+| n | interpolated L2 | standard L2 | gap |
+| --- | --- | --- | --- |
+| 8 | 7.031e-3 | 7.835e-3 | +11% |
+| 16 | 2.172e-3 | 2.310e-3 | +6% |
+| 32 | 5.838e-4 | 5.922e-4 | +1.4% |
+| order, 16→32 | 1.895 | **1.964** | |
+
+Orthogonal: 1.986 → 1.991. The old form's smaller coarse-mesh error was a
+lower-order term working in its favour on a smooth manufactured solution, not
+an asymptotic advantage. The non-orthogonality loop on the distorted study now
+converges in **one** sweep; the flipping mode had been making it fight.
+
+**Every benchmark predating this ADR used the defective form**, so the whole
+suite was re-run after the change — all v0 and v1 gates pass:
+
+| | before | after |
+| --- | --- | --- |
+| cylinder Strouhal | 0.1688 | 0.1698 |
+| cylinder mean drag | 1.4177 | 1.4233 |
+| cylinder lift amplitude | 0.3636 | 0.3671 |
+| cylinder run, 4,000 steps | 3,392 s | 2,897 s |
+| Ghia cavity rms (u, v) | 0.0016, 0.0044 | 0.0016, 0.0044 |
+
+The coarse cylinder moves by well under one percent and stays in band; its
+drag is still at the top of the band, which is its near-wall resolution —
+the refined mesh, usable for the first time, gives 1.30–1.36 at dt = 0.1. The
+cavity does not move at all: on a uniform orthogonal mesh the interpolated and
+compact gradients nearly coincide, which is also why no earlier gate could
+have told the two forms apart.
 
 The boundary flux at a FixedValue face was already built in the standard form
 (`FbStar = H/aP · S`), so the internal faces now agree with it — an
