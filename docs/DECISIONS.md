@@ -602,7 +602,11 @@ spanning three orders of magnitude in volume.
 Drag and lift amplitude both sit at the top of their bands. That is what a
 coarse near-wall mesh does — 6,763 cells with the first cell at D/17, where
 the Re = 100 boundary layer is about D/10 thick — and it should improve with
-refinement rather than be argued away. The bands are wide on purpose: published
+refinement rather than be argued away.
+
+**[Corrected by ADR-027]** It did not improve with refinement. Halving the
+near-wall cell moved the drag by 1.7% and the Strouhal number not at all, so
+near-wall resolution is not what holds them high. The bands are wide on purpose: published
 values for this case move by several percent with domain size and blockage.
 
 ### The time-step limit
@@ -961,7 +965,7 @@ And the time step the refined mesh tolerates, 150 steps each:
 | dt | Courant | interpolated | standard |
 | --- | --- | --- | --- |
 | 0.05 | ~6 | diverges by step 120 | stable |
-| 0.1 | ~11 | NaN in 5 steps | stable, drag 1.30–1.36 |
+| 0.1 | ~11 | NaN in 5 steps | stable (pre-shedding drag 1.30–1.36) |
 | 0.2 | ~21–31 | — | stable, full shedding |
 
 ### Side effects, all measured
@@ -999,9 +1003,12 @@ suite was re-run after the change — all v0 and v1 gates pass:
 | cylinder run, 4,000 steps | 3,392 s | 2,897 s |
 | Ghia cavity rms (u, v) | 0.0016, 0.0044 | 0.0016, 0.0044 |
 
-The coarse cylinder moves by well under one percent and stays in band; its
-drag is still at the top of the band, which is its near-wall resolution —
-the refined mesh, usable for the first time, gives 1.30–1.36 at dt = 0.1. The
+The coarse cylinder moves by well under one percent and stays in band. Its
+drag is still at the top of the band; this ADR first attributed that to its
+near-wall resolution, citing 1.30–1.36 from the refined mesh at dt = 0.1. That
+figure was the transient before shedding developed, and the saturated
+refined-mesh drag is 1.399 — see ADR-027, which also shows resolution is not
+the cause. The
 cavity does not move at all: on a uniform orthogonal mesh the interpolated and
 compact gradients nearly coincide, which is also why no earlier gate could
 have told the two forms apart.
@@ -1039,3 +1046,38 @@ that can hang the suite is not a gate.
 Courant limit attributed to the deferred correction; the limit was never
 measured and the mechanism is disproved. The thing it was reaching for — the
 refined mesh surviving a practical time step — is what this gate checks.
+
+## ADR-027 — The refined cylinder: resolution is not why drag is high
+**Measured.** With the checkerboard fixed (ADR-026) the 21,811-cell mesh runs
+the full benchmark for the first time. Same dt, same domain, same statistics
+window as the 6,763-cell run — only the mesh differs, so any change belongs
+to the mesh.
+
+| | 6,763 cells | 21,811 cells | literature |
+| --- | --- | --- | --- |
+| first cell at the wall | D/17 | D/33 | |
+| Strouhal | 0.1698 | 0.1699 | 0.164 (Williamson) |
+| mean drag | 1.4233 | 1.3991 | 1.32 – 1.36 |
+| lift amplitude | 0.3671 | 0.3491 | 0.30 – 0.35 |
+| 4,000 steps | 2,897 s | 7,853 s | |
+
+Lift amplitude comes into the literature band. Drag and Strouhal barely move:
+the Strouhal number is unchanged in the fourth digit and the drag falls 1.7%.
+A two-grid Richardson estimate, assuming second order and taking the
+near-wall ratio of two, puts the grid-independent drag near 1.39 — still
+above the band. Two grids cannot confirm the order, so treat that as an
+estimate; but no plausible order turns a 1.7% step into the 4–6% needed.
+
+So the explanation this record gave twice — ADR-022 and the first version of
+ADR-026 — that the high drag was a coarse near-wall mesh, is wrong. The second
+of those also quoted 1.30–1.36 from the refined mesh at dt = 0.1, which was
+the transient before shedding developed; saturated shedding raises the mean
+drag, and the value the benchmark actually measures is 1.399.
+
+What the two runs share is the domain: lateral boundaries at ±10 D (5%
+blockage), inlet 10 D upstream, outlet 25 D downstream, and free-stream
+velocity imposed on the lateral boundaries. Blockage raises both the
+Strouhal number and the drag, and both sit 3–4% high on both meshes. That is
+a hypothesis, recorded as one: it is tested by one run with the lateral
+boundaries at ±20 D, and it should be tested before any further refinement,
+because refinement has just been shown not to be the lever.
