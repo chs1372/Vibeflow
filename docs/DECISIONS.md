@@ -713,8 +713,9 @@ is an order of magnitude further out than it was. It is a ceiling all the
 same, and this ADR does not claim otherwise.
 
 ## ADR-024 — The fine cylinder mesh is unstable, and five explanations are not the reason
-**Open.** Recorded because the investigation ruled things out, not because it
-finished.
+**Closed by ADR-026**: a pressure-velocity checkerboard caused by the
+Rhie-Chow flux formulation. The record below is kept as it was written,
+because what it ruled out is part of the answer.
 
 The 21,811-cell cylinder mesh diverges where the 6,763-cell one runs 4,000
 steps to a passing benchmark. ADR-022 attributed this to a convective Courant
@@ -869,3 +870,148 @@ The boundary-pressure extrapolation, now 19% of the run, still restarts cold
 and runs three least-squares gradient passes on every pressure gradient. The
 same warm start should take it to one. It was not done here because verifying
 the three changes above mattered more than a fourth unverified one.
+
+## ADR-026 — The instability was a checkerboard, made by the Rhie-Chow flux itself
+**Fixed.** The predicted face flux is now `F* = (H/aP)_f · S` (plus the Choi
+term), the standard form OpenFOAM's PISO uses. Both the Python reference and
+the C++ solver had been adding `D (grad(p)_f · S − snGrad p_old)` to it. The
+old form is kept behind `RhieChowForm::Interpolated` solely so the defect can
+be shown on demand.
+
+### What the probe saw
+
+ADR-024 ended by asking for one instrument: every term of the budget for one
+cell, every step. Built as `PisoSolver::probe()`, pointed at the cell the
+growth lived in, it answered in a single run.
+
+Cell 1255 — not a wall cell; three cells off the cylinder — and its four
+neighbours, at t = 5.05:
+
+| | pressure | velocity |
+| --- | --- | --- |
+| cell 1255 | +27.1 | (+7.3, +2.8) |
+| neighbour 12532 | −39.4 | (**−10.1**, −6.0) |
+| neighbour 1254 | −11.5 | |
+| neighbour 1256 | +7.2 | |
+| neighbour 21792 | −4.4 | |
+
+Adjacent cells running to pressures of opposite sign, one of them flowing
+backwards — it reversed at t ≈ 2.8 — against a free-stream dynamic pressure of
+0.5. Face-flux continuity held to 1e-9 throughout. That is a pressure-velocity
+checkerboard in its textbook form: a mode living in the cell-centred fields,
+where the face-flux continuity equation cannot see it. It is precisely what
+Rhie-Chow interpolation exists to prevent.
+
+The decisive number was on the face between those two cells: the term
+`D · snGrad(p)` evaluated on the pressure *before* the last solve was +0.126,
+and on the pressure *after* it, −0.106. Same operator, consecutive solves,
+opposite signs. It was already so at t = 2.05, long before anything grew.
+
+### Why the flux made it
+
+With `−D snGrad(p_old)` inside F* and the full pressure re-solved on every
+corrector, the checkerboard part of the pressure equation reduces to
+
+    p_new ≈ −p_old + forcing
+
+because for a checkerboard the interpolated cell gradient `grad(p)_f` is nearly
+blind and only the compact gradient survives. An eigenvalue near −1: every
+decoupled mode flips sign on every pressure solve. On its own the flip damps
+slightly (the measured ratio was 0.84), but the velocity corrector feeds the
+checkerboard back through H/aP, and once that coupling tips the magnitude past
+one the mode grows.
+
+The form is a hybrid of two correct ones. Ferziger–Perić's incremental SIMPLE
+carries `D (grad(p)_f − snGrad p_old)` but interpolates the *predicted*
+velocity and solves for a pressure *correction*. OpenFOAM's PISO solves for
+the full pressure from a *pressure-free* H/aP and has no such term. Taking the
+term from the first and the unknowns from the second is what produced the −1.
+
+### It explains everything ADR-024 ruled out
+
+* **More outer iterations diverged sooner** — the result ADR-024 called the most
+  informative. Each outer iteration is two more pressure solves, so two more
+  flips per step. The iteration was converging, and what it converged to was
+  a growing oscillation between solves.
+* **Indifferent to the convection scheme, the diffusion correction and the
+  Choi term** — none of them is in the pressure-correction loop.
+* **Time-step dependent** — `D = V/aP` and the velocity feedback both scale with
+  dt, which moves the loop gain across one.
+* **Worse on the finer mesh** — the loop gain depends on the mesh; the coarse
+  one happened to sit under one. Nothing about the coarse result was right for
+  a better reason.
+* **Six solves per step is even**, so the sign came back each step and the
+  per-step pressure looked monotonic. The flip was invisible to anything that
+  sampled once a step.
+
+### Evidence that the fix is the fix
+
+Same mesh, same dt = 0.05, only the flux form changed:
+
+| | interpolated | standard |
+| --- | --- | --- |
+| drag at t = 5.3 | 2.93, climbing | 1.35, settling |
+| fastest cell | 12.9 and growing | 1.34 |
+| p(cell) − mean(neighbours) | 39.1 | 0.009 |
+| non-orthogonality sweeps | 19–20 | 3–4 |
+| cost | 5.3 s/step | 2.9 s/step |
+
+And the time step the refined mesh tolerates, 150 steps each:
+
+| dt | Courant | interpolated | standard |
+| --- | --- | --- | --- |
+| 0.05 | ~6 | diverges by step 120 | stable |
+| 0.1 | ~11 | NaN in 5 steps | stable, drag 1.30–1.36 |
+| 0.2 | ~21–31 | — | stable, full shedding |
+
+### Side effects, all measured
+
+**The Python–C++ cross-check went from 2.0e-5 to 6.6e-11.** That 2e-5 gap had
+been put down to the two implementations' linear algebra. It was the
+near-neutral mode amplifying round-off differences between them; with the mode
+gone they agree to round-off.
+
+**The distorted-mesh error constant is about 9% larger** at n = 6 and 12
+(1.263e-2 against 1.162e-2 at n = 6). The order is unchanged — 1.98 orthogonal,
+1.69 distorted for 6→12. The extra term happened to reduce the error on a
+smooth manufactured solution; it also made the scheme unstable. That is the
+trade, and it is not close.
+
+**Every benchmark number predating this ADR was computed with the defective
+form** — the coarse cylinder's St 0.1688, Cd 1.4177 and the Ghia comparison
+included. They are re-measured by the gate suite run that follows this change,
+not assumed to carry over.
+
+The boundary flux at a FixedValue face was already built in the standard form
+(`FbStar = H/aP · S`), so the internal faces now agree with it — an
+inconsistency nobody had noticed, fixed as a side effect.
+
+### Why it survived this long
+
+Both forms are second order, so no order study could separate them. The
+reference implementation shared the defect, so the cross-check agreed with it.
+The coarse benchmark mesh kept the eigenvalue under one, so the benchmarks
+passed. And the one case that exposed it was explained away five times —
+beginning with ADR-022's Courant limit, which was an estimate written up as a
+measurement.
+
+What found it was not cleverness but resolution: an instrument that looked at
+one cell, term by term, instead of a norm over forty thousand.
+
+### The gate
+
+`tests/benchmark/checkerboard.py` runs the case that failed — the 21,811-cell
+mesh at dt = 0.1 for 100 steps — and judges the fastest cell in the domain
+against a bound of 3 (potential flow peaks at 2, the viscous flow at about
+1.5). Verified both ways: the defective form reaches |u| = 11,443 and a drag
+of 4.7 million before stopping at step 27; the corrected form holds 1.34 and
+a drag of 1.2996 for all 100 steps.
+
+The cylinder case now stops at the first non-finite force. A diverged run
+otherwise grinds every remaining linear solve to its iteration cap, and a gate
+that can hang the suite is not a gate.
+
+`tests/benchmark/courant_limit.py` is removed rather than finished. It gated a
+Courant limit attributed to the deferred correction; the limit was never
+measured and the mechanism is disproved. The thing it was reaching for — the
+refined mesh surviving a practical time step — is what this gate checks.

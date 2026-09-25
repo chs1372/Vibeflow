@@ -367,6 +367,9 @@ void PisoSolver::rhieChow() {
   auto p = p_;
   Real aPt, a1, a2; bdf(aPt, a1, a2);
   const bool consistent = ctl_.consistentRhieChow;
+  const bool interpolatedForm = ctl_.rhieChowForm == RhieChowForm::Interpolated;
+  const bool probing = probing_;
+  auto comp = rcComp_;
 
   Kokkos::parallel_for("rhieChow", Kokkos::RangePolicy<ExecSpace>(0, nf),
     KOKKOS_LAMBDA(const Index f) {
@@ -386,14 +389,23 @@ void PisoSolver::rhieChow() {
         ufOld += (w(f) * uo(own(f), i) + (1.0 - w(f)) * uo(nei(f), i)) * fa(f, i);
       }
       const Real snGrad = ap(f) * (p(nei(f)) - p(own(f)));
-      flux += D * (gpf - snGrad);
+      const Real HfS = flux;
+      if (interpolatedForm) flux += D * (gpf - snGrad);
+      Real choi = 0.0;
       if (consistent) {
         // Old-flux term (Choi 1999): carrying the Rhie-Chow residual forward
         // with coefficient Df*aP_t cancels the transient part of aP, so the
         // pressure damping does not vanish as dt shrinks.
-        flux += D * aPt * (FOld(f) - ufOld);
+        choi = D * aPt * (FOld(f) - ufOld);
+        flux += choi;
       }
       Fstar(f) = flux;
+      if (probing) {
+        comp(f, 0) = HfS;
+        comp(f, 1) = interpolatedForm ? D * gpf : 0.0;
+        comp(f, 2) = interpolatedForm ? D * snGrad : 0.0;
+        comp(f, 3) = choi;
+      }
     });
   Kokkos::fence();
 
@@ -569,6 +581,67 @@ void PisoSolver::solvePressure(LinearSolver& solver) {
       });
   }
   Kokkos::fence();
+}
+
+void PisoSolver::enableProbe(Index cell) {
+  probing_ = true;
+  probeCell_ = cell;
+  rcComp_ = View2<Real>("rcComp", m_.nInternalFaces(), 4);
+}
+
+CellProbe PisoSolver::probe() const {
+  CellProbe r;
+  if (!probing_ || probeCell_ < 0) return r;
+  const Index c = probeCell_;
+  auto H = [](const auto& v) {
+    return Kokkos::create_mirror_view_and_copy(HostSpace::memory_space(), v);
+  };
+  auto own = H(m_.owner()); auto nei = H(m_.neighbour()); auto bc = H(m_.boundaryCell());
+  auto fa = H(m_.faceArea()); auto ba = H(m_.boundaryArea());
+  auto cc = H(m_.cellCentre()); auto vol = H(m_.cellVolume());
+  auto u = H(u_); auto p = H(p_); auto aP = H(aP_); auto hb = H(HbyA_); auto gp = H(gp_);
+  auto F = H(F_); auto Fs = H(Fstar_); auto no = H(nonorth_); auto Df = H(Df_);
+  auto ap = H(pdiff_.aInt()); auto comp = H(rcComp_); auto Fb = H(Fb_);
+  auto pb = H(pressureBoundary(p_));
+  auto ubt = H(bcType_); auto pbt = H(pType_);
+
+  r.cell = c;
+  for (int i = 0; i < 3; ++i) {
+    r.x[i] = cc(c, i); r.u[i] = u(c, i); r.HbyA[i] = hb(c, i); r.gp[i] = gp(c, i);
+  }
+  r.vol = vol(c); r.p = p(c); r.aP = aP(c); r.VbyAP = vol(c) / aP(c);
+  for (int i = 0; i < 3; ++i) r.corr[i] = gp(c, i) * r.VbyAP;
+
+  auto mag = [](Real a, Real b, Real d) { return std::sqrt(a * a + b * b + d * d); };
+  for (Index f = 0; f < m_.nInternalFaces(); ++f) {
+    if (own(f) != c && nei(f) != c) continue;
+    const Real s = own(f) == c ? 1.0 : -1.0;
+    FaceProbe q;
+    q.face = f; q.boundary = false;
+    q.other = own(f) == c ? nei(f) : own(f);
+    q.F = s * F(f); q.Fstar = s * Fs(f);
+    q.HfS = s * comp(f, 0); q.Dgpf = s * comp(f, 1);
+    q.DsnOld = s * comp(f, 2); q.choi = s * comp(f, 3);
+    q.DsnNew = s * ap(f) * Df(f) * (p(nei(f)) - p(own(f)));
+    q.nonorth = s * no(f);
+    q.area = mag(fa(f, 0), fa(f, 1), fa(f, 2));
+    for (int i = 0; i < 3; ++i) q.uOther[i] = u(q.other, i);
+    q.pOther = p(q.other);
+    r.faces.push_back(q);
+    r.divF += q.F;
+  }
+  for (Index f = 0; f < m_.nBoundaryFaces(); ++f) {
+    if (bc(f) != c) continue;
+    FaceProbe q;
+    q.face = f; q.boundary = true;
+    q.F = Fb(f); q.Fstar = Fb(f);
+    q.area = mag(ba(f, 0), ba(f, 1), ba(f, 2));
+    q.pBnd = pb(f);
+    q.uBC = ubt(f); q.pBC = pbt(f);
+    r.faces.push_back(q);
+    r.divF += q.F;
+  }
+  return r;
 }
 
 Real PisoSolver::courant() const {

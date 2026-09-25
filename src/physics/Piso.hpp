@@ -22,6 +22,7 @@
 
 #include "core/Parallel.hpp"
 #include "core/Types.hpp"
+#include <vector>
 #include "discretization/Diffusion.hpp"
 #include "discretization/Gradient.hpp"
 
@@ -48,6 +49,25 @@ enum class VelocityBC : int { Dirichlet = 0, ZeroGradient = 1 };
 //                non-singular, which is why the null-space projection is
 //                switched off when any is present.
 enum class PressureBC : int { FixedFlux = 0, FixedValue = 1 };
+
+// How the predicted face flux is built from H/aP.
+//   Standard     - F* = (H/aP)_f.S, as in OpenFOAM's PISO. The only pressure
+//                  term in the flux is the compact face gradient that the
+//                  pressure solve applies. THE DEFAULT.
+//   Interpolated - F* = (H/aP)_f.S + D (grad(p)_f.S - snGrad p_old). Both the
+//                  Python reference and this solver were first written this
+//                  way, and it is wrong for a solver that re-solves the FULL
+//                  pressure on every corrector. The checkerboard part of the
+//                  pressure equation becomes p_new = -p_old + forcing: an
+//                  eigenvalue near -1, so a decoupled pressure-velocity mode
+//                  flips sign on every solve, and grows once the velocity
+//                  coupling pushes the magnitude past one (ADR-026). Every
+//                  outer iteration adds two more flips, which is why iterating
+//                  harder made the fine cylinder diverge sooner.
+//                  Second order like the standard form -- the MMS gates could
+//                  not tell them apart -- which is how it survived.
+// Kept only so the defect can be demonstrated on demand.
+enum class RhieChowForm : int { Interpolated = 0, Standard = 1 };
 
 struct PisoControls {
   int correctors = 2;        // PISO pressure correctors
@@ -77,6 +97,7 @@ struct PisoControls {
   int outer = 1;             // PIMPLE outer iterations
   Real outerTol = 1e-10;
   bool consistentRhieChow = true;
+  RhieChowForm rhieChowForm = RhieChowForm::Standard;
   // Second-order convection is carried as a deferred correction on the
   // right-hand side, which is explicit. Turning it off leaves first-order
   // upwind: wrong, but unconditionally stable in the convective term. It is
@@ -107,6 +128,35 @@ struct PisoTimings {
   Real assemble{}, gradient{}, boundaryP{}, hbya{}, rhieChow{},
        pressureAssembly{}, momentumSolve{}, pressureSolve{}, total{};
   int  gradCalls{}, boundaryPCalls{};
+};
+
+// Everything the solver knows about one cell and its faces, after a step.
+//
+// ADR-024: five explanations for the fine-mesh instability survived while the
+// only diagnostics were norms over the whole field. A norm says a run is
+// going wrong; it cannot say which term in which equation is doing it. This
+// does: every part of the predicted flux, every part of the correction, the
+// neighbour states and the boundary values, so a growing mode can be watched
+// term by term in the one place it lives.
+struct FaceProbe {
+  Index face{-1};
+  bool boundary{false};
+  Index other{-1};            // neighbour cell, -1 on a boundary face
+  Real F{}, Fstar{};          // OUTWARD from the probed cell
+  Real HfS{}, Dgpf{}, DsnOld{}, choi{};   // parts of F*, outward
+  Real DsnNew{}, nonorth{};   // the pressure correction, outward
+  Real area{};
+  Real uOther[3]{}, pOther{};
+  Real pBnd{};                // boundary faces: the face pressure the solver uses
+  int uBC{-1}, pBC{-1};
+};
+struct CellProbe {
+  Index cell{-1};
+  Real x[3]{}, vol{};
+  Real u[3]{}, p{}, aP{}, VbyAP{};
+  Real HbyA[3]{}, gp[3]{}, corr[3]{};   // corr = grad(p) V/aP, what the corrector removes
+  Real divF{};
+  std::vector<FaceProbe> faces;
 };
 
 struct StepReport {
@@ -167,6 +217,11 @@ class PisoSolver {
   Real continuityError(const ScalarField& F, const ScalarField& Fb) const;
   Real courant() const;
 
+  // Probe one cell. Costs one extra predictable branch in the Rhie-Chow
+  // kernel while enabled and nothing at all otherwise.
+  void enableProbe(Index cell);
+  CellProbe probe() const;
+
   const PisoTimings& timings() const { return t_; }
   void resetTimings() { t_ = PisoTimings{}; }
 
@@ -220,6 +275,9 @@ class PisoSolver {
   bool openDomain_{false};
   mutable int lastNonOrth_{0};
   mutable PisoTimings t_;
+  bool probing_{false};
+  Index probeCell_{-1};
+  View2<Real> rcComp_;        // per internal face: HfS, D gpf, D snGrad, Choi
 };
 
 }  // namespace nsflow

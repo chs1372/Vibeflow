@@ -33,7 +33,7 @@ from gradient import QuadraticLSQGradient
 class PisoSolver:
     def __init__(self, mesh, nu, dt, n_correctors=2, n_nonorth=40,
                  n_outer=1, outer_tol=1e-10, consistent_rhie_chow=True,
-                 gradient="linear"):
+                 gradient="linear", rhie_chow_form="standard"):
         self.m = mesh
         self.nu = nu
         self.dt = dt
@@ -52,6 +52,18 @@ class PisoSolver:
         self.nNonOrth = n_nonorth
         self.nonorth_sweeps = 0
         self.consistent = consistent_rhie_chow
+        # "standard": F* = (H/aP)_f . S, the only pressure term in the flux
+        # being the compact face gradient applied by the pressure solve.
+        # "interpolated": F* also carries D (grad(p)_f . S - snGrad p_old).
+        # This file and the C++ solver were both written in the interpolated
+        # form, and it is WRONG for a solver that re-solves the full pressure
+        # each corrector: the checkerboard part of the pressure equation then
+        # reads p_new = -p_old + forcing, an eigenvalue near -1, so any
+        # decoupled mode flips sign on every solve and grows once the velocity
+        # coupling tips it past one. ADR-026. Kept only to demonstrate it.
+        if rhie_chow_form not in ("standard", "interpolated"):
+            raise ValueError(rhie_chow_form)
+        self.rhie_chow_form = rhie_chow_form
 
         m = mesh
         self.diff = DiffusionOperator(mesh, nu)      # momentum viscous term
@@ -241,10 +253,11 @@ class PisoSolver:
         Hf = self.face_interp(HbyA, gH)
         F = np.einsum("ij,ij->i", Hf, m.face_area)
 
-        gp = self.grad_p(self.p)
-        gpf = self.w[:, None] * gp[m.owner] + (1 - self.w)[:, None] * gp[m.neigh]
-        snGrad = self.pdiff.a_int * (self.p[m.neigh] - self.p[m.owner])
-        F += Df * (np.einsum("ij,ij->i", gpf, m.face_area) - snGrad)
+        if self.rhie_chow_form == "interpolated":
+            gp = self.grad_p(self.p)
+            gpf = self.w[:, None] * gp[m.owner] + (1 - self.w)[:, None] * gp[m.neigh]
+            snGrad = self.pdiff.a_int * (self.p[m.neigh] - self.p[m.owner])
+            F += Df * (np.einsum("ij,ij->i", gpf, m.face_area) - snGrad)
 
         if self.consistent:
             # Old-flux term (Choi 1999). R = F - u_f_bar . S is the Rhie-Chow

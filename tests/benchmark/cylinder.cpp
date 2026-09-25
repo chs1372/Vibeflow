@@ -48,11 +48,12 @@ Real X_IN = 0.0, X_OUT = 0.0, Y_HALF = 0.0;
 
 Real williamsonSt(Real Re) { return -3.3265 / Re + 0.1816 + 1.6e-4 * Re; }
 
-// Largest convective Courant number measured stable for this case, from the
-// sweep in tests/benchmark/courant_limit. Not a theoretical bound and not a
-// guess: an earlier version of this file warned above 2, which was an estimate
-// from cell size and free-stream speed, and the case then ran happily at 7.2.
-constexpr Real COURANT_WARN = 8.0;
+// Largest convective Courant number measured stable for this case: 31, on the
+// refined mesh at dt = 0.2 (ADR-026). Not a known limit -- the instability
+// once blamed on the Courant number turned out to be a pressure-velocity
+// decoupling in the Rhie-Chow flux, and nothing since has found a Courant
+// limit at all. Past this value the case is simply untested.
+constexpr Real COURANT_WARN = 30.0;
 
 enum Patch { INLET, OUTLET, FARFIELD, CYLINDER, SPANWISE };
 
@@ -211,16 +212,42 @@ int main(int argc, char** argv) {
     if (std::getenv("CYL_UPWIND")) ctl.deferredCorrection = false;
     if (std::getenv("CYL_NO_DIFF_NONORTH")) ctl.diffusionNonOrth = false;
     if (std::getenv("CYL_NAIVE_RC")) ctl.consistentRhieChow = false;
+    if (const char* e = std::getenv("CYL_RC_FORM")) {
+      if (std::string(e) == "standard") ctl.rhieChowForm = RhieChowForm::Standard;
+      if (std::string(e) == "interpolated") ctl.rhieChowForm = RhieChowForm::Interpolated;
+    }
     if (std::getenv("CYL_ZG_PRESSURE")) ctl.pressureExtrapolation = false;
     if (const char* e = std::getenv("CYL_PEXTRAP")) ctl.pressureExtrapSweeps = std::atoi(e);
-    std::printf("  controls: outer %d  nonOrth <= %d sweeps to %.0e%s\n",
+    std::printf("  controls: outer %d  nonOrth <= %d sweeps to %.0e%s%s\n",
                 ctl.outer, ctl.nonOrthCorrectors, ctl.nonOrthTol,
-                ctl.deferredCorrection ? "" : "  [FIRST-ORDER UPWIND]");
+                ctl.deferredCorrection ? "" : "  [FIRST-ORDER UPWIND]",
+                ctl.rhieChowForm == RhieChowForm::Interpolated
+                    ? "  [INTERPOLATED RHIE-CHOW: known unstable, ADR-026]" : "");
     if (!ctl.diffusionNonOrth)
       std::printf("  controls: diffusion non-orthogonal correction OFF\n");
     PisoSolver solver(mesh, nu, dt, ctl);
     solver.setBoundaryTypes(uType);
     solver.setPressureBoundary(pType, pval);
+
+    // CYL_PROBE="x,y": record the full budget of the cell nearest that point,
+    // every step, to a CSV. ADR-024 is why this exists.
+    std::FILE* probeOut = nullptr;
+    if (const char* e = std::getenv("CYL_PROBE")) {
+      Real px = 0.0, py = 0.0;
+      std::sscanf(e, "%lf,%lf", &px, &py);
+      auto hcc = Kokkos::create_mirror_view_and_copy(HostSpace::memory_space(),
+                                                     mesh.cellCentre());
+      Index best = 0; Real bd = 1e300;
+      for (Index c = 0; c < nc; ++c) {
+        const Real d = std::hypot(hcc(c, 0) - px, hcc(c, 1) - py);
+        if (d < bd) { bd = d; best = c; }
+      }
+      solver.enableProbe(best);
+      const char* path = std::getenv("CYL_PROBE_OUT");
+      probeOut = std::fopen(path ? path : "probe.csv", "w");
+      std::printf("  probing cell %d at (%.4f, %.4f)\n", static_cast<int>(best),
+                  hcc(best, 0), hcc(best, 1));
+    }
 
     // Start from the free stream with an asymmetric kick, so shedding begins
     // from a physical instability rather than from round-off. The size of the
@@ -271,18 +298,48 @@ int main(int argc, char** argv) {
       const auto rep = solver.advance(ub, fb, src, momentum, *pressure);
       const Real t = (k + 1) * dt;
       const Vec3 F = solver.boundaryForce(cylMask);
+      if (probeOut) {
+        const CellProbe q = solver.probe();
+        if (k == 0) {
+          std::fprintf(probeOut, "step,t,ux,uy,p,aP,VbyAP,Hx,Hy,gpx,gpy,corrx,corry,divF");
+          for (std::size_t j = 0; j < q.faces.size(); ++j)
+            std::fprintf(probeOut, ",bnd%zu,F%zu,Fs%zu,HfS%zu,Dgpf%zu,DsnO%zu,choi%zu,"
+                         "DsnN%zu,no%zu,uNx%zu,uNy%zu,pN%zu,pB%zu,other%zu",
+                         j, j, j, j, j, j, j, j, j, j, j, j, j, j);
+          std::fprintf(probeOut, "\n");
+        }
+        std::fprintf(probeOut, "%d,%.6f,%.10e,%.10e,%.10e,%.10e,%.10e,%.10e,%.10e,"
+                     "%.10e,%.10e,%.10e,%.10e,%.10e",
+                     k + 1, (k + 1) * dt, q.u[0], q.u[1], q.p, q.aP, q.VbyAP,
+                     q.HbyA[0], q.HbyA[1], q.gp[0], q.gp[1], q.corr[0], q.corr[1], q.divF);
+        for (const auto& fq : q.faces)
+          std::fprintf(probeOut, ",%d,%.10e,%.10e,%.10e,%.10e,%.10e,%.10e,%.10e,%.10e,"
+                       "%.10e,%.10e,%.10e,%.10e,%d",
+                       fq.boundary ? 1 : 0, fq.F, fq.Fstar, fq.HfS, fq.Dgpf, fq.DsnOld,
+                       fq.choi, fq.DsnNew, fq.nonorth, fq.uOther[0], fq.uOther[1],
+                       fq.pOther, fq.pBnd, static_cast<int>(fq.other));
+        std::fprintf(probeOut, "\n");
+        std::fflush(probeOut);
+      }
       th.push_back(t);
       cdh.push_back(F.x / qA);
       clh.push_back(F.y / qA);
+      // A diverged run does not end on its own: every linear solve after the
+      // first NaN runs to its iteration cap, and the remaining steps take
+      // hours to report what the first non-finite force already said.
+      if (!std::isfinite(cdh.back()) || !std::isfinite(clh.back()) ||
+          !std::isfinite(rep.uMax)) {
+        std::printf("    t %7.2f  non-finite solution -- stopping (%d of %d steps)\n",
+                    t, k + 1, nSteps);
+        break;
+      }
       if (t > tStats) maxCont = std::max(maxCont, rep.continuityError);
       maxCo = std::max(maxCo, rep.courant);
       if (rep.courant > COURANT_WARN && !coWarned) {
         coWarned = true;
-        std::printf("    NOTE: Courant %.1f, above the largest value measured "
-                    "stable for this case (%.0f). The convection scheme's "
-                    "deferred correction is explicit, so there is a limit; "
-                    "where it sits is a measurement, not a rule of thumb.\n",
-                    rep.courant, COURANT_WARN);
+        std::printf("    NOTE: Courant %.1f, above the largest value this case "
+                    "has been run stably at (%.0f). Untested territory, not a "
+                    "known limit.\n", rep.courant, COURANT_WARN);
       }
       if (k % std::max(1, nSteps / reportLines) == 0)
         std::printf("    t %7.2f  Cd %8.4f  Cl %8.4f  div %.1e  Co %5.2f  "
@@ -312,6 +369,8 @@ int main(int argc, char** argv) {
                   t.boundaryPCalls, t.hbya, t.rhieChow, t.pressureAssembly,
                   t.total);
     }
+
+    if (probeOut) std::fclose(probeOut);
 
     std::size_t skip = 0;
     while (skip < th.size() && th[skip] < tStats) ++skip;

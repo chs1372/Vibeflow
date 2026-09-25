@@ -139,6 +139,9 @@ GATES = {
          BUILD / "mms_parallel_ns"),
         ("open domain: inlet/outlet conserves mass exactly",
          lambda: run([str(BUILD / "open_domain"), "12"]), BUILD / "open_domain"),
+        ("decoupling: the refined cylinder stays pressure-velocity coupled",
+         lambda: run([PY, str(ROOT / "tests" / "benchmark" / "checkerboard.py")]),
+         BUILD / "cylinder"),
         ("benchmark: lid-driven cavity against Ghia et al. (1982)",
          lambda: run([str(BUILD / "cavity"), "64"]), BUILD / "cavity"),
         # ~2.3 hours: an unsteady case needs a long run before it has any
