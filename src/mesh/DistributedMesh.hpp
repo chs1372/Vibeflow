@@ -23,6 +23,7 @@
 #include "mesh/RawMesh.hpp"
 #include <array>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace vibeflow {
@@ -35,6 +36,13 @@ class DistributedMesh final : public Mesh {
   // every rank in order to keep a slice of it is the thing this avoids.
   DistributedMesh(const RawMesh& raw, const Comm& comm,
                   PartitionMethod method = PartitionMethod::RCB);
+
+  // Reads a binary description (`.vmesh`) in parts: each rank reads one
+  // block of cells and one block of points and never holds the whole file
+  // (ADR-035). Partitioned by Morton order of the cell centroids, split into
+  // exactly equal parts, so the partition differs from the RCB one above;
+  // the answer must not, and the parallel gates hold it to that.
+  DistributedMesh(const std::string& vmeshPath, const Comm& comm);
 
   Index nCells()         const override { return nOwned_; }
   Index nGhost()         const override { return nGhost_; }
@@ -69,10 +77,20 @@ class DistributedMesh final : public Mesh {
   Index nCellsBuilt() const { return cellsBuilt_; }
   Index nFacesBuilt() const { return facesBuilt_; }
 
+  // Peak bytes of the mesh DESCRIPTION -- points at 24 bytes, cells at 64,
+  // as in the file -- that this rank held while building. The RawMesh path
+  // holds all of it on every rank; the file path should hold about 1/P.
+  long long descriptionBytes() const { return descriptionBytes_; }
+
  private:
+  void build(const std::vector<Index>& subGlobal, const std::vector<int>& subRank,
+             const std::vector<std::array<Index, 8>>& subHex,
+             const std::vector<Vec3>& subPts);
+
   Comm comm_;
   Index nOwned_{}, nGhost_{}, nFaces_{}, nBnd_{};
   Index cellsBuilt_{}, facesBuilt_{};
+  long long descriptionBytes_{};
   std::vector<Index> globalId_;
   std::vector<BoundaryPatch> patches_;
   std::unique_ptr<HaloExchange> halo_;

@@ -50,3 +50,7 @@ add_test(NAME cavity COMMAND cavity 64)
 
 add_executable(cylinder benchmark/cylinder.cpp)
 target_link_libraries(cylinder PRIVATE vibeflow_physics vibeflow_io)
+
+add_executable(mms_parallel_read mms/mms_parallel_read.cpp)
+target_link_libraries(mms_parallel_read PRIVATE vibeflow_discretization)
+add_test(NAME mms_parallel_read COMMAND mms_parallel_read ${FIXTURES} 16 read)

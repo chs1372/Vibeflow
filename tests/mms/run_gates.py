@@ -149,6 +149,12 @@ GATES = {
          BUILD / "ethier_steinman"),
         ("mpi: the mesh costs less per rank as ranks are added",
          memory_sweep, BUILD / "mms_parallel_mem"),
+        # ADR-035: each rank reads only its share of a .vmesh file, and the
+        # diffusion answer on the mesh it read matches the serial run.
+        ("mpi: each rank reads only its share of the mesh file",
+         lambda: parallel_sweep(binary_name="mms_parallel_read",
+                                args=(str(FIX), "16", "read")),
+         BUILD / "mms_parallel_read"),
         ("mpi: Navier-Stokes is independent of the rank count",
          lambda: parallel_sweep(binary_name="mms_parallel_ns"),
          BUILD / "mms_parallel_ns"),

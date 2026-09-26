@@ -57,6 +57,99 @@ RawMesh RawMesh::fromHexFile(const std::string& path) {
   return m;
 }
 
+RawMesh RawMesh::fromBinary(const std::string& path) {
+  const auto h = vmesh::readHeader(path);
+  RawMesh m;
+  m.points = vmesh::readPoints(path, h, 0, h.nPoints);
+  const auto cells = vmesh::readCells(path, h, 0, h.nCells);
+  m.hexes.resize(cells.size());
+  for (std::size_t c = 0; c < cells.size(); ++c)
+    for (int t = 0; t < 8; ++t) m.hexes[c][t] = static_cast<Index>(cells[c][t]);
+  return m;
+}
+
+namespace vmesh {
+namespace {
+
+constexpr char kMagic[8] = {'V', 'F', 'M', 'E', 'S', 'H', '0', '1'};
+constexpr std::int64_t kHeaderBytes = 24;
+
+std::ifstream openAt(const std::string& path, std::int64_t offset) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) throw std::runtime_error("cannot open mesh file: " + path);
+  in.seekg(offset);
+  if (!in) throw std::runtime_error("seek past the end of mesh file: " + path);
+  return in;
+}
+
+}  // namespace
+
+Header readHeader(const std::string& path) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) throw std::runtime_error("cannot open mesh file: " + path);
+  char magic[8];
+  Header h;
+  in.read(magic, 8);
+  in.read(reinterpret_cast<char*>(&h.nPoints), 8);
+  in.read(reinterpret_cast<char*>(&h.nCells), 8);
+  if (!in || !std::equal(magic, magic + 8, kMagic))
+    throw std::runtime_error("not a VFMESH01 file: " + path);
+  if (h.nPoints < 0 || h.nCells < 0)
+    throw std::runtime_error("corrupt header in mesh file: " + path);
+  return h;
+}
+
+std::vector<Vec3> readPoints(const std::string& path, const Header& h,
+                             std::int64_t first, std::int64_t count) {
+  if (first < 0 || count < 0 || first + count > h.nPoints)
+    throw std::runtime_error("point range outside mesh file: " + path);
+  std::vector<Vec3> out(static_cast<std::size_t>(count));
+  auto in = openAt(path, kHeaderBytes + first * 24);
+  std::vector<double> buf(static_cast<std::size_t>(count) * 3);
+  in.read(reinterpret_cast<char*>(buf.data()), count * 24);
+  if (!in) throw std::runtime_error("mesh file ended early: " + path);
+  for (std::int64_t i = 0; i < count; ++i)
+    out[i] = {buf[3 * i], buf[3 * i + 1], buf[3 * i + 2]};
+  return out;
+}
+
+std::vector<std::array<Int64, 8>> readCells(const std::string& path, const Header& h,
+                                            std::int64_t first, std::int64_t count) {
+  if (first < 0 || count < 0 || first + count > h.nCells)
+    throw std::runtime_error("cell range outside mesh file: " + path);
+  std::vector<std::array<Int64, 8>> out(static_cast<std::size_t>(count));
+  auto in = openAt(path, kHeaderBytes + h.nPoints * 24 + first * 64);
+  in.read(reinterpret_cast<char*>(out.data()), count * 64);
+  if (!in) throw std::runtime_error("mesh file ended early: " + path);
+  for (const auto& cell : out)
+    for (Int64 v : cell)
+      if (v < 0 || v >= h.nPoints)
+        throw std::runtime_error("vertex id out of range in mesh file: " + path);
+  return out;
+}
+
+void write(const std::string& path, const RawMesh& m) {
+  std::ofstream out(path, std::ios::binary);
+  if (!out) throw std::runtime_error("cannot write mesh file: " + path);
+  const std::int64_t np = static_cast<std::int64_t>(m.points.size());
+  const std::int64_t nc = static_cast<std::int64_t>(m.hexes.size());
+  out.write(kMagic, 8);
+  out.write(reinterpret_cast<const char*>(&np), 8);
+  out.write(reinterpret_cast<const char*>(&nc), 8);
+  for (const auto& p : m.points) {
+    const double xyz[3] = {p.x, p.y, p.z};
+    out.write(reinterpret_cast<const char*>(xyz), 24);
+  }
+  for (const auto& hx : m.hexes) {
+    std::int64_t v[8];
+    for (int t = 0; t < 8; ++t) v[t] = hx[t];
+    out.write(reinterpret_cast<const char*>(v), 64);
+  }
+  if (!out) throw std::runtime_error("failed writing mesh file: " + path);
+}
+
+}  // namespace vmesh
+
 RawMesh RawMesh::fromVertexFile(Index n, const std::string& path) {
   return {raw::readVertexFile(path), raw::boxConnectivity(n, n, n)};
 }
