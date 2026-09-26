@@ -81,6 +81,11 @@ Cylinder wake at Re = 100, the first unsteady case, on gmsh meshes:
 | mean drag | 1.4233 | 1.3991 | 1.32–1.36 |
 | lift amplitude | 0.3671 | 0.3491 | 0.30–0.35 |
 
+Widening the lateral boundaries from ±10 D to ±40 D lowers the drag by 0.018
+and leaves the Strouhal number within the scatter that node placement alone
+produces at 6,763 cells: ±0.0006 in St and ±0.005 in drag, one standard
+deviation.
+
 One more gate runs the refined cylinder at a time step where an earlier form
 of the Rhie–Chow flux let pressure and velocity decouple, and it judges the
 fastest cell in the domain rather than a norm, because a norm is how that
@@ -88,10 +93,11 @@ defect went unnoticed.
 
 ## Known limits
 
-- **Strouhal number and drag are 3–4% high on both cylinder meshes**, and
-  refining the wall resolution twofold barely moves them, so resolution is
-  not the cause. The working hypothesis is blockage: the lateral boundaries
-  sit at ±10 D. It is untested; one run at ±20 D decides it.
+- **The Strouhal number is 3–4% high, and the drag above the band.**
+  Doubling the wall resolution lowers the drag by 0.024 and widening the
+  domain from ±10 D to ±40 D by 0.018 more; neither moves the Strouhal number
+  beyond scatter (ADR-027, ADR-029). The time step is the next suspect, and
+  it can be tested on the same mesh.
 - Hexahedral cells only.
 - Written on Kokkos throughout, but no GPU build has been attempted yet.
 - Every rank still reads the whole mesh description (points and
@@ -176,7 +182,7 @@ layers below it.
 
 ## Decision log
 
-[`docs/DECISIONS.md`](docs/DECISIONS.md) is append-only: 28 entries, each
+[`docs/DECISIONS.md`](docs/DECISIONS.md) is append-only: 29 entries, each
 saying what was decided, why, and what would reverse it. It keeps the wrong
 turns too, marked where later entries corrected them. Two runs of entries are
 worth reading as a story:

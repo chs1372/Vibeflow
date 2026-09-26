@@ -1068,6 +1068,13 @@ near-wall ratio of two, puts the grid-independent drag near 1.39 — still
 above the band. Two grids cannot confirm the order, so treat that as an
 estimate; but no plausible order turns a 1.7% step into the 4–6% needed.
 
+**[Qualified by ADR-029]** Node placement alone scatters the Strouhal number
+by 0.0006 and the drag by 0.005 (one standard deviation) at 6,763 cells, so
+"unchanged in the fourth digit" means unchanged within that scatter, and the
+agreement to the fourth digit was luck. The conclusion stands: the drag drop
+with refinement is three times the scatter of a difference, and the Strouhal
+excess over Williamson is ten times it.
+
 So the explanation this record gave twice — ADR-022 and the first version of
 ADR-026 — that the high drag was a coarse near-wall mesh, is wrong. The second
 of those also quoted 1.30–1.36 from the refined mesh at dt = 0.1, which was
@@ -1156,7 +1163,7 @@ address. The AI co-author trailers are unchanged.
 *Reverses if:* nothing technical. A rename costs one commit only until other
 people depend on the names, which from this commit on they may.
 
-## ADR-029 — Is the high drag blockage? (written before the run)
+## ADR-029 — Is the high drag blockage? Stated before the run, answered after
 **Question.** ADR-027 left the Strouhal number 3.5% and the mean drag 5–8%
 above the literature on both meshes, ruled out resolution, and named
 blockage as the working hypothesis: the lateral boundaries sit at ±10 D, a
@@ -1201,3 +1208,62 @@ Note what it already says: even with blockage removed entirely, St would sit
 - A shift within twice the noise thresholds is not read either way until a
   control run (a ±10 D mesh with its nodes placed differently) measures the
   noise directly.
+
+### Result
+
+Everything above this heading was committed before the first run.
+
+| mesh | lateral boundaries | cells | St | Cd | lift amplitude |
+| --- | --- | --- | --- | --- | --- |
+| `debug.hex` | ±10 D | 6,763 | 0.1698 | 1.4233 | 0.3671 |
+| control A (lateral at ±9.999 D) | ±10 D | 6,784 | 0.1709 | 1.4157 | 0.3656 |
+| control B (inlet at −10.001 D) | ±10 D | 6,781 | 0.1699 | 1.4130 | 0.3599 |
+| ±20 D | ±20 D | 7,897 | 0.1692 | 1.4095 | 0.3666 |
+| ±40 D | ±40 D | 9,353 | 0.1692 | 1.3989 | 0.3595 |
+
+Every run: dt = 0.05, 4,000 steps, 13 shedding cycles after t = 120, maximum
+Courant number 2.7–3.1. Each mesh is `cases/cylinder/make_mesh.py` with
+`CYL_SIZEMIN=0.06 CYL_SIZEMAX=1.0` and one of `CYL_YHALF=20`, `CYL_YHALF=40`,
+`CYL_YHALF=9.999` or `CYL_XIN=-10.001`; with gmsh 4.15.2 that reproduces them.
+
+**The first finding was the noise.** The ±20 D run moved St by 0.0006, inside
+twice the noise threshold assumed above, so under the rule the control runs
+came before any reading — and they overturned the assumption. Three ±10 D
+meshes that differ only because one boundary moved by a thousandth of a
+diameter give St from 0.1698 to 0.1709 and Cd from 1.4130 to 1.4233. At this
+resolution node placement alone scatters St with a standard deviation of
+0.0006 and Cd with 0.005: twice and once the thresholds written above. The
+assumption rested on the refined mesh moving St by 0.0001, and that
+agreement was luck.
+
+**Read against that scatter:**
+
+- *Drag.* The ±40 D run sits 0.018 below the ±10 D mean, three standard
+  deviations. A straight line in B through all five runs extrapolates to
+  Cd = 1.395 ± 0.006 unconfined: blockage is worth 0.022 of drag, about 28%
+  of the excess over the middle of the reported band.
+- *Strouhal number.* Both wider domains give 0.1692, 1.4 standard deviations
+  below the ±10 D mean; the line extrapolates to 0.1687 ± 0.0007. Whatever
+  blockage does to St is at most 0.0015 — a quarter of the excess — and it
+  cannot be told from zero at this scatter.
+- *Lift amplitude.* No trend beyond the scatter.
+- The classical estimate predicted shifts two to three times these. Why is
+  not settled here.
+
+**Verdict under the rule.** Neither "explains it" — the extrapolated values
+miss St ≤ 0.166 and Cd ≤ 1.36 by 0.0027 and 0.035 — nor "ruled out", since
+the drag trend is real. Blockage is part of the drag excess and at most a
+small part of the Strouhal excess. The Strouhal number now sits at
+0.169–0.171 through doubled resolution, a fourfold wider domain and three node
+placements: 3–4% above Williamson, cause unknown.
+
+**What this changes.**
+
+- One run on one mesh at this resolution cannot resolve a difference smaller
+  than about 0.002 in St or 0.015 in Cd (two standard deviations of a
+  difference). ADR-027 is qualified accordingly; its conclusion stands.
+- The next test should not change the mesh. The time step is the obvious
+  one: St is a frequency, and neither space nor domain has moved it. Halving
+  dt on `debug.hex` carries no node-placement scatter at all. The inlet
+  distance, the suspect named above, changes the mesh, so it needs repeated
+  runs to be read at all.
