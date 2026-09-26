@@ -1452,3 +1452,38 @@ because dt = 0.025 is not yet small enough to show that.
   comparisons already made and the ones queued: at that dt the fastest cell
   is physical, and every comparison is like for like. The Strouhal excess is
   not the old-flux term either: St is 0.169–0.170 with it on or off.
+
+## ADR-032 — Does the inlet ten diameters upstream raise the Strouhal number? Stated before the run, answered after
+**Question.** ADR-029 named the inlet as the next suspect: the velocity is
+prescribed ten diameters upstream, which confines the flow from the front
+the way the lateral boundaries confine it from the sides. Written and
+committed before the runs.
+
+**Test.** The inlet moves from −10 D to −20 D; everything else is as in
+ADR-029's ±10 D runs — lateral boundaries at ±10 D, outlet at +25 D, first
+cell D/17, dt = 0.05, the consistent Rhie-Chow form (at this dt the fastest
+cell is physical, ADR-031). The mesh changes, so ADR-029's node-placement
+scatter applies, and the test is built to be read through it: three meshes
+with the inlet at −20 D whose nodes differ (inlet at −20, at −20.001, and at
+−20 with the lateral boundaries at ±9.999 D), compared as a mean with the
+mean of ADR-029's three ±10 D meshes (St 0.1702, Cd 1.4173). The standard
+deviation of a difference of two three-run means is 0.0005 in St and 0.0043
+in Cd.
+
+**What the inlet alone would predict.** A body with drag sends a source-like
+flow upstream, of strength U·Cd·D/2, which ten diameters ahead slows an
+unbounded free stream by about 1.1%. Prescribing U∞ there removes that
+slowdown, as if the body met a slightly faster stream. If the whole 1.1%
+reached the body, moving the inlet to 20 D would halve it: St down by about
+0.0009 and Cd by about 0.014. The lateral boundaries already carry part of
+that flux, so the real effect should be smaller; take those as upper bounds.
+
+**Decision rule**, on the mean at −20 D minus the mean at −10 D:
+
+- *The inlet is a significant part of the excess* if St falls by at least
+  0.0010, two standard deviations of the difference. Its whole effect is
+  then about twice the measured shift, since an effect that decays like
+  1/L leaves as much again at 20 D.
+- *It is ruled out* if both St and Cd move by less than one standard
+  deviation (0.0005 and 0.0043).
+- *Anything in between* bounds it: at most twice the measured shift.
