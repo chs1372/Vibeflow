@@ -1487,3 +1487,49 @@ that flux, so the real effect should be smaller; take those as upper bounds.
 - *It is ruled out* if both St and Cd move by less than one standard
   deviation (0.0005 and 0.0043).
 - *Anything in between* bounds it: at most twice the measured shift.
+
+## ADR-033 — Three-level grid convergence of the wake. Stated before the run, answered after
+**Question.** ADR-027 had two meshes, which can show that resolution moves
+the drag but cannot give a grid-independent value: Richardson extrapolation
+needs a third level to measure the order instead of assuming it. Written and
+committed before the runs.
+
+**Test.** A family refined by √2 in every size the generator takes —
+the wall size, the far-field size, and so the cell count by about two per
+level — with the domain, dt = 0.05 and the consistent Rhie-Chow form as in
+every earlier comparison:
+
+| level | sizeMin | sizeMax | cells | first cell |
+| --- | --- | --- | --- | --- |
+| C | 0.0424 | 0.849 | 10,216 | D/24 |
+| M | 0.03 | 0.6 | 21,811 | D/33 — the refined mesh of ADR-027, already run |
+| F | 0.0212 | 0.424 | 42,020 | D/47 |
+
+`debug.hex` is not in the family — its far-field size is not scaled with its
+wall size — so it takes no part in the extrapolation.
+
+**What to expect, and what can be read.** If ADR-027's drag drop between
+D/17 and D/33 (0.024) is second-order discretisation error, the family's
+drag differences should be about 0.008 between C and M and 0.004 between M
+and F, converging to about 1.39. St barely moved with resolution before,
+so its level-to-level differences should be tiny. Against that, ADR-029
+measured node-placement scatter at D/17 of 0.0006 in St and 0.005 in drag,
+and each level here is one mesh. The fine-level difference is below that
+scatter unless the scatter shrinks with the cells, which it should but which
+has not been measured.
+
+**Decision rule.**
+
+- With both drag differences of one sign and an observed order between
+  0.5 and 4, report the extrapolated value with Roache's grid convergence
+  index (safety factor 1.25).
+- Otherwise the family does not resolve an order at this scatter: report
+  the F value with an uncertainty equal to the larger level-to-level
+  difference, and say so.
+- For St, the same; if |St(C) − St(F)| < 0.0017 (two standard deviations
+  of a difference at the D/17 scatter), St is grid-converged within the
+  scatter and no extrapolation is attempted.
+
+Whatever comes out is combined with ADR-029's blockage extrapolation
+(drag −0.022 as B → 0) to say how far a grid-converged, unconfined value
+sits from the literature.
