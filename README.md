@@ -98,10 +98,12 @@ defect went unnoticed.
   domain from ±10 D to ±40 D by 0.018 more; neither moves the Strouhal number
   beyond scatter (ADR-027, ADR-029), and a smaller time step raises it
   (ADR-030).
-- **The wake values drift with the time step.** On one mesh, halving dt moves
-  St by about 0.001 and the drag by up to 0.009, with no sign of settling
-  from dt = 0.1 to 0.025. The Rhie–Chow old-flux term is the suspect, and
-  the dt-independence gate ADR-010 called for does not exist yet.
+- **The Rhie–Chow old-flux term misbehaves at small time steps.** At
+  dt = 0.025 it lets a spurious velocity of up to 2.1 grow in the far wake
+  and makes the wake values drift with dt; with it off, the drift nearly
+  disappears (ADR-030, ADR-031). At the dt = 0.05 used everywhere else the
+  flow stays physical. A dt-consistent form, with the dt-independence gate
+  ADR-010 asked for written first, is pending.
 - Hexahedral cells only.
 - Written on Kokkos throughout, but no GPU build has been attempted yet.
 - Every rank still reads the whole mesh description (points and
@@ -190,7 +192,7 @@ The architecture, the stage plan and a record of each round of work, in
 Korean, are in [`ROADMAP.md`](ROADMAP.md), a copy of the living roadmap
 document kept in step with it.
 
-[`docs/DECISIONS.md`](docs/DECISIONS.md) is append-only: 30 entries, each
+[`docs/DECISIONS.md`](docs/DECISIONS.md) is append-only: 31 entries, each
 saying what was decided, why, and what would reverse it. It keeps the wrong
 turns too, marked where later entries corrected them. Two runs of entries are
 worth reading as a story:

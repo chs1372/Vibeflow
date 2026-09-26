@@ -1394,3 +1394,61 @@ checkerboard of ADR-026, and a decoupled run is read as such, not as data.
   non-finite force. That would say the damping the old-flux term provides
   is needed, and the fix is a form that keeps the damping without the
   drift, not dropping the term.
+
+### Result
+
+Everything above this heading was committed before the first run.
+
+| old-flux term | dt | St | Cd | lift amplitude | fastest cell, t > 120 |
+| --- | --- | --- | --- | --- | --- |
+| on (ADR-030) | 0.05 | 0.1698 | 1.4233 | 0.3671 | 1.36, beside the cylinder |
+| on (ADR-030) | 0.025 | 0.1707 | 1.4141 | 0.3711 | **2.13, 17.5 D downstream** |
+| off | 0.05 | 0.1694 | 1.4364 | 0.3726 | 1.36, beside the cylinder |
+| off | 0.025 | 0.1697 | 1.4379 | 0.3736 | 1.36, beside the cylinder |
+
+Changes from dt = 0.05 to 0.025:
+
+| old-flux term | ΔSt | ΔCd | Δlift |
+| --- | --- | --- | --- |
+| on | +0.0009 | −0.0092 | +0.0040 |
+| off | +0.0003 | +0.0015 | +0.0010 |
+
+**Verdict under the rule: the old-flux term is the source of the drift.** With
+it off, both changes are within the thresholds — St exactly at 0.0003, drag
+at half of 0.003 — and the drag change has reversed sign and shrunk
+sixfold. Neither naive run decoupled.
+
+**The fastest cell says why, and it was not in the rule.** At dt = 0.05 every
+run's fastest cell sits beside the cylinder at 1.36, where the physical flow
+peaks. With the old-flux term on and dt = 0.025 it moves 17–19 diameters
+downstream and reaches 2.13 in a wake whose velocity should be close to
+one: six of the ten report lines after t = 120 exceed 1.6. The far
+wake has the largest cells and the weakest convective coupling, which is
+where D·aP_t — the fraction of the old Rhie-Chow residual carried into each
+new step — comes closest to one. The residual accumulates there faster than
+it decays, a local pressure-velocity mode grows until the flow limits it,
+and the forces feel it. It stayed under the decoupling gate's bound of 3,
+which is why only this instrument, not the gate, showed it.
+
+**The term also moves the answer itself.** At dt = 0.05, switching it off
+raises the drag by 0.013 and lowers St by 0.0004: as much as a fourfold wider
+domain. Neither form is the reference. The naive one is what ADR-010 warned
+about — its damping shrinks with dt — and it only looks well behaved here
+because dt = 0.025 is not yet small enough to show that.
+
+**What this changes.**
+
+- BDF2 is not the problem; the drift belongs to the face-flux formulation.
+- The consistent form as written is defective at small dt. A form that
+  keeps the damping without accumulating is needed, and ADR-010's gate comes
+  first: one steady problem at several dt, one answer, made to fail on the
+  current form before any change. Candidates: the old-flux term built from
+  BDF2's own two time levels (the current one uses aP_t = 1.5/dt on the
+  latest level only, which agrees with BDF2 only at steady state), and a
+  limited coupling coefficient of the kind OpenFOAM's `ddtCorr` applies.
+- The wake gate should judge the fastest cell over the statistics window,
+  with a bound near the physical peak, rather than 3 over any 100 steps.
+- Results at dt = 0.05 are unaffected in the sense that matters for the
+  comparisons already made and the ones queued: at that dt the fastest cell
+  is physical, and every comparison is like for like. The Strouhal excess is
+  not the old-flux term either: St is 0.169–0.170 with it on or off.
