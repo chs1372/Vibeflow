@@ -182,6 +182,10 @@ layers below it.
 
 ## Decision log
 
+The architecture, the stage plan and a record of each round of work, in
+Korean, are in [`ROADMAP.md`](ROADMAP.md), a copy of the living roadmap
+document kept in step with it.
+
 [`docs/DECISIONS.md`](docs/DECISIONS.md) is append-only: 29 entries, each
 saying what was decided, why, and what would reverse it. It keeps the wrong
 turns too, marked where later entries corrected them. Two runs of entries are
