@@ -96,6 +96,18 @@ struct PisoControls {
   Real pressureSolveTol = 1e-10;
   int outer = 1;             // PIMPLE outer iterations
   Real outerTol = 1e-10;
+  // Momentum predictor sweeps per outer iteration. Convection is upwind in
+  // the matrix plus a deferred correction evaluated from the velocity of the
+  // previous sweep; with one sweep that correction lags a whole outer
+  // iteration. More sweeps re-evaluate it and re-solve until the velocity
+  // stops moving by convectionSweepTol (relative). The matrix -- and so aP,
+  // which the Rhie-Chow flux reads -- stays upwind, so the converged answer
+  // is the same one; only how fast the outer loop gets there changes. The
+  // roadmap called this "making the deferred correction implicit"; a truly
+  // implicit central matrix would change aP, could make it vanish, and so
+  // would change the Rhie-Chow flux as well as the convergence (ADR-036).
+  int  convectionSweeps = 1;
+  Real convectionSweepTol = 0.0;
   bool consistentRhieChow = true;
   RhieChowForm rhieChowForm = RhieChowForm::Standard;
   // Second-order convection is carried as a deferred correction on the
@@ -183,6 +195,7 @@ struct StepReport {
   Real uMax{};
   Real uMaxAt[3]{};
   int outerUsed{};
+  int convectionSweeps{};     // momentum predictor sweeps, summed over the outer iterations
   int nonOrthSweeps{};
 };
 

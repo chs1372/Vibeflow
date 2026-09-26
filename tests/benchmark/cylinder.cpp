@@ -219,6 +219,8 @@ int main(int argc, char** argv) {
     if (std::getenv("CYL_ZG_PRESSURE")) ctl.pressureExtrapolation = false;
     if (const char* e = std::getenv("CYL_PEXTRAP")) ctl.pressureExtrapSweeps = std::atoi(e);
     if (std::getenv("CYL_PB_WARM")) ctl.pressureExtrapWarmStart = true;
+    if (const char* e = std::getenv("CYL_CONV_SWEEPS")) ctl.convectionSweeps = std::atoi(e);
+    if (const char* e = std::getenv("CYL_CONV_TOL")) ctl.convectionSweepTol = std::atof(e);
     std::printf("  controls: outer %d  nonOrth <= %d sweeps to %.0e%s%s\n",
                 ctl.outer, ctl.nonOrthCorrectors, ctl.nonOrthTol,
                 ctl.deferredCorrection ? "" : "  [FIRST-ORDER UPWIND]",
@@ -226,6 +228,9 @@ int main(int argc, char** argv) {
                     ? "  [INTERPOLATED RHIE-CHOW: known unstable, ADR-026]" : "");
     if (!ctl.diffusionNonOrth)
       std::printf("  controls: diffusion non-orthogonal correction OFF\n");
+    if (ctl.convectionSweeps > 1)
+      std::printf("  controls: up to %d momentum sweeps per outer iteration (tol %.0e)\n",
+                  ctl.convectionSweeps, ctl.convectionSweepTol);
     std::printf("  controls: boundary pressure %s, %d cold sweep(s)\n",
                 ctl.pressureExtrapWarmStart ? "warm-started (1 sweep per call)"
                                             : "restarted every call",
@@ -298,9 +303,11 @@ int main(int argc, char** argv) {
     const int reportLines =
         std::atoi(std::getenv("CYL_REPORT") ? std::getenv("CYL_REPORT") : "25");
     Real maxCont = 0.0, maxCo = 0.0;
+    long long outerSum = 0, sweepSum = 0, stepsRun = 0;
     bool coWarned = false;
     for (int k = 0; k < nSteps; ++k) {
       const auto rep = solver.advance(ub, fb, src, momentum, *pressure);
+      outerSum += rep.outerUsed; sweepSum += rep.convectionSweeps; ++stepsRun;
       const Real t = (k + 1) * dt;
       const Vec3 F = solver.boundaryForce(cylMask);
       if (probeOut) {
@@ -373,6 +380,9 @@ int main(int argc, char** argv) {
                   t.assemble, t.gradient, t.gradCalls, t.boundaryP,
                   t.boundaryPCalls, t.hbya, t.rhieChow, t.pressureAssembly,
                   t.total);
+      std::printf("    per step: %.2f outer iterations, %.2f momentum sweeps\n",
+                  static_cast<Real>(outerSum) / std::max(1LL, stepsRun),
+                  static_cast<Real>(sweepSum) / std::max(1LL, stepsRun));
     }
 
     if (probeOut) std::fclose(probeOut);

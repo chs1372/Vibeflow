@@ -787,8 +787,12 @@ StepReport PisoSolver::advance(const VectorField& uB, const ScalarField& fB,
   StepReport rep;
   VectorField uPrev("uPrev", nt, 3);
 
+  VectorField uSweep("uSweep", nt, 3);
   for (int outer = 0; outer < ctl_.outer; ++outer) {
     Kokkos::deep_copy(uPrev, u_);
+    const int nSweeps = ctl_.convectionSweeps > 1 ? ctl_.convectionSweeps : 1;
+    for (int cs = 0; cs < nSweeps; ++cs) {
+    if (nSweeps > 1) Kokkos::deep_copy(uSweep, u_);
     assembleMomentum(uB, src);
     // p_ has not changed since the last pressure solve (or since the last
     // step), so neither has its gradient.
@@ -816,6 +820,22 @@ StepReport PisoSolver::advance(const VectorField& uB, const ScalarField& fB,
         KOKKOS_LAMBDA(const Index c) { u(c, d) = x(c); });
       Kokkos::fence();
     }
+    ++rep.convectionSweeps;
+    if (nSweeps > 1 && ctl_.convectionSweepTol > 0.0) {
+      // Stop once another sweep would barely move the predicted velocity.
+      auto u = u_; auto us = uSweep;
+      Real dmax = 0.0, umax = 1e-300;
+      Kokkos::parallel_reduce("csDelta", Kokkos::RangePolicy<ExecSpace>(0, nc),
+        KOKKOS_LAMBDA(const Index c, Real& acc) {
+          for (int d = 0; d < 3; ++d) acc = Kokkos::max(acc, Kokkos::abs(u(c, d) - us(c, d)));
+        }, Kokkos::Max<Real>(dmax));
+      Kokkos::parallel_reduce("csScale", Kokkos::RangePolicy<ExecSpace>(0, nc),
+        KOKKOS_LAMBDA(const Index c, Real& acc) {
+          for (int d = 0; d < 3; ++d) acc = Kokkos::max(acc, Kokkos::abs(u(c, d)));
+        }, Kokkos::Max<Real>(umax));
+      if (comm_.max(dmax) < ctl_.convectionSweepTol * comm_.max(umax)) break;
+    }
+    }  // convection sweeps
 
     for (int corr = 0; corr < ctl_.correctors; ++corr) {
       computeHbyA();
