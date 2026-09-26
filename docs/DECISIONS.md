@@ -1267,3 +1267,47 @@ placements: 3–4% above Williamson, cause unknown.
   dt on `debug.hex` carries no node-placement scatter at all. The inlet
   distance, the suspect named above, changes the mesh, so it needs repeated
   runs to be read at all.
+
+## ADR-030 — Is the Strouhal excess the time step? Stated before the run, answered after
+**Question.** After ADR-027 and ADR-029 the Strouhal number sits at
+0.169–0.171 whatever the resolution, the domain width or the node placement:
+3–4% above Williamson's 0.164. It is a frequency, and the one discretisation
+parameter not yet varied is the time step. Written and committed before the
+runs, as ADR-029 was.
+
+**Test.** The wake gate's own case on its own mesh, `debug.hex`, with only
+dt changed, and the same end time (200) and statistics window (t > 120):
+
+| dt | steps | role |
+| --- | --- | --- |
+| 0.1 | 2,000 | third point, for the observed order |
+| 0.05 | 4,000 | existing result: St 0.1698, Cd 1.4233, lift 0.3671 |
+| 0.025 | 8,000 | the test |
+
+Because the mesh does not change, ADR-029's node-placement scatter does not
+apply. Runs on one mesh are deterministic here — the gate reproduced 0.1698,
+1.4233 and 0.3671 exactly from two separate builds, one of them a fresh
+clone — so any difference is the time step's, down to the fourth printed
+digit.
+
+**What BDF2 alone would predict.** Applied to a pure oscillation at this
+frequency, BDF2 lowers the frequency by 0.37% at dt = 0.1, 0.095% at 0.05
+and 0.024% at 0.025. The wake is a nonlinear oscillator, not a linear one, so
+that is a magnitude and a sign, not a target: St should *rise* by about
+0.0005 from dt = 0.1 to 0.05, by about 0.0001 from 0.05 to 0.025, and by
+0.0002 in all as dt goes to zero. If that holds, the time step works against
+the excess and cannot be its cause. A drop of 0.001 or more as dt shrinks
+would mean something first-order in dt dominates instead — the PISO
+splitting, or a lagged correction — and that is the finding to look for.
+
+**Decision rule.**
+
+- *The time step explains the excess* if St, extrapolated to dt = 0 from the
+  three runs, falls at least 0.003 below the dt = 0.05 value — half the
+  excess.
+- *The time step is ruled out* if St(0.025) differs from St(0.05) by no more
+  than 0.0003, or moves up.
+- *Anything in between* is part of the cause, and the observed order says
+  which part: near two, the time integration; near one, the splitting,
+  which the next test would then isolate by converging the outer iteration
+  at a fixed dt.
