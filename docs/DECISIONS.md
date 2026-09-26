@@ -1360,3 +1360,37 @@ hypothesis, not yet a finding.
   drift goes, the old-flux term is the source, and ADR-010's
   dt-independence gate is written and made to fail before the formulation
   is changed.
+
+## ADR-031 — Is the time-step drift the Rhie-Chow old-flux term? Stated before the run, answered after
+**Question.** ADR-030 found the wake values drifting with dt on a fixed mesh
+— St up by 0.0010 and 0.0009 over two halvings, drag down by 0.0044 and
+0.0092 — where BDF2 alone predicts changes that shrink fourfold. It named
+the old-flux (Choi) term of the Rhie-Chow flux as the suspect: it is the only
+part of the face flux that carries dt, and on the steady manufactured
+problem it is the form that shows a dt dependence (3.9% against 0.22%).
+Written and committed before the runs.
+
+**Test.** ADR-030's case with one switch: `CYL_NAIVE_RC`, which drops the
+old-flux term and leaves everything else as it was. Same mesh (`debug.hex`),
+dt = 0.05 and 0.025, same end time and statistics window. Same mesh, so no
+node-placement scatter.
+
+**What a guilty old-flux term predicts.** With it off, the St change from
+dt = 0.05 to 0.025 should shrink towards BDF2's own +0.0001, and the drag
+change to a few thousandths. The naive form has its own known weakness,
+which the old-flux term exists to cure: its pressure damping scales with
+V/aP, which shrinks with dt, so at small dt pressure and velocity can
+decouple. The runs report the fastest cell, the instrument that caught the
+checkerboard of ADR-026, and a decoupled run is read as such, not as data.
+
+**Decision rule**, on the changes from dt = 0.05 to 0.025:
+
+- *The old-flux term is the source of the drift* if, with it off,
+  |ΔSt| ≤ 0.0003 and |ΔCd| ≤ 0.003 (with it on: +0.0009 and −0.0092).
+- *It is not the source* if, with it off, either change is at least half
+  of what it was with it on: |ΔSt| ≥ 0.00045 or |ΔCd| ≥ 0.0046.
+- *Anything in between* makes it part of the source.
+- *Inconclusive* if a naive run decouples — the fastest cell above 3 or a
+  non-finite force. That would say the damping the old-flux term provides
+  is needed, and the fix is a form that keeps the damping without the
+  drift, not dropping the term.
