@@ -96,8 +96,12 @@ defect went unnoticed.
 - **The Strouhal number is 3–4% high, and the drag above the band.**
   Doubling the wall resolution lowers the drag by 0.024 and widening the
   domain from ±10 D to ±40 D by 0.018 more; neither moves the Strouhal number
-  beyond scatter (ADR-027, ADR-029). The time step is the next suspect, and
-  it can be tested on the same mesh.
+  beyond scatter (ADR-027, ADR-029), and a smaller time step raises it
+  (ADR-030).
+- **The wake values drift with the time step.** On one mesh, halving dt moves
+  St by about 0.001 and the drag by up to 0.009, with no sign of settling
+  from dt = 0.1 to 0.025. The Rhie–Chow old-flux term is the suspect, and
+  the dt-independence gate ADR-010 called for does not exist yet.
 - Hexahedral cells only.
 - Written on Kokkos throughout, but no GPU build has been attempted yet.
 - Every rank still reads the whole mesh description (points and
@@ -186,7 +190,7 @@ The architecture, the stage plan and a record of each round of work, in
 Korean, are in [`ROADMAP.md`](ROADMAP.md), a copy of the living roadmap
 document kept in step with it.
 
-[`docs/DECISIONS.md`](docs/DECISIONS.md) is append-only: 29 entries, each
+[`docs/DECISIONS.md`](docs/DECISIONS.md) is append-only: 30 entries, each
 saying what was decided, why, and what would reverse it. It keeps the wrong
 turns too, marked where later entries corrected them. Two runs of entries are
 worth reading as a story:

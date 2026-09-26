@@ -1311,3 +1311,52 @@ splitting, or a lagged correction — and that is the finding to look for.
   which part: near two, the time integration; near one, the splitting,
   which the next test would then isolate by converging the outer iteration
   at a fixed dt.
+
+### Result
+
+Everything above this heading was committed before the first run.
+
+| dt | steps | max Courant | St | Cd | lift amplitude | wall time |
+| --- | --- | --- | --- | --- | --- | --- |
+| 0.1 | 2,000 | 5.68 | 0.1688 | 1.4277 | 0.3675 | 1,660 s |
+| 0.05 | 4,000 | 2.84 | 0.1698 | 1.4233 | 0.3671 | 2,395 s |
+| 0.025 | 8,000 | 1.42 | 0.1707 | 1.4141 | 0.3711 | 4,043 s |
+
+**Verdict under the rule: ruled out.** St moves *up* as dt shrinks, by 0.0009
+from 0.05 to 0.025. The time step works against the excess, as BDF2
+predicted in sign, and extrapolating to dt = 0 can only raise St further.
+
+**But the values do not converge the way BDF2 says they should.** BDF2
+predicted changes shrinking fourfold per halving, about +0.0005 and then
++0.0001. The measured changes are +0.0010 and +0.0009, an observed order near
+0.2. The drag moves the other way from convergence: −0.0044, then −0.0092, the
+change doubling as dt halves. The lift amplitude changes by −0.0004, then
++0.0040. Over a range where each shedding period gets 60 to 240 steps, nothing
+here behaves like a second-order time error.
+
+**The likeliest reason is already on record.** ADR-010 warned that
+Rhie-Chow makes the face flux depend on dt through aP, required the
+dt-consistent form that carries the old-time flux, and required a gate that
+solves one steady problem at several dt and demands one answer. That gate was
+never made one. The Python suite still reports it as "not gated", and on
+today's code it says the consistent form is the one that shows the
+dependence: the same steady problem at dt = 0.05 and 2.0 differs by 3.9% in
+the error norm, against 0.22% for the naive form. The notes beside that
+report suspect that as dt → 0 the old-flux term accumulates instead of
+settling. A steady solution that
+depends on dt can only get that from the face flux, and the drift here grows
+as dt shrinks, which is what such an accumulation would do. That is a
+hypothesis, not yet a finding.
+
+**What this changes.**
+
+- The Strouhal excess is not the time step.
+- At a fixed mesh the wake values drift by about 0.001 in St and 0.005–0.01
+  in drag per halving of dt, with no sign of settling over this range. They
+  are not yet "the answer on this mesh", and every comparison in ADR-027 and
+  ADR-029 was made at one dt, so it holds at that dt only.
+- The next test is the one ADR-010 asked for: the same mesh and the same two
+  time steps with the old-flux term switched off (`CYL_NAIVE_RC`). If the
+  drift goes, the old-flux term is the source, and ADR-010's
+  dt-independence gate is written and made to fail before the formulation
+  is changed.
