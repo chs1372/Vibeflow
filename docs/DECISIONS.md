@@ -1155,3 +1155,49 @@ address. The AI co-author trailers are unchanged.
 
 *Reverses if:* nothing technical. A rename costs one commit only until other
 people depend on the names, which from this commit on they may.
+
+## ADR-029 — Is the high drag blockage? (written before the run)
+**Question.** ADR-027 left the Strouhal number 3.5% and the mean drag 5–8%
+above the literature on both meshes, ruled out resolution, and named
+blockage as the working hypothesis: the lateral boundaries sit at ±10 D, a
+blockage ratio B = D/H of 5%, and carry the free-stream velocity. This entry
+is written and committed before the test runs, so that the result cannot
+choose its own yardstick.
+
+**Test.** One change at a time: the lateral boundaries move out, everything
+else stays. Same generator settings as the 6,763-cell mesh (first cell D/17,
+the same distance-based size field), dt = 0.05, 200 time units, statistics
+over t > 120. The added region lies ten diameters or more from the cylinder,
+where the size field is already coarse, so the mesh near the body keeps its
+resolution. Two widened domains, run in this order:
+
+| lateral boundaries | B | role |
+| --- | --- | --- |
+| ±10 D | 5% | existing result: St 0.1698, Cd 1.4233 |
+| ±20 D | 2.5% | the test |
+| ±40 D | 1.25% | a third point, to check that the trend is linear in B before extrapolating it |
+
+**What blockage alone would predict.** A classical first-order estimate for
+a 2D bluff body — wake blockage ε = (D/4H)·Cd plus solid blockage
+(π²/12)(D/H)² — gives an effective speed-up of 2.0% at B = 5%. Taken at face
+value it predicts St 0.1680 and Cd 1.390 at ±20 D, St 0.1672 and Cd 1.376 at
+±40 D, and St 0.1665 and Cd 1.364 unconfined. That estimate assumes distant
+slip walls, not a prescribed velocity, so it is a magnitude, not a target.
+Note what it already says: even with blockage removed entirely, St would sit
+1.5% above Williamson's 0.164.
+
+**Decision rule.** Extrapolate linearly in B through the runs to B = 0.
+
+- *Blockage explains the excess* if the extrapolated values reach St ≤ 0.166
+  and Cd ≤ 1.36: within 1% of Williamson, inside the reported drag band.
+- *Blockage is ruled out* if the ±20 D run moves both by less than a mesh of
+  the same resolution could: |ΔSt| < 0.0003 and |ΔCd| < 0.005. Doubling the
+  resolution moved St by 0.0001, so node-placement noise at fixed resolution
+  should sit below these.
+- *Anything in between* means blockage is part of the cause. The entry then
+  records what fraction of each excess it accounts for, and the next suspect
+  — the inlet ten diameters upstream, which confines the flow from the front
+  — gets the same treatment.
+- A shift within twice the noise thresholds is not read either way until a
+  control run (a ±10 D mesh with its nodes placed differently) measures the
+  noise directly.
