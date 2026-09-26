@@ -43,6 +43,7 @@ PisoSolver::PisoSolver(const Mesh& mesh, Real nu, Real dt, PisoControls ctl, Com
       pValue_("pValue", mesh.nBoundaryFaces()),
       FbStar_("FbStar", mesh.nBoundaryFaces()),
       uBnd_("uBnd", mesh.nBoundaryFaces(), 3) {
+  pbWarm_ = ScalarField("pbWarm", mesh.nBoundaryFaces());
   auto own = mesh.owner(); auto nei = mesh.neighbour();
   auto cc = mesh.cellCentre(); auto fc = mesh.faceCentre();
   auto w = w_; auto sk = skew_;
@@ -87,6 +88,8 @@ void PisoSolver::setState(const VectorField& u, const ScalarField& p,
   Kokkos::deep_copy(u_, u); Kokkos::deep_copy(uOld_, u); Kokkos::deep_copy(uOld2_, u);
   Kokkos::deep_copy(p_, p);
   Kokkos::deep_copy(F_, F); Kokkos::deep_copy(FOld_, F);
+  pbWarmValid_ = false;     // a new pressure field: extrapolate it from scratch
+  gpValid_ = false;         // and its gradient is not the one in gp_
 
   // On a FixedValue face the mass flux is a STATE VARIABLE -- the caller does
   // not prescribe it, the pressure equation solves for it -- so an initial
@@ -144,14 +147,20 @@ ScalarField PisoSolver::pressureBoundary(const ScalarField& p) const {
   auto bc = m_.boundaryCell(); auto bcen = m_.boundaryCentre(); auto cc = m_.cellCentre();
   auto pt = pType_; auto pvals = pValue_;
   const bool open = openDomain_;
+  // Warm start only for the solver's own pressure: a caller extrapolating
+  // some other field must not start from p_'s boundary values.
+  const bool warm = ctl_.pressureExtrapolation && ctl_.pressureExtrapWarmStart &&
+                    pbWarmValid_ && p.data() == p_.data();
+  auto last = pbWarm_;
   Kokkos::parallel_for("pb0", Kokkos::RangePolicy<ExecSpace>(0, nb),
     KOKKOS_LAMBDA(const Index f) {
       v(f) = (open && pt(f) == static_cast<int>(PressureBC::FixedValue))
-                 ? pvals(f) : p(bc(f));
+                 ? pvals(f) : (warm ? last(f) : p(bc(f)));
     });
   Kokkos::fence();
   VectorField g("gpb", m_.nTotal(), 3);
-  const int sweeps = ctl_.pressureExtrapolation ? ctl_.pressureExtrapSweeps : 0;
+  const int sweeps = !ctl_.pressureExtrapolation ? 0
+                   : warm ? 1 : ctl_.pressureExtrapSweeps;
   for (int it = 0; it < sweeps; ++it) {
     grad_(p, v, g);
     Kokkos::parallel_for("pbIt", Kokkos::RangePolicy<ExecSpace>(0, nb),
@@ -162,6 +171,11 @@ ScalarField PisoSolver::pressureBoundary(const ScalarField& p) const {
         v(f) = p(bc(f)) + acc;
       });
     Kokkos::fence();
+  }
+  if (ctl_.pressureExtrapolation && ctl_.pressureExtrapWarmStart &&
+      p.data() == p_.data()) {
+    Kokkos::deep_copy(pbWarm_, v);
+    pbWarmValid_ = true;
   }
   return v;
 }
@@ -428,6 +442,7 @@ void PisoSolver::rhieChow() {
 
 void PisoSolver::solvePressure(LinearSolver& solver) {
   Stopwatch _sw(&t_.pressureAssembly);
+  gpValid_ = false;         // p_ is about to change
   const Index nc = m_.nCells(), nt = m_.nTotal(), nf = m_.nInternalFaces();
   const Index nb = m_.nBoundaryFaces();
   auto own = m_.owner(); auto nei = m_.neighbour(); auto bc = m_.boundaryCell();
@@ -566,6 +581,12 @@ void PisoSolver::solvePressure(LinearSolver& solver) {
     if (comm_.max(delta) < ctl_.nonOrthTol * scale) break;
   }
   lastNonOrth_ = sweeps;
+  // The last sweep's gradient is grad(p_) for the p_ just solved: nothing
+  // below changes p_. Hand it over rather than have the caller recompute it.
+  if (sweeps > 0) {
+    Kokkos::deep_copy(gp_, g);
+    gpValid_ = true;
+  }
 
   Kokkos::parallel_for("fluxCorrect", Kokkos::RangePolicy<ExecSpace>(0, nf),
     KOKKOS_LAMBDA(const Index f) {
@@ -769,7 +790,9 @@ StepReport PisoSolver::advance(const VectorField& uB, const ScalarField& fB,
   for (int outer = 0; outer < ctl_.outer; ++outer) {
     Kokkos::deep_copy(uPrev, u_);
     assembleMomentum(uB, src);
-    gradP(p_, gp_);
+    // p_ has not changed since the last pressure solve (or since the last
+    // step), so neither has its gradient.
+    if (!gpValid_) { gradP(p_, gp_); gpValid_ = true; }
 
     // Momentum predictor, one component at a time.
     LinearSystem sys(m_);
@@ -798,7 +821,7 @@ StepReport PisoSolver::advance(const VectorField& uB, const ScalarField& fB,
       computeHbyA();
       rhieChow();
       solvePressure(pressureSolver);
-      gradP(p_, gp_);
+      if (!gpValid_) { gradP(p_, gp_); gpValid_ = true; }
       auto u = u_; auto H = HbyA_; auto g = gp_; auto aP = aP_;
       Kokkos::parallel_for("uCorrect", Kokkos::RangePolicy<ExecSpace>(0, nc),
         KOKKOS_LAMBDA(const Index c) {

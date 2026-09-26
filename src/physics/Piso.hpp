@@ -119,6 +119,14 @@ struct PisoControls {
   // dominate its own gradient. Switchable to test exactly that.
   bool pressureExtrapolation = true;
   int  pressureExtrapSweeps = 3;
+  // Start each extrapolation from the boundary values the last one produced,
+  // and sweep once, instead of restarting from zero normal gradient. OFF, and
+  // kept only as recorded evidence (ADR-034): the three cold sweeps are a
+  // truncated fixed-point iteration, not a converged one, and warm-starting
+  // lets it keep iterating across calls towards a fixed point the cold
+  // version never reaches. The answer moves and the outer loop needs more
+  // iterations, which costs more than the sweeps it saves.
+  bool pressureExtrapWarmStart = false;
 };
 
 // Coarse phase timings. ADR-016 was written because a sweep count was
@@ -278,6 +286,16 @@ class PisoSolver {
   bool probing_{false};
   Index probeCell_{-1};
   View2<Real> rcComp_;        // per internal face: HfS, D gpf, D snGrad, Choi
+  // Last boundary pressure from pressureBoundary, for the warm start. Only
+  // p_ is ever extrapolated, so one buffer is enough; setState invalidates it.
+  mutable ScalarField pbWarm_;
+  mutable bool pbWarmValid_{false};
+  // gp_ holds grad(p_) for the p_ now stored. The last non-orthogonal sweep
+  // of solvePressure computes exactly that gradient, and p_ does not change
+  // again until the next pressure solve, so the corrector and the next outer
+  // iteration can use it instead of recomputing it: the same numbers, nine
+  // fewer gradient-plus-extrapolation passes per step (ADR-034).
+  bool gpValid_{false};
 };
 
 }  // namespace vibeflow

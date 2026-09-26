@@ -218,6 +218,7 @@ int main(int argc, char** argv) {
     }
     if (std::getenv("CYL_ZG_PRESSURE")) ctl.pressureExtrapolation = false;
     if (const char* e = std::getenv("CYL_PEXTRAP")) ctl.pressureExtrapSweeps = std::atoi(e);
+    if (std::getenv("CYL_PB_WARM")) ctl.pressureExtrapWarmStart = true;
     std::printf("  controls: outer %d  nonOrth <= %d sweeps to %.0e%s%s\n",
                 ctl.outer, ctl.nonOrthCorrectors, ctl.nonOrthTol,
                 ctl.deferredCorrection ? "" : "  [FIRST-ORDER UPWIND]",
@@ -225,6 +226,10 @@ int main(int argc, char** argv) {
                     ? "  [INTERPOLATED RHIE-CHOW: known unstable, ADR-026]" : "");
     if (!ctl.diffusionNonOrth)
       std::printf("  controls: diffusion non-orthogonal correction OFF\n");
+    std::printf("  controls: boundary pressure %s, %d cold sweep(s)\n",
+                ctl.pressureExtrapWarmStart ? "warm-started (1 sweep per call)"
+                                            : "restarted every call",
+                ctl.pressureExtrapSweeps);
     PisoSolver solver(mesh, nu, dt, ctl);
     solver.setBoundaryTypes(uType);
     solver.setPressureBoundary(pType, pval);
