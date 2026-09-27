@@ -69,6 +69,10 @@ struct Row {
   Index n; Real h, dt, l2, cont; int outer, nonOrth;
   Real momSec, preSec; int momIt, preIt, preSolves;
   std::string backend;
+  // Work over the whole run, for costing a change from counts rather than
+  // seconds (ADR-034, ADR-036): outer iterations summed over steps, and the
+  // momentum solves those took.
+  long long outerTotal{}, momSolves{};
 };
 
 // Backend selection, so the same case can be timed with either stack. The
@@ -109,6 +113,9 @@ Row run(Index n, Real dt, int nsteps, Real nu, Real skew, int outer = 6) {
   // for the same reason: ADR-034 measures both here before the cylinder.
   if (const char* e = std::getenv("VIBEFLOW_PEXTRAP")) ctl.pressureExtrapSweeps = std::atoi(e);
   if (std::getenv("VIBEFLOW_PB_WARM")) ctl.pressureExtrapWarmStart = true;
+  // Momentum predictor sweeps per outer iteration (ADR-036).
+  if (const char* e = std::getenv("VIBEFLOW_CONV_SWEEPS")) ctl.convectionSweeps = std::atoi(e);
+  if (const char* e = std::getenv("VIBEFLOW_CONV_TOL")) ctl.convectionSweepTol = std::atof(e);
   PisoSolver solver(mesh, nu, dt, ctl);
 
   VectorField u0("u0", nt, 3);
@@ -150,6 +157,7 @@ Row run(Index n, Real dt, int nsteps, Real nu, Real skew, int outer = 6) {
   LinearSolver& pressure = *pressurePtr;
   Real cont = 0.0;
   int outerUsed = 0, nonOrthUsed = 0;
+  long long outerTotal = 0;
   for (int k = 0; k < nsteps; ++k) {
     const Real t = (k + 1) * dt;
     auto uFn = [t, nu](const Vec3& q) { return velocity(q, t, nu); };
@@ -161,6 +169,7 @@ Row run(Index n, Real dt, int nsteps, Real nu, Real skew, int outer = 6) {
     const auto rep = solver.advance(ub, fb, src, momentum, pressure);
     cont = std::max(cont, rep.continuityError);
     outerUsed = rep.outerUsed;
+    outerTotal += rep.outerUsed;
     nonOrthUsed = rep.nonOrthSweeps;
   }
 
@@ -188,7 +197,8 @@ Row run(Index n, Real dt, int nsteps, Real nu, Real skew, int outer = 6) {
   return {n, 1.0 / n, dt, std::sqrt(num / den), cont, outerUsed, nonOrthUsed,
           momentum.totalSeconds(), pressure.totalSeconds(),
           momentum.totalIterations(), pressure.totalIterations(),
-          pressure.solveCount(), pressure.backendName()};
+          pressure.solveCount(), pressure.backendName(),
+          outerTotal, static_cast<long long>(momentum.solveCount())};
 }
 
 bool report(const char* label, const std::vector<Row>& rows, Real lo, Real hi,
@@ -209,6 +219,11 @@ bool report(const char* label, const std::vector<Row>& rows, Real lo, Real hi,
                 rows[i].n, rows[i].h, rows[i].l2, rows[i].cont, rows[i].outer,
                 rows[i].nonOrth, o, rows[i].momSec, rows[i].preSec, rows[i].preIt);
   }
+  // Whole-run work, deterministic: "outer" above is the last step's count.
+  for (const Row& r : rows)
+    std::printf("  work  N %3d: %lld outer iterations, %lld momentum solves / %d iters, "
+                "%d pressure solves / %d iters\n",
+                r.n, r.outerTotal, r.momSolves, r.momIt, r.preSolves, r.preIt);
   const Real last = orders.empty() ? 0.0 : orders.back();
   bool ok = last >= lo && last <= hi;
   std::printf("  -> order %.3f in [%.2f, %.2f]", last, lo, hi);
