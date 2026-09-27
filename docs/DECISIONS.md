@@ -1773,6 +1773,64 @@ R1's own seconds per unit. Wall time is reported beside it.
   changing the boundary values by less than 1% of what the first did. If
   not, (b) is not judged and the entry says so.
 
+### Result
+
+Everything above this heading was committed before the runs below.
+
+**Ethier–Steinman**, one thread, n = 32 (orders from 16 to 32):
+
+| extrapolation | orthogonal L2 | order | outer iterations, last step | distorted L2 | order | pressure iterations, distorted |
+| --- | --- | --- | --- | --- | --- | --- |
+| 3 cold sweeps (default) | 3.53558e-4 | 1.991 | 4 | 5.92178e-4 | 1.964 | 22,068 |
+| warm start | 3.53838e-4 | 1.998 | 6 | 5.94305e-4 | 1.969 | 24,144 |
+| 10 cold sweeps | 3.53803e-4 | 1.998 | 4 | 5.94287e-4 | 1.969 | 22,101 |
+| 20 cold sweeps | 3.53808e-4 | 1.998 | 4 | 5.94305e-4 | 1.969 | 22,100 |
+
+The warm start converges to the extrapolation's fixed point: it matches 20
+cold sweeps to 5e-6 at n = 8 and 3e-8 at n = 32. Converging the
+extrapolation cold costs no outer iterations; the warm start's extra ones
+come from trailing the pressure by a sweep, not from the answer it reaches.
+(From committed code the distorted run takes 24,144 pressure iterations; the
+smoke build quoted above took 24,012.)
+
+**The cylinder**, `debug.hex`, dt = 0.05, 4,000 steps, two threads:
+
+| run | St | Cd | lift | pressure solves / iterations | extrapolation sweeps | gradient evaluations | modeled cost | wall |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| main build (ADR-030's log) | 0.1698 | 1.4233 | 0.3671 | 133,902 / 742,895 | 521,706 (3 per call) | 169,902 | — | 2,395 s |
+| R1: 3 cold, cached | 0.1698 | 1.4233 | 0.3671 | 133,902 / 742,895 | 413,709 | 133,903 | 2,512 s | 2,512 s |
+| R2: warm start | 0.1698 | 1.4234 | 0.3669 | 266,838 / 1,407,702 | 270,841 | 266,839 | +56% | +52% |
+| R3: 10 cold | 0.1698 | 1.4234 | 0.3669 | 136,487 / 754,006 | 1,404,880 | 136,488 | +39% | +37% |
+
+Every run: fastest cell 1.35–1.36 beside the cylinder. R3's final-field
+history — 5.6e-2, 2.7e-2, 1.3e-2, 6.2e-3 of max|p| for sweeps 1–4, 7.6e-5 at
+sweep 10 — makes it a valid reference (the tenth sweep 0.14% of the first).
+
+**Verdicts under the rule.**
+
+- *Caching is kept.* R1 reproduces the main build's Strouhal number, drag
+  and lift amplitude, and in fact every line of its force history; the
+  gradient evaluations fall by exactly 9.00 per step, worth 5.1% of the
+  uncached run at R1's own prices. (The momentum iterations differ by two in
+  425,132: with two threads the atomic accumulations sum in a different
+  order, which the history does not see.)
+- *The warm start is rejected.* It passes (b) — R2 equals R3 in every
+  printed digit — and fails (a) by a wide margin: +56% modeled, +52% wall.
+  On the cylinder it is not the outer loop that pays but the non-orthogonal
+  loop, which calls the extrapolation once per sweep: a boundary pressure
+  that trails by a sweep makes each sweep's correction lag, and the loop
+  needs twice the sweeps to converge. It stays off, as recorded evidence.
+- *Three sweeps stand.* R3 differs from R1 by 0.0000 in St, 0.0001 in drag
+  and 0.0002 in lift, against thresholds of 0.0003 and 0.003. Each sweep
+  halves what the next one changes, three leave about 1% of max|p| at the
+  worst boundary face, and the forces do not notice.
+
+**What this changes.** The boundary-pressure extrapolation keeps its three
+cold sweeps and now runs 43.5 − 9 = 34.5 times per step instead of 43.5. The
+19% ADR-025 left on the table is not recoverable this way: it is the price of
+a fixed-point iteration that has to restart, because the loop that calls it
+cannot tolerate a lagging answer.
+
 ## ADR-035 — Each rank reads only its share of the mesh file
 **Decided.** A binary mesh description, `.vmesh`, and a `DistributedMesh`
 constructor that reads it in parts, so that no rank ever holds the whole
