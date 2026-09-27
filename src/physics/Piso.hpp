@@ -69,6 +69,26 @@ enum class PressureBC : int { FixedFlux = 0, FixedValue = 1 };
 // Kept only so the defect can be demonstrated on demand.
 enum class RhieChowForm : int { Interpolated = 0, Standard = 1 };
 
+// How the old-flux term and the damping coefficient are built (ADR-037).
+//   Exact - the steady equations contain no dt at all:
+//     * the old residual R = F - I[u].S uses the SAME skew-corrected
+//       interpolation I as the predicted flux;
+//     * the predicted flux interpolates q = H/aP - (V/aP) grad p and adds
+//       D_f L[grad p].S back, so the product is never interpolated as one;
+//     * D_f = V_f / aP_f, volume and aP interpolated separately, so that
+//       1/D_f - a0 = aPs_f / V_f exactly;
+//     * an outlet face carries the old-flux term too, with the cell value in
+//       place of the interpolation.
+//     A steady state then has F = I[u].S + (V_f/aPs_f)(L[grad p].Delta -
+//     a_f (p_N - p_P)): the damping with the spatial part of aP only.
+//   V1 - R = F - L[u].S with plain linear L, D_f = interp(V/aP). On a skewed
+//     mesh the steady residual carries (I - L)[u].S divided by 1 - D_f a0,
+//     about (2/3) Co in a cell, which falls with dt: the steady state moved by
+//     69% of its discretisation error across dt = 0.02 .. 2.0, and the
+//     cylinder's far wake grew a spurious velocity at dt = 0.025 (ADR-031).
+//     Kept so the gate can be shown to fail on it.
+enum class OldFluxForm : int { Exact = 0, V1 = 1 };
+
 struct PisoControls {
   int correctors = 2;        // PISO pressure correctors
   int nonOrthCorrectors = 40;  // iterated to convergence, not a fixed count
@@ -96,8 +116,21 @@ struct PisoControls {
   Real pressureSolveTol = 1e-10;
   int outer = 1;             // PIMPLE outer iterations
   Real outerTol = 1e-10;
+  // Momentum predictor sweeps per outer iteration. Convection is upwind in
+  // the matrix plus a deferred correction evaluated from the velocity of the
+  // previous sweep; with one sweep that correction lags a whole outer
+  // iteration. More sweeps re-evaluate it and re-solve until the velocity
+  // stops moving by convectionSweepTol (relative). The matrix -- and so aP,
+  // which the Rhie-Chow flux reads -- stays upwind, so the converged answer
+  // is the same one; only how fast the outer loop gets there changes. The
+  // roadmap called this "making the deferred correction implicit"; a truly
+  // implicit central matrix would change aP, could make it vanish, and so
+  // would change the Rhie-Chow flux as well as the convergence (ADR-036).
+  int  convectionSweeps = 1;
+  Real convectionSweepTol = 0.0;
   bool consistentRhieChow = true;
   RhieChowForm rhieChowForm = RhieChowForm::Standard;
+  OldFluxForm oldFlux = OldFluxForm::Exact;
   // Second-order convection is carried as a deferred correction on the
   // right-hand side, which is explicit. Turning it off leaves first-order
   // upwind: wrong, but unconditionally stable in the convective term. It is
@@ -119,6 +152,16 @@ struct PisoControls {
   // dominate its own gradient. Switchable to test exactly that.
   bool pressureExtrapolation = true;
   int  pressureExtrapSweeps = 3;
+  // Start each extrapolation from the boundary values the last one produced,
+  // and sweep once, instead of restarting from zero normal gradient. OFF, and
+  // kept only as recorded evidence (ADR-034). Warm-started, the truncated
+  // fixed-point iteration keeps going across calls and reaches the fixed
+  // point three cold sweeps stop short of -- the same answer as ten cold
+  // sweeps -- but it trails the pressure by a sweep, and the loops that call
+  // it pay: 6 outer iterations instead of 4 on Ethier-Steinman, twice the
+  // non-orthogonal sweeps and +52% wall time on the cylinder. Ten cold sweeps
+  // move the cylinder drag by 0.0001, so three stand.
+  bool pressureExtrapWarmStart = false;
 };
 
 // Coarse phase timings. ADR-016 was written because a sweep count was
@@ -128,6 +171,10 @@ struct PisoTimings {
   Real assemble{}, gradient{}, boundaryP{}, hbya{}, rhieChow{},
        pressureAssembly{}, momentumSolve{}, pressureSolve{}, total{};
   int  gradCalls{}, boundaryPCalls{};
+  // Least-squares gradient passes spent inside the boundary-pressure
+  // extrapolation: sweeps, summed over calls. Deterministic, unlike the
+  // seconds beside it, so a change in the sweep logic can be costed from it.
+  long long boundaryPSweeps{};
 };
 
 // Everything the solver knows about one cell and its faces, after a step.
@@ -175,6 +222,7 @@ struct StepReport {
   Real uMax{};
   Real uMaxAt[3]{};
   int outerUsed{};
+  int convectionSweeps{};     // momentum predictor sweeps, summed over the outer iterations
   int nonOrthSweeps{};
 };
 
@@ -198,6 +246,12 @@ class PisoSolver {
 
   // Extrapolated boundary pressure, as the solver itself uses it.
   ScalarField boundaryPressure() const { return pressureBoundary(p_); }
+  // Diagnostic (ADR-034): restart the boundary-pressure extrapolation cold on
+  // the current pressure and sweep it n times. Entry k-1 is the largest change
+  // any boundary value made in sweep k, relative to the largest |p| in the
+  // domain, so the list shows how far a truncated sweep count stops short of
+  // the fixed point. Leaves the solver's state untouched.
+  std::vector<Real> extrapolationHistory(int n) const;
 
   // Net force the fluid exerts on the faces where mask is non-zero, computed
   // from the SAME discrete operators the momentum equation uses. Recomputing
@@ -261,8 +315,14 @@ class PisoSolver {
   VectorField skew_;
 
   VectorField u_, uOld_, uOld2_, HbyA_, gp_;
-  VectorField gH0_, gH1_, gH2_;   // gradients of H/aP, for the
-                                  // skewness correction on its face value
+  VectorField gH0_, gH1_, gH2_;   // gradients of the interpolated cell
+                                  // vector (H/aP, or q in the exact form),
+                                  // for the skewness correction on its face
+                                  // value
+  VectorField q_;              // H/aP - (V/aP) grad p, the exact form's
+                               // interpolated vector (ADR-037)
+  ScalarField rOld_, rOldB_;   // old Rhie-Chow residual per internal face and
+                               // per outlet face, once per step (ADR-037)
   ScalarField p_, F_, FOld_, Fb_;
   VectorField bSrc_;           // pressure-free momentum right-hand sides
   ScalarField diag_, upper_, lower_;
@@ -278,6 +338,22 @@ class PisoSolver {
   bool probing_{false};
   Index probeCell_{-1};
   View2<Real> rcComp_;        // per internal face: HfS, D gpf, D snGrad, Choi
+  // Last boundary pressure from pressureBoundary, for the warm start. Only
+  // p_ is ever extrapolated, so one buffer is enough; setState invalidates it.
+  mutable ScalarField pbWarm_;
+  mutable bool pbWarmValid_{false};
+  // gp_ holds grad(p_) for the p_ now stored. The last non-orthogonal sweep
+  // of solvePressure computes exactly that gradient, and p_ does not change
+  // again until the next pressure solve, so the corrector and the next outer
+  // iteration can use it instead of recomputing it: the same numbers, nine
+  // fewer gradient-plus-extrapolation passes per step (ADR-034).
+  bool gpValid_{false};
+
+  bool exactOldFlux() const {
+    return ctl_.oldFlux == OldFluxForm::Exact &&
+           ctl_.rhieChowForm == RhieChowForm::Standard;
+  }
+  void computeOldResidual();
 };
 
 }  // namespace vibeflow

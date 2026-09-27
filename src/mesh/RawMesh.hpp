@@ -16,6 +16,7 @@
 
 #include "core/Types.hpp"
 #include <array>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -41,12 +42,38 @@ struct RawMesh {
   std::vector<Index> vertexNeighbours(const std::vector<int>& part, int me) const;
 
   static RawMesh fromHexFile(const std::string& path);
+  // The whole of a binary description (see vmesh below), on one rank.
+  static RawMesh fromBinary(const std::string& path);
   static RawMesh fromVertexFile(Index n, const std::string& path);
   static RawMesh generate(Index n, Real skew = 0.0,
                           const std::string& mode = "smooth");
   static RawMesh box(Index nx, Index ny, Index nz,
                      Real Lx = 1.0, Real Ly = 1.0, Real Lz = 1.0);
 };
+
+// Binary mesh description, `.vmesh`. The text `.hex` format cannot be read in
+// parts: its lines have no fixed length, so finding cell k means reading every
+// line before it. Here every record has a fixed size, so any block of points
+// or cells is one seek and one read -- which is what lets each rank read only
+// its share of a mesh (ADR-035). Little-endian, as every supported platform is.
+//
+//   char[8]   "VFMESH01"
+//   uint64    number of points
+//   uint64    number of cells
+//   double[3] x, y, z                 per point
+//   int64[8]  vertex ids, VTK order   per cell
+namespace vmesh {
+
+struct Header { std::int64_t nPoints{}, nCells{}; };
+
+Header readHeader(const std::string& path);
+std::vector<Vec3> readPoints(const std::string& path, const Header& h,
+                             std::int64_t first, std::int64_t count);
+std::vector<std::array<Int64, 8>> readCells(const std::string& path, const Header& h,
+                                            std::int64_t first, std::int64_t count);
+void write(const std::string& path, const RawMesh& m);
+
+}  // namespace vmesh
 
 // Vertex and connectivity generators, shared with HexMesh so the two mesh
 // paths cannot drift apart. HexMesh builds a structured face table from the

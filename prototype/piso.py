@@ -18,8 +18,14 @@ Two things here are easy to get subtly wrong and both are covered by gates:
 2. THE TIME-STEP TRAP (ADR-010). aP contains the transient term V/dt, so a
    naive Rhie-Chow flux loses its pressure damping as dt shrinks, and a steady
    state reached with one dt differs from the same state reached with another.
-   The old-time flux term below cancels the transient part of aP, making the
-   flux dt-independent. gate_dt_independence measures exactly that.
+   The old-time flux term below cancels the transient part of aP -- but only
+   exactly if the residual it carries is built with the same interpolation as
+   the predicted flux, and the damping coefficient is V_f/aP_f (ADR-037).
+   The first version subtracted a plain linear interpolation of the old
+   velocity from a skew-corrected prediction, and the difference, divided by
+   a factor that falls like dt, moved the steady state by 69% of its
+   discretisation error across dt = 0.02 .. 2.0. gate_dt_independence
+   measures exactly that, and now demands 1e-6.
 """
 
 import numpy as np
@@ -33,7 +39,7 @@ from gradient import QuadraticLSQGradient
 class PisoSolver:
     def __init__(self, mesh, nu, dt, n_correctors=2, n_nonorth=40,
                  n_outer=1, outer_tol=1e-10, consistent_rhie_chow=True,
-                 gradient="linear", rhie_chow_form="standard"):
+                 gradient="linear", rhie_chow_form="standard", old_flux="exact"):
         self.m = mesh
         self.nu = nu
         self.dt = dt
@@ -52,6 +58,27 @@ class PisoSolver:
         self.nNonOrth = n_nonorth
         self.nonorth_sweeps = 0
         self.consistent = consistent_rhie_chow
+        # How the old-flux term and the damping coefficient are built (ADR-037).
+        # "exact": the steady equations contain no dt at all --
+        #   * the old residual R = F - I[u].S uses the SAME skew-corrected
+        #     interpolation I as the predicted flux,
+        #   * the predicted flux interpolates q = H/aP - (V/aP) grad p and adds
+        #     D_f L[grad p].S back, so the product (V/aP) grad p is never
+        #     interpolated as a product,
+        #   * D_f = V_f / aP_f, so 1/D_f - a0 = aPs_f / V_f exactly.
+        #   A steady state then has F = I[u].S + (V_f/aPs_f)(L[grad p].Delta -
+        #   a_f (p_N - p_P)), with no dt in it anywhere.
+        # "v1": R = F - L[u].S with plain linear L, D_f = interp(V/aP). On a
+        #   skewed mesh the steady residual carries (I - L)[u].S divided by
+        #   1 - D_f a0 ~ (2/3) Co, which grows as dt shrinks: the steady velocity
+        #   moved by 69% of its discretisation error between dt = 0.02 and 2.0,
+        #   and the cylinder's far wake grew a spurious velocity at dt = 0.025
+        #   (ADR-031). Kept so the gate can be shown to fail on it.
+        if old_flux not in ("exact", "v1"):
+            raise ValueError(old_flux)
+        self.old_flux = old_flux
+        self._R_old = None
+        self._R_old_step = -1
         # "standard": F* = (H/aP)_f . S, the only pressure term in the flux
         # being the compact face gradient applied by the pressure solve.
         # "interpolated": F* also carries D (grad(p)_f . S - snGrad p_old).
@@ -238,32 +265,71 @@ class PisoSolver:
         return H / aP[:, None]
 
     # -------------------------------------------------- Rhie-Chow face flux
-    def rhie_chow(self, HbyA, aP, u_b=None):
+    def _old_residual(self):
+        """R = F_old - I[u_old].S with the skew-corrected interpolation, once
+        per step (ADR-037). The gradient of u_old takes the cell values as its
+        boundary values, as the gradient of H/aP does, so that I is the same
+        linear operator on both."""
+        if self._R_old_step != self.step_index:
+            m = self.m
+            gu = np.stack([self.grad(self.u_old[:, d], self.u_old[m.b_cell, d])
+                           for d in range(3)], axis=1)
+            uf = self.face_interp(self.u_old, gu)
+            self._R_old = self.F_old - np.einsum("ij,ij->i", uf, m.face_area)
+            self._R_old_step = self.step_index
+        return self._R_old
+
+    def rhie_chow(self, HbyA, aP, gp=None):
         m = self.m
-        Df = (self.w * (m.cell_volume / aP)[m.owner]
-              + (1 - self.w) * (m.cell_volume / aP)[m.neigh])
+        V = m.cell_volume
+        exact = self.old_flux == "exact" and self.rhie_chow_form == "standard"
+        if exact:
+            # Volume and aP interpolated separately, so the transient part
+            # cancels exactly: 1/D_f - a0 = aPs_f / V_f.
+            Vf = self.w * V[m.owner] + (1 - self.w) * V[m.neigh]
+            aPf = self.w * aP[m.owner] + (1 - self.w) * aP[m.neigh]
+            Df = Vf / aPf
+        else:
+            Df = (self.w * (V / aP)[m.owner]
+                  + (1 - self.w) * (V / aP)[m.neigh])
 
-        # H/aP must be interpolated to the face WITH the skewness correction.
-        # Plain linear interpolation is first order once the face centre is off
-        # the line joining the cell centres, and since this sets the mass flux
-        # it drags the whole solution down with it: the scheme measures second
-        # order on an orthogonal mesh and about first order on a skewed one.
-        gH = np.stack([self.grad(HbyA[:, d], HbyA[m.b_cell, d]) for d in range(3)],
-                      axis=1)
-        Hf = self.face_interp(HbyA, gH)
-        F = np.einsum("ij,ij->i", Hf, m.face_area)
-
-        if self.rhie_chow_form == "interpolated":
-            gp = self.grad_p(self.p)
+        if exact:
+            # q is the velocity the last pressure implies. Interpolating it,
+            # rather than H/aP, keeps the product (V/aP) grad p out of the
+            # interpolation; the pressure comes back with the face coefficient.
+            # Both pressure terms are interpolated cell gradients, blind to a
+            # checkerboard -- not the compact old-pressure term of ADR-026.
+            if gp is None:
+                gp = self.grad_p(self.p)
+            q = HbyA - gp * (V / aP)[:, None]
+            gq = np.stack([self.grad(q[:, d], q[m.b_cell, d]) for d in range(3)],
+                          axis=1)
+            F = np.einsum("ij,ij->i", self.face_interp(q, gq), m.face_area)
             gpf = self.w[:, None] * gp[m.owner] + (1 - self.w)[:, None] * gp[m.neigh]
-            snGrad = self.pdiff.a_int * (self.p[m.neigh] - self.p[m.owner])
-            F += Df * (np.einsum("ij,ij->i", gpf, m.face_area) - snGrad)
+            F += Df * np.einsum("ij,ij->i", gpf, m.face_area)
+        else:
+            # H/aP must be interpolated to the face WITH the skewness correction.
+            # Plain linear interpolation is first order once the face centre is off
+            # the line joining the cell centres, and since this sets the mass flux
+            # it drags the whole solution down with it: the scheme measures second
+            # order on an orthogonal mesh and about first order on a skewed one.
+            gH = np.stack([self.grad(HbyA[:, d], HbyA[m.b_cell, d]) for d in range(3)],
+                          axis=1)
+            Hf = self.face_interp(HbyA, gH)
+            F = np.einsum("ij,ij->i", Hf, m.face_area)
+
+            if self.rhie_chow_form == "interpolated":
+                gp = self.grad_p(self.p)
+                gpf = self.w[:, None] * gp[m.owner] + (1 - self.w)[:, None] * gp[m.neigh]
+                snGrad = self.pdiff.a_int * (self.p[m.neigh] - self.p[m.owner])
+                F += Df * (np.einsum("ij,ij->i", gpf, m.face_area) - snGrad)
 
         if self.consistent:
-            # Old-flux term (Choi 1999). R = F - u_f_bar . S is the Rhie-Chow
+            # Old-flux term (Choi 1999). R = F - u_f . S is the Rhie-Chow
             # residual; carrying it forward with the coefficient Df * aP_t
             # cancels the transient part of aP, so the pressure damping -- and
-            # therefore the steady state -- does not depend on dt.
+            # therefore the steady state -- does not depend on dt. That holds
+            # exactly only in the "exact" form above (ADR-037).
             #
             # Weighting this term with the full BDF2 coefficients instead
             # (-Df (a1 R_old + a2 R_old2)) looks more consistent and gives the
@@ -274,9 +340,12 @@ class PisoSolver:
             #   BDF2 weights: L2 2.055e-02 vs 2.002e-02  (2.6% apart)
             # The form below has a strictly decaying mode and one fixed point.
             aP_t, _, _ = self.bdf()
-            uf_old = (self.w[:, None] * self.u_old[m.owner]
-                      + (1 - self.w)[:, None] * self.u_old[m.neigh])
-            R_old = self.F_old - np.einsum("ij,ij->i", uf_old, m.face_area)
+            if exact:
+                R_old = self._old_residual()
+            else:
+                uf_old = (self.w[:, None] * self.u_old[m.owner]
+                          + (1 - self.w)[:, None] * self.u_old[m.neigh])
+                R_old = self.F_old - np.einsum("ij,ij->i", uf_old, m.face_area)
             F += Df * aP_t * R_old
         return F, Df
 
@@ -361,7 +430,7 @@ class PisoSolver:
 
             for _ in range(self.nCorr):
                 hba = self.HbyA(A, b, aP, self.u)
-                Fstar, Df = self.rhie_chow(hba, aP)
+                Fstar, Df = self.rhie_chow(hba, aP, gp)
                 self.p, self.F = self.solve_pressure(Fstar, Df)
                 gp = self.grad_p(self.p)
                 self.u = hba - gp * (m.cell_volume / aP)[:, None]

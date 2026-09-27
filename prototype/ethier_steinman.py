@@ -169,62 +169,119 @@ def gate_temporal(nu, skew, n=8, t_end=0.8, steps=(2, 4, 8), ref_steps=64):
                        (1.8, 2.6))
 
 
-def gate_dt_independence(nu, skew, n=8, dts=(0.05, 2.0)):
-    """Rhie-Chow must not let dt change the STEADY state (ADR-010).
+def steady_state(n, skew, nu, dt, with_pressure, tol=1e-13, max_time=400.0,
+                 **solver_kw):
+    """Run the steady MMS from rest until u and p stop changing (max |change|
+    per step below tol). Returns the solver, the step count and the last
+    change, which the caller checks against tol."""
+    import steady_mms as SM
+    m = HexMesh(n, skew=skew, seed=1)
+    solver = PisoSolver(m, nu, dt, n_correctors=2, n_outer=3, **solver_kw)
+    src = SM.source(m.cell_centre, nu, with_pressure)
+    u_b = face_average(m, SM.velocity)
+    Fb = adjust_boundary_flux(m, integrate_face_flux(m, SM.velocity))
+    prev_u, prev_p, change, steps = None, None, np.inf, 0
+    for k in range(int(round(max_time / dt))):
+        solver.advance(u_b, Fb, src)
+        steps = k + 1
+        if prev_u is not None:
+            change = max(np.abs(solver.u - prev_u).max(),
+                         np.abs(solver.p - prev_p).max())
+            if change < tol:
+                break
+        prev_u, prev_p = solver.u.copy(), solver.p.copy()
+    return solver, steps, change
 
-    STATUS: INCONCLUSIVE. Reported, not gated. See docs/DECISIONS.md ADR-012.
 
-    A steady problem has no temporal discretisation error, so two runs that
-    both reach steady state must agree. Measured on the steady MMS, skewed
-    mesh, both runs iterated to |du| < 1e-13:
+def gate_dt_independence(nu=0.1, n=8, dts=(0.02, 0.2, 2.0), bound=1e-6,
+                         report_forms=(("v1 old-flux form", {"old_flux": "v1"}),
+                                       ("naive, v1 structure",
+                                        {"consistent_rhie_chow": False,
+                                         "old_flux": "v1"}))):
+    """Rhie-Chow must not let dt change the STEADY state (ADR-010, ADR-037).
 
-        naive       dt=0.05  L2 2.0015e-02 | dt=2.0  L2 2.0016e-02  (7e-05)
-        consistent  dt=0.05  L2 2.0551e-02 | dt=2.0  L2 2.0021e-02  (2.6e-02)
+    A steady problem has no temporal discretisation error: the BDF2 terms
+    cancel exactly once u stops changing. Two runs of the same steady problem
+    with different time steps must therefore reach the same discrete state,
+    and whatever separates them is the time step leaking into the spatial
+    discretisation through the face flux.
 
-    That is backwards from the intent: the form meant to remove the dt
-    dependence is the one that shows it. Two things are unresolved and neither
-    should be guessed at:
+    Two steady manufactured problems -- constant pressure, and a smooth
+    non-constant pressure that makes the pressure-damping part of the flux
+    work -- on an orthogonal and a randomly skewed mesh, each run to
+    max |du|, |dp| < 1e-13 at dt = 0.02, 0.2 and 2.0. The spread is the
+    largest difference between two of those steady states, in the L2 norm,
+    relative to the discretisation error of the dt = 2.0 run: for u against
+    the exact velocity, for p (mean removed) against the exact pressure.
 
-      * As dt -> 0, Df*aP_t -> 1, so R^n = Df*Dp + R^{n-1} accumulates rather
-        than settling. The steady value derived on paper assumes it settles.
-      * This error norm is nearly blind to the damping term anyway, so it may
-        be measuring discretisation error, not decoupling. A checkerboard
-        -sensitive measure (the odd-even pressure mode amplitude) would
-        discriminate; this one does not.
+    Bound: 1e-6. A formulation whose steady equations contain no dt reaches
+    the same state to the iteration tolerance, about 1e-10 here; one that
+    leaks dt anywhere shows up far above it. Measured when the gate was
+    written, before any fix (ADR-037), spread of u / spread of p:
 
-    The default stays consistent=True per ADR-010 rather than being flipped on
-    one inconclusive measurement.
+                              constant p            grad p
+      v1 old-flux form
+        orthogonal         8.1e-04 / 9.9e-04    4.8e-03 / 7.1e-03
+        skewed             6.9e-01 / 1.5e+00    6.6e-01 / 1.5e+00
+      naive (no old flux)
+        orthogonal         2.1e-02 / 3.6e-02    9.4e-02 / 1.5e-01
+        skewed             6.7e-02 / 1.8e-01    1.1e-01 / 2.3e-01
+
+    On the skewed mesh the v1 form moves the steady velocity by 69% of its
+    own discretisation error between dt = 0.02 and 2.0.
+
+    Only the default formulation is gated. The forms in report_forms are
+    printed beside it for the record.
     """
     import steady_mms as SM
 
-    print(f"\nRhie-Chow time-step independence (steady MMS, n={n}, "
-          f"{'orthogonal' if skew == 0 else 'skewed'} mesh)  [REPORTED, NOT GATED]")
-    print(f"  {'formulation':<14}{'dt':>8}{'steps':>7}{'L2 vs exact':>20}{'|du|':>10}")
-    for consistent in (True, False):
-        vals = []
-        for dt in dts:
-            m = HexMesh(n, skew=skew, seed=1)
-            solver = PisoSolver(m, nu, dt, n_correctors=2, n_outer=3,
-                                consistent_rhie_chow=consistent)
-            src = SM.source(m.cell_centre, nu)
-            u_b = face_average(m, SM.velocity)
-            Fb = adjust_boundary_flux(m, integrate_face_flux(m, SM.velocity))
-            prev, change = None, 1.0
-            for k in range(int(400.0 / dt)):
-                solver.advance(u_b, Fb, src)
-                if prev is not None:
-                    change = np.abs(solver.u - prev).max()
-                    if change < 1e-13:
-                        break
-                prev = solver.u.copy()
-            e = solver.u - SM.velocity(m.cell_centre)
-            vals.append(np.sqrt((np.einsum("ij,ij->i", e, e) * m.cell_volume).sum()
-                                / m.cell_volume.sum()))
-            print(f"  {'consistent' if consistent else 'naive':<14}{dt:>8.3f}"
-                  f"{k + 1:>7}{vals[-1]:>20.10e}{change:>10.0e}")
-        print(f"  {'':<14}{'':>8}{'':>7}{'relative spread':>20}"
-              f"{abs(vals[0] - vals[1]) / max(vals):>10.1e}")
-    return True      # reported only
+    def norm(v, vol):
+        v = v if v.ndim == 2 else v[:, None]
+        return np.sqrt((np.einsum("ij,ij->i", v, v) * vol).sum() / vol.sum())
+
+    def spreads(states, m, with_pressure):
+        vol = m.cell_volume
+        u_ex = SM.velocity(m.cell_centre)
+        p_ex = SM.pressure(m.cell_centre, with_pressure)
+        centred = lambda p: p - (p * vol).sum() / vol.sum()
+        ref_u, ref_p = states[-1]
+        eu = norm(ref_u - u_ex, vol)
+        ep = norm(centred(ref_p) - centred(p_ex), vol)
+        su = sp_ = 0.0
+        for a in range(len(states)):
+            for b in range(a + 1, len(states)):
+                su = max(su, norm(states[a][0] - states[b][0], vol) / eu)
+                sp_ = max(sp_, norm(centred(states[a][1]) - centred(states[b][1]), vol) / ep)
+        return su, sp_, eu, ep
+
+    print(f"\nRhie-Chow steady state independent of dt (steady MMS, n={n}, nu={nu}, "
+          f"dt = {', '.join(str(d) for d in dts)})")
+    print(f"  {'problem':<16}{'mesh':<12}{'formulation':<28}{'steps':>18}"
+          f"{'spread u':>11}{'spread p':>11}{'L2 u':>10}{'L2 p':>10}")
+    ok = True
+    forms = (("default", {}),) + tuple(report_forms)
+    for with_pressure in (False, True):
+        for skew in (0.0, 0.25):
+            for name, kw in forms:
+                states, steps, conv = [], [], True
+                for dt in dts:
+                    solver, k, change = steady_state(n, skew, nu, dt, with_pressure, **kw)
+                    states.append((solver.u.copy(), solver.p.copy()))
+                    steps.append(k)
+                    conv &= change < 1e-13
+                su, sp_, eu, ep = spreads(states, solver.m, with_pressure)
+                gated = name == "default"
+                verdict = ""
+                if gated:
+                    passed = conv and su <= bound and sp_ <= bound
+                    ok &= passed
+                    verdict = "  PASS" if passed else ("  FAIL" if conv else "  FAIL (not steady)")
+                print(f"  {'grad p' if with_pressure else 'constant p':<16}"
+                      f"{'skewed' if skew else 'orthogonal':<12}{name:<28}"
+                      f"{'/'.join(str(k) for k in steps):>18}{su:>11.1e}{sp_:>11.1e}"
+                      f"{eu:>10.2e}{ep:>10.2e}{verdict}")
+    print(f"  -> default formulation, every spread <= {bound:.0e}: {'PASS' if ok else 'FAIL'}")
+    return ok
 
 
 def main():
@@ -257,7 +314,7 @@ def main():
     gate_spatial(0.05, 0.25, [6, 12, 24], mode="warped", gate=(0.0, 9.9))
 
     ok &= gate_temporal(1.0, 0.0)
-    gate_dt_independence(0.1, 0.25)
+    ok &= gate_dt_independence()
     print()
     print("v1 Ethier-Steinman GATE: " + ("PASS" if ok else "FAIL"))
     return 0 if ok else 1
