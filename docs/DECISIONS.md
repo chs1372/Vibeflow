@@ -1889,6 +1889,16 @@ which for now only code does (`vmesh::write`). The solver cases still read
 gradient caching and ADR-036's sweep switch. It merges after the full suite
 passes on that branch, recorded below.
 
+### Full suite
+
+The suite ran on the branch that carries this work plus ADR-037's flux
+change (and ADR-034's caching and ADR-036's switch), not on this work alone:
+the machine time went to one run of a superset instead of two. All 23 gates
+pass — the 8 of v0 and 15 of v1, this entry's `mms_parallel_read` among them
+(0.726 / 0.607 / 0.403 of the file on 2 / 3 / 4 ranks, the L2 error within
+9.3e-14 of serial). Had the superset failed on ADR-037's account, this work
+would have been run alone before merging.
+
 ## ADR-036 — Momentum predictor sweeps for the deferred correction. Stated before the runs, answered after
 **Question.** The roadmap's last v1 item was to make the deferred correction
 implicit. Convection is upwind in the matrix plus a deferred correction
@@ -2084,3 +2094,85 @@ fastest cell at every step of the statistics window, not every 160th, and
 the gate will require it to stay within 1.5 — ADR-031's recommendation. A
 far-wake mode like the one at dt = 0.025 fails that; the physical flow, at
 1.36, passes with room.
+
+### Result
+
+Everything above this heading was committed before the flux changed. On the
+development line the Python gate was committed failing, then the Python
+change, then the C++ port of the gate, failing, then the C++ change — four
+commits in that order.
+
+**(1) The Python gate passes**, every spread at the iteration tolerance, and
+the discretisation errors do not move (L2 of u 1.87e-2, 2.00e-2, 1.95e-2,
+2.08e-2 in both forms): dt leaves the answer and nothing else changes.
+
+| problem | mesh | exact form, spread u / p | v1 form, spread u / p |
+| --- | --- | --- | --- |
+| constant p | orthogonal | 9.1e-12 / 9.9e-12 | 8.1e-4 / 9.9e-4 |
+| constant p | skewed | 1.2e-11 / 9.5e-12 | 6.9e-1 / 1.5 |
+| grad p | orthogonal | 7.5e-12 / 8.4e-12 | 4.8e-3 / 7.1e-3 |
+| grad p | skewed | 1.2e-11 / 9.4e-12 | 6.6e-1 / 1.5 |
+
+**The diagnosis, tested past the gate.** With dt = 0.002 added — a
+thousandfold range — the exact form spreads 1.0e-9 to 1.2e-9 (the per-step
+tolerance leaves more at the smallest step), while the v1 form's skewed-mesh
+spread grows tenfold with the tenfold smaller step: 6.9 in u and 15 in p, the
+steady velocity moving by seven times its own discretisation error. On the
+orthogonal mesh, where the skewness term is absent, v1 grows only from 8.1e-4
+to 1.3e-3. That is the 1/dt the derivation predicts, and where it predicts it.
+
+**(2) Every other Python gate passes.** Ethier–Steinman orthogonal 1.990
+(unchanged); smooth distortion 1.958, was 1.897; BDF2 2.428 (unchanged); the
+warped family, reported only, 1.177, was 1.119.
+
+**(3) The C++ port.** Run on the unchanged C++ flux, the C++ gate reproduced
+the Python measurement of the v1 form digit for digit; with the change every
+spread is 8e-11 to 1.1e-10. Ethier–Steinman: orthogonal 1.991 (unchanged),
+smooth distortion 2.034, was 1.964, with the n = 32 error 5.6% lower. The
+Navier-Stokes cross-check agrees to 5.1e-10 at the default non-orthogonal
+tolerance, where it agreed to 6.6e-11 before — looser — but with the C++ loop
+converged to 1e-12 the two implementations agree to 3e-12, so the gap is that
+tolerance, not a difference in the formulation. The convection cross-check is
+unchanged at 4.6e-13; Navier-Stokes on 2–4 ranks agrees with serial within
+7.6e-15.
+
+**(4) The full suite passes**: all 23 gates, the new C++ one among them.
+The decoupling gate is where it was (fastest cell 1.34, drag 1.3008 against
+1.2996); the Ghia cavity does not move in any printed digit.
+
+**(5) The cylinder at dt = 0.025.** Both predictions hold, the drift is gone,
+and so is the far-wake mode:
+
+| flux | dt | St | Cd | lift amplitude | fastest cell, t > 120 |
+| --- | --- | --- | --- | --- | --- |
+| v1 (ADR-030) | 0.05 | 0.1698 | 1.4233 | 0.3671 | 1.36, beside the cylinder |
+| v1 (ADR-030) | 0.025 | 0.1707 | 1.4141 | 0.3711 | **2.13, 17.5 D downstream** |
+| naive (ADR-031) | 0.05 → 0.025 | +0.0003 | +0.0015 | +0.0010 | 1.36 |
+| exact | 0.05 | 0.1689 | 1.4317 | 0.3681 | 1.361, beside the cylinder |
+| exact | 0.025 | 0.1690 | 1.4316 | 0.3682 | 1.361, beside the cylinder |
+
+From dt = 0.05 to 0.025 the exact form moves St by +0.0001, drag by −0.0001
+and lift by +0.0001, against the prediction's bounds of 0.0003 and 0.003 —
+and against BDF2's own estimate, in ADR-030, of +0.0001 in St for that
+halving. The fastest cell is judged at every step of the window now, and
+never leaves the cylinder's side.
+
+**Verdict under the rule: adopted.** All five conditions hold.
+
+**What it changed besides.** At the gate's dt the cylinder moves: St −0.0009
+(0.1698 to 0.1689), drag +0.0084, lift +0.0010. The Strouhal number is now
+2.8% above Williamson on the benchmark domain, and less than 1% once
+ADR-032's inlet and ADR-029's sides are taken off (0.1689 − 0.0026 − up to
+0.0015 = 0.165–0.166). The grid study of ADR-033 used the v1 flux; if the
+shift is the same on every level, its drag limit moves from 1.390 to about
+1.398 and the unconfined drag to about 1.365, just above the band. It has
+not been repeated.
+
+**Why it survived.** ADR-010 named this trap in the first week of v1 and
+asked for this gate; it was written as a report, found the wrong direction
+(the form meant to remove the dt dependence was the one that showed it),
+and was left ungated as inconclusive. The test was right. What it measured
+was not decoupling but an interpolation mismatch that no order study can
+see, because both interpolations are second order, and that the benchmark's
+own time step kept small until a halving of dt made it sixty times larger in
+the far wake.
