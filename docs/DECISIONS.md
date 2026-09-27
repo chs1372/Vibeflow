@@ -1630,6 +1630,63 @@ Whatever comes out is combined with ADR-029's blockage extrapolation
 (drag −0.022 as B → 0) to say how far a grid-converged, unconfined value
 sits from the literature.
 
+### Result
+
+Everything above this heading was committed before the first run. The two
+runs were started once, lost when the machine running them was reclaimed,
+and started again from scratch with the same binary; nothing was read from
+the lost attempt, whose output had not yet been flushed.
+
+| level | cells | first cell | St | Cd | lift amplitude | cost |
+| --- | --- | --- | --- | --- | --- | --- |
+| C | 10,216 | D/24 | 0.1695 | 1.4121 | 0.3582 | 1.15 s/step |
+| M | 21,811 | D/33 | 0.1699 | 1.3991 | 0.3491 | ADR-027 |
+| F | 42,020 | D/47 | 0.1697 | 1.3939 | 0.3457 | 4.34 s/step |
+
+All three: dt = 0.05, 4,000 steps, 13 shedding cycles after t = 120, the
+fastest cell 1.36–1.37 beside the cylinder.
+
+**Drag.** The differences are 0.0130 (C to M) and 0.0052 (M to F), of one
+sign, for an observed order of 2.64 — inside the rule's 0.5 to 4, and close
+to the scheme's nominal two. Richardson extrapolation gives **Cd = 1.390**,
+with a grid convergence index of 0.31% on the fine level (±0.004). The
+prediction written above was differences of about 0.008 and 0.004 converging
+to about 1.39; the differences came out larger, the limit where predicted.
+
+**Strouhal number.** 0.1695, 0.1699, 0.1697: the differences change sign and
+St(C) − St(F) is 0.0002, far inside the 0.0017 the rule allows. St is
+grid-converged within the scatter, at 0.1697; no extrapolation.
+
+**Lift amplitude**, not in the rule but read the same way: differences
+0.0091 and 0.0034, observed order 2.84, extrapolated 0.344 (±0.003).
+
+**The caveat the entry above named still stands.** Each level is one mesh,
+and ADR-029 measured node-placement scatter of 0.005 in drag at D/17; the
+M-to-F difference is the size of that scatter. The GCI does not include it.
+That the observed order lands near two, and the limit where the two-grid
+estimate of ADR-027 put it, is the evidence that the scatter shrinks with
+the cells, not a measurement of it.
+
+**Combined with the domain.** ADR-029's blockage extrapolation moves drag by
+−0.022 and ADR-032's inlet estimate by about −0.011 (unresolved, ±0.009).
+Grid-converged and unconfined, drag is then about **1.357**, the top of the
+1.32–1.36 band; with the blockage alone, 1.368. The Strouhal number, 0.1697
+on every level, less 0.0026 for the inlet and up to 0.0015 for the sides, is
+0.166–0.167: 1–2% above Williamson's 0.1643. Resolution is not part of the
+Strouhal excess at all; confinement is most of it.
+
+**What this changes.**
+
+- The benchmark's drag excess is accounted for, to within the band. From
+  the D/17 mean of 1.417 (ADR-029's three meshes) to the grid limit of 1.390
+  is 0.027 of resolution; confinement is about 0.033 more (blockage 0.022,
+  inlet about 0.011).
+- The Strouhal number is not a resolution problem. What is left of its
+  excess after confinement, about 0.002–0.003, is not explained here.
+- These are v1-flux numbers, as the entry specified. ADR-037 changes the
+  Rhie-Chow flux; how much that moves the cylinder is measured there, on
+  the benchmark mesh, and the grid study is not repeated unless it is large.
+
 ## ADR-034 — The boundary-pressure extrapolation: warm start and gradient caching. Stated before the runs, answered after
 **Question.** ADR-025 left the boundary-pressure extrapolation at 19% of the
 cylinder run and proposed the warm start that had just paid off for the
