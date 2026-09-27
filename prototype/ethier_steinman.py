@@ -194,8 +194,10 @@ def steady_state(n, skew, nu, dt, with_pressure, tol=1e-13, max_time=400.0,
 
 
 def gate_dt_independence(nu=0.1, n=8, dts=(0.02, 0.2, 2.0), bound=1e-6,
-                         report_forms=(("naive (no old-flux term)",
-                                        {"consistent_rhie_chow": False}),)):
+                         report_forms=(("v1 old-flux form", {"old_flux": "v1"}),
+                                       ("naive, v1 structure",
+                                        {"consistent_rhie_chow": False,
+                                         "old_flux": "v1"}))):
     """Rhie-Chow must not let dt change the STEADY state (ADR-010, ADR-037).
 
     A steady problem has no temporal discretisation error: the BDF2 terms
