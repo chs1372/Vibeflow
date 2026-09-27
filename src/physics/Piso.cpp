@@ -161,6 +161,7 @@ ScalarField PisoSolver::pressureBoundary(const ScalarField& p) const {
   VectorField g("gpb", m_.nTotal(), 3);
   const int sweeps = !ctl_.pressureExtrapolation ? 0
                    : warm ? 1 : ctl_.pressureExtrapSweeps;
+  t_.boundaryPSweeps += sweeps;
   for (int it = 0; it < sweeps; ++it) {
     grad_(p, v, g);
     Kokkos::parallel_for("pbIt", Kokkos::RangePolicy<ExecSpace>(0, nb),
@@ -178,6 +179,43 @@ ScalarField PisoSolver::pressureBoundary(const ScalarField& p) const {
     pbWarmValid_ = true;
   }
   return v;
+}
+
+std::vector<Real> PisoSolver::extrapolationHistory(int n) const {
+  const Index nb = m_.nBoundaryFaces(), nc = m_.nCells();
+  auto p = p_;
+  auto bc = m_.boundaryCell(); auto bcen = m_.boundaryCentre(); auto cc = m_.cellCentre();
+  auto pt = pType_; auto pvals = pValue_;
+  const bool open = openDomain_;
+  ScalarField v("pbHist", nb), vPrev("pbHistPrev", nb);
+  Kokkos::parallel_for("pbHist0", Kokkos::RangePolicy<ExecSpace>(0, nb),
+    KOKKOS_LAMBDA(const Index f) {
+      v(f) = (open && pt(f) == static_cast<int>(PressureBC::FixedValue)) ? pvals(f) : p(bc(f));
+    });
+  Real pmax = 0.0;
+  Kokkos::parallel_reduce("pbHistScale", Kokkos::RangePolicy<ExecSpace>(0, nc),
+    KOKKOS_LAMBDA(const Index c, Real& m) { m = Kokkos::fmax(m, Kokkos::fabs(p(c))); },
+    Kokkos::Max<Real>(pmax));
+  pmax = std::max(comm_.max(pmax), 1e-300);
+  VectorField g("gpbHist", m_.nTotal(), 3);
+  std::vector<Real> hist;
+  for (int it = 0; it < n; ++it) {
+    Kokkos::deep_copy(vPrev, v);
+    grad_(p, v, g);
+    Kokkos::parallel_for("pbHistIt", Kokkos::RangePolicy<ExecSpace>(0, nb),
+      KOKKOS_LAMBDA(const Index f) {
+        if (open && pt(f) == static_cast<int>(PressureBC::FixedValue)) return;
+        Real acc = 0.0;
+        for (int i = 0; i < 3; ++i) acc += g(bc(f), i) * (bcen(f, i) - cc(bc(f), i));
+        v(f) = p(bc(f)) + acc;
+      });
+    Real d = 0.0;
+    Kokkos::parallel_reduce("pbHistDelta", Kokkos::RangePolicy<ExecSpace>(0, nb),
+      KOKKOS_LAMBDA(const Index f, Real& m) { m = Kokkos::fmax(m, Kokkos::fabs(v(f) - vPrev(f))); },
+      Kokkos::Max<Real>(d));
+    hist.push_back(comm_.max(d) / pmax);
+  }
+  return hist;
 }
 
 void PisoSolver::gradP(const ScalarField& p, VectorField& g) const {

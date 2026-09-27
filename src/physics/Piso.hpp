@@ -148,6 +148,10 @@ struct PisoTimings {
   Real assemble{}, gradient{}, boundaryP{}, hbya{}, rhieChow{},
        pressureAssembly{}, momentumSolve{}, pressureSolve{}, total{};
   int  gradCalls{}, boundaryPCalls{};
+  // Least-squares gradient passes spent inside the boundary-pressure
+  // extrapolation: sweeps, summed over calls. Deterministic, unlike the
+  // seconds beside it, so a change in the sweep logic can be costed from it.
+  long long boundaryPSweeps{};
 };
 
 // Everything the solver knows about one cell and its faces, after a step.
@@ -219,6 +223,12 @@ class PisoSolver {
 
   // Extrapolated boundary pressure, as the solver itself uses it.
   ScalarField boundaryPressure() const { return pressureBoundary(p_); }
+  // Diagnostic (ADR-034): restart the boundary-pressure extrapolation cold on
+  // the current pressure and sweep it n times. Entry k-1 is the largest change
+  // any boundary value made in sweep k, relative to the largest |p| in the
+  // domain, so the list shows how far a truncated sweep count stops short of
+  // the fixed point. Leaves the solver's state untouched.
+  std::vector<Real> extrapolationHistory(int n) const;
 
   // Net force the fluid exerts on the faces where mask is non-zero, computed
   // from the SAME discrete operators the momentum equation uses. Recomputing

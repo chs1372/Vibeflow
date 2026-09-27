@@ -383,6 +383,17 @@ int main(int argc, char** argv) {
       std::printf("    per step: %.2f outer iterations, %.2f momentum sweeps\n",
                   static_cast<Real>(outerSum) / std::max(1LL, stepsRun),
                   static_cast<Real>(sweepSum) / std::max(1LL, stepsRun));
+      std::printf("    boundary-pressure extrapolation: %lld sweeps (%.2f per call)\n",
+                  t.boundaryPSweeps,
+                  static_cast<Real>(t.boundaryPSweeps) / std::max(1, t.boundaryPCalls));
+      // How far the extrapolation's truncated sweep count stops short of its
+      // fixed point, on the final field: restarted cold, the largest change
+      // any boundary value makes in each sweep (ADR-034).
+      const auto hist = solver.extrapolationHistory(30);
+      std::printf("    extrapolation from cold on the final field, largest change per sweep / max|p|:\n     ");
+      for (int k : {1, 2, 3, 4, 5, 10, 15, 20, 30})
+        std::printf("  %d: %.1e", k, hist[k - 1]);
+      std::printf("\n");
     }
 
     if (probeOut) std::fclose(probeOut);

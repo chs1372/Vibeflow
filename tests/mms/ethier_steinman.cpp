@@ -105,6 +105,10 @@ Row run(Index n, Real dt, int nsteps, Real nu, Real skew, int outer = 6) {
   // tolerance is the knob. An order study is where loosening it would show
   // first, so the knob is exposed here and the sweep is recorded in ADR-025.
   if (const char* e = std::getenv("VIBEFLOW_NONORTH_TOL")) ctl.nonOrthTol = std::atof(e);
+  // The boundary-pressure extrapolation's sweep count and warm start, exposed
+  // for the same reason: ADR-034 measures both here before the cylinder.
+  if (const char* e = std::getenv("VIBEFLOW_PEXTRAP")) ctl.pressureExtrapSweeps = std::atoi(e);
+  if (std::getenv("VIBEFLOW_PB_WARM")) ctl.pressureExtrapWarmStart = true;
   PisoSolver solver(mesh, nu, dt, ctl);
 
   VectorField u0("u0", nt, 3);
