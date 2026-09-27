@@ -1938,6 +1938,51 @@ capped loop leaves the correction lagging.
   that size; it is recorded as a known limit of every cylinder number so
   far, whatever the default.
 
+### Result
+
+Everything above this heading was committed before the runs below.
+
+**Ethier–Steinman**, outer cap 20, one thread, whole-run work at n = 32
+(modeled cost at the 1-sweep run's prices per momentum and pressure
+iteration):
+
+| sweeps | orthogonal: outer / momentum it. / pressure it. | modeled cost | distorted: outer / momentum it. / pressure it. | modeled cost |
+| --- | --- | --- | --- | --- |
+| 1 | 9 / 111 / 3,497 | 1.00 | 12 / 140 / 22,068 | 1.00 |
+| 2 | 8 / 186 / 3,109 | 0.93 | 12 / 254 / 22,079 | 1.01 |
+| 3 | 8 / 258 / 3,110 | 0.96 | 12 / 350 / 22,079 | 1.02 |
+
+The errors with 2 and 3 sweeps match the 1-sweep errors to within 1.7e-10
+relative on every mesh: the fixed point is the one it was. One statement
+above was wrong: the distorted n = 32 run does not reach the cap of 6 today.
+With the cap at 20 it still takes 6 outer iterations in its last step — it
+had converged at exactly 6.
+
+**The cylinder**, 2 sweeps, against R1 of ADR-034 (the same binary with 1):
+
+| sweeps | St | Cd | lift | outer per step | momentum solves / iterations | pressure iterations | modeled cost | wall |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 (R1) | 0.1698 | 1.4233 | 0.3671 | 3.00 | 36,000 / 425,130 | 742,895 | 2,512 s | 2,512 s |
+| 2 | 0.1698 | 1.4233 | 0.3671 | 3.00 | 72,000 / 881,726 | 738,111 | +6.0% | +9.8% |
+
+**Verdicts under the rule.**
+
+- *Consistency holds.*
+- *No new default.* The saving is 7% on the orthogonal mesh and −1% on the
+  distorted one, against a bar of 10% on both, and the cylinder costs 6%
+  more. The switch stays, off.
+- *No finding against the benchmark.* With the correction re-evaluated
+  inside every outer iteration the cylinder's values do not move in any
+  printed digit, and its outer loop still uses all three iterations: what
+  keeps it from reaching 1e-7 is not the deferred correction's lag. Every
+  cylinder number so far stands as it was.
+
+**What this changes.** The roadmap item "make the deferred correction
+implicit" is closed. The conservative version exists, is verified to reach
+the same answer, and buys nothing on these cases; a truly implicit
+higher-order matrix would change aP and the Rhie-Chow flux with it, and is a
+different scheme, to be argued for on its own if a case ever needs it.
+
 ## ADR-037 — A dt-consistent Rhie-Chow flux, ADR-010's gate first. Stated before the change, answered after
 **Question.** ADR-031 traced the wake's dt drift, and a spurious velocity
 growing in the far wake at dt = 0.025, to the old-flux (Choi) term of the
