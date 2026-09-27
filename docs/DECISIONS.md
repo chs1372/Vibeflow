@@ -1710,3 +1710,110 @@ R1's own seconds per unit. Wall time is reported beside it.
 - R3 is a reference only if its final-field history shows the tenth sweep
   changing the boundary values by less than 1% of what the first did. If
   not, (b) is not judged and the entry says so.
+
+## ADR-035 — Each rank reads only its share of the mesh file
+**Decided.** A binary mesh description, `.vmesh`, and a `DistributedMesh`
+constructor that reads it in parts, so that no rank ever holds the whole
+description. ADR-023 made each rank build only its own subdomain and named
+what it left replicated: every rank still read all the points and all the
+connectivity, so the largest mesh was still the largest one a single rank
+could hold as a description.
+
+**The format.** An eight-byte tag, `VFMESH01`, the point and cell counts as
+64-bit integers, then three doubles per point and eight 64-bit vertex ids per
+cell. Records have a fixed size, so any block of points or cells is one seek
+and one read. The text `.hex` format cannot be read in parts, which is why a
+new format was needed at all.
+
+**The read**, in order, each rank:
+
+1. reads one contiguous block of cells and one of points; holding a point
+   block makes it the directory for those ids;
+2. fetches the coordinates its cells need from their directory ranks and
+   computes centroids;
+3. sorts cells by the Morton key of their centroids, with a sample sort, and
+   cuts the sorted order into exactly equal parts;
+4. finds candidate ghosts — every cell sharing a vertex with an owned one, as
+   on the RawMesh path — through the point directory: each rank registers
+   its cells' vertices with their directory ranks, which tell it which other
+   ranks' cells share them;
+5. fetches the ghosts' connectivity from their owners and every coordinate it
+   still lacks, and hands the subset to the same build as the RawMesh path.
+
+**The gate**, `mms_parallel_read`, measures what each rank held: the peak
+bytes of description, points at 24 bytes and cells at 64 as in the file, on
+the worst rank, against the build-memory gate's bar of 1/P + 0.35 of the
+file. A reader that skipped cells would pass that easily, so the same run
+solves `mms_parallel`'s diffusion problem on the mesh it read, and the L2
+error must match the serial run to 1e-10 — although the partition is Morton
+order, not RCB, so it differs from every other gate's.
+
+| mesh | ranks | description held, worst rank | bar | L2 against serial |
+| --- | --- | --- | --- | --- |
+| 16³ skewed fixture | 2 | 0.726 | 0.850 | within 7e-14 |
+| | 3 | 0.607 | 0.683 | within 7e-14 |
+| | 4 | 0.403 | 0.600 | within 7e-14 |
+| 40³ smooth | 2 | 0.672 | 0.850 | |
+| | 4 | 0.354 | 0.600 | |
+
+**Verified to fail.** The replicated path, kept in the gate for this, holds
+1.000 of the file on every rank and fails. The earlier parallel gates are
+unchanged: `mms_parallel` within 4e-14, the build-memory gate at 0.288.
+
+**Not done.** The `.hex` and CGNS readers still read the whole file on every
+rank; a mesh reaches the distributed path by being written as `.vmesh`,
+which for now only code does (`vmesh::write`). The solver cases still read
+`.hex`.
+
+**Merge condition.** The work sits on the development branch with ADR-034's
+gradient caching and ADR-036's sweep switch. It merges after the full suite
+passes on that branch, recorded below.
+
+## ADR-036 — Momentum predictor sweeps for the deferred correction. Stated before the runs, answered after
+**Question.** The roadmap's last v1 item was to make the deferred correction
+implicit. Convection is upwind in the matrix plus a deferred correction
+evaluated from the previous iterate, so with one momentum solve per outer
+iteration the correction lags a whole outer iteration. What was built is
+the conservative version: up to N momentum solves per outer iteration, each
+re-evaluating the correction from the last (`convectionSweeps`, default 1).
+The matrix, and so aP, is unchanged, so the converged answer is the same one
+and only the route to it changes. A truly implicit central matrix was not
+built: aP would change, can vanish at cell Péclet numbers above two, and
+enters the Rhie-Chow flux through D = V/aP, so it would be a different
+scheme with a different answer. Written and committed before the runs.
+
+**Test.**
+
+1. Ethier–Steinman, 8/16/32 on both meshes, native pressure solver, one
+   thread, with the outer-iteration cap raised from 6 to 20 so that every
+   run converges its outer loop (the distorted n = 32 run reaches the cap of
+   6 today): 1, 2 and 3 sweeps.
+2. The cylinder, `debug.hex`, dt = 0.05, 4,000 steps, 2 sweeps, against
+   ADR-034's R1: the same binary with 1 sweep.
+
+Cost is modeled from counts as in ADR-034: the 1-sweep run's seconds per
+momentum iteration and per pressure iteration (and, on the cylinder, per
+extrapolation sweep and gradient evaluation), times each run's counts.
+
+**What to expect.** Sweeps remove only the deferred correction's lag. The
+outer loop also converges the convecting flux and the pressure-velocity
+coupling, which sweeps do not touch, so the outer count should fall by one
+at most, while every sweep adds three momentum solves. On the cylinder the
+outer loop is capped at three and always uses all three; there, sweeps
+cannot save outer iterations unless they bring the loop under its tolerance
+(1e-7) sooner, and whatever they do to the answer measures how much the
+capped loop leaves the correction lagging.
+
+**Decision rule.**
+
+- *Consistency.* On Ethier–Steinman the errors with 2 and 3 sweeps must
+  match the 1-sweep errors to 1e-8 relative. A larger difference means the
+  sweeps moved the fixed point, which is a defect to find, not a result.
+- *A new default* only if it lowers the modeled cost on both cases — by at
+  least 10% at n = 32 on both Ethier–Steinman meshes, and at all on the
+  cylinder — while the cylinder values stay within St 0.0003 and Cd 0.003 of
+  R1. Otherwise the switch stays, off.
+- *A finding either way.* If the cylinder values with 2 sweeps move beyond
+  St 0.0003 or Cd 0.003, the benchmark's capped outer loop leaves a lag of
+  that size; it is recorded as a known limit of every cylinder number so
+  far, whatever the default.
