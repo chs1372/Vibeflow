@@ -20,14 +20,14 @@ gate suite is the only thing that tells the two apart.
 | Stage | Scope | State |
 | --- | --- | --- |
 | v0 | mesh geometry, FVM diffusion, CGNS input, ParaView output, MPI decomposition, linear-solver backends | **complete** — 8 gates |
-| v1 | incompressible laminar flow: PISO/PIMPLE, Rhie–Chow, BDF2, inlet/outlet boundaries, MPI | **complete** — 13 gates |
+| v1 | incompressible laminar flow: PISO/PIMPLE, Rhie–Chow, BDF2, inlet/outlet boundaries, MPI | **complete** — 15 gates |
 | v2 | RANS turbulence, heat transfer, buoyancy | not started |
 | v2.5 | GPU build | not started |
 | v3 | compressible flow | not started |
 | v4 | multiphase (VOF) | not started |
 
-All 21 gates pass on the current commit, run from a fresh clone on Ubuntu
-24.04 with two cores. CI runs the v0 gates on every push.
+All 23 gates pass on the current code, on Ubuntu 24.04 with two cores. CI
+runs the v0 gates on every push.
 
 ## What the gates show
 
@@ -41,21 +41,33 @@ Navier–Stokes study). "Distorted" is a random vertex perturbation reaching
 | --- | --- | --- |
 | diffusion, Python and C++ (two solutions each) | 2.002, 1.990 | 2.041, 1.966 |
 | convection–diffusion at cell Péclet up to 12, Python and C++ | 2.042 | 2.040 |
-| Navier–Stokes vs Ethier–Steinman, C++ | 1.991 | 1.964 |
-| Navier–Stokes vs Ethier–Steinman, Python | 1.990 | 1.897 |
+| Navier–Stokes vs Ethier–Steinman, C++ | 1.991 | 2.034 |
+| Navier–Stokes vs Ethier–Steinman, Python | 1.990 | 1.958 |
 | BDF2 in time, Python | 2.428 | |
 
 **Independent implementations agree.** The Python reference (numpy, sparse
 direct solves) and the C++ solver (Kokkos, Krylov solvers) share no code.
-Their L2 errors agree to 1.6e-12 for diffusion, 4.6e-13 for
-convection–diffusion and 6.6e-11 for Navier–Stokes. Native CG and four PETSc
+Their L2 errors agree to 1.5e-12 for diffusion, 4.6e-13 for
+convection–diffusion and 5.1e-10 for Navier–Stokes (3e-12 with the C++
+non-orthogonal loop converged to 1e-12). Native CG and four PETSc
 configurations solve the same system to the same answer within 1.4e-13;
 BoomerAMG takes 7 iterations where Jacobi-preconditioned CG takes 92.
 
 **Parallel runs give the serial answer.** Diffusion agrees across 1–4 ranks
-to 4.5e-14 and Navier–Stokes to 1.7e-15. Each rank builds only its own
+to 4.5e-14 and Navier–Stokes to 7.6e-15. Each rank builds only its own
 subdomain: on four ranks the busiest one constructs 0.288 of the serial mesh,
-against a bar of 0.600 that a replicating partitioner (1.000) fails.
+against a bar of 0.600 that a replicating partitioner (1.000) fails. Read
+from the binary `.vmesh` format, each rank also holds only its share of the
+mesh description: 0.403 of the file on four ranks, against the same bar.
+
+**A steady state does not depend on the time step.** Two steady
+manufactured problems, on an orthogonal and a skewed mesh, run to a steady
+state at dt = 0.02, 0.2 and 2.0 must reach the same discrete state to 1e-6 of
+the discretisation error; they agree to 1e-10. This is the trap ADR-010
+named in the first week of v1. The first form of the Rhie–Chow old-flux term
+fell into it — on the skewed mesh its steady velocity moved by 69% of its
+own discretisation error across that range — and in the cylinder's far
+wake it grew a spurious velocity at small time steps (ADR-037).
 
 **Open boundaries conserve mass to round-off.** Uniform flow through a box
 with an inlet and an outlet is an exact discrete fixed point, and the solver
@@ -72,14 +84,20 @@ Lid-driven cavity, 64×64, against Ghia, Ghia & Shin (1982):
 | 100 | 0.0016 | 0.0044 |
 | 1000 (opt-in, `--full`) | 0.0121 | 0.0126 |
 
-Cylinder wake at Re = 100, the first unsteady case, on gmsh meshes:
+Cylinder wake at Re = 100, the first unsteady case, on gmsh meshes. The
+gate runs the 6,763-cell mesh; the grid limit is a three-level Richardson
+extrapolation over 10,216, 21,811 and 42,020 cells (ADR-033):
 
-| | 6,763 cells | 21,811 cells | literature |
+| | 6,763 cells, D/17 | grid limit | literature |
 | --- | --- | --- | --- |
-| first cell at the wall | D/17 | D/33 | |
-| Strouhal number | 0.1698 | 0.1699 | 0.164 (Williamson) |
-| mean drag | 1.4233 | 1.3991 | 1.32–1.36 |
-| lift amplitude | 0.3671 | 0.3491 | 0.30–0.35 |
+| Strouhal number | 0.1689 | 0.1697, converged within 0.0004 | 0.164 (Williamson) |
+| mean drag | 1.4317 | 1.390 ± 0.004 | 1.32–1.36 |
+| lift amplitude | 0.3681 | 0.344 ± 0.003 | 0.30–0.35 |
+
+The grid study was run before the Rhie–Chow change of ADR-037, which moved
+the 6,763-cell values by −0.0009 in St and +0.008 in drag; it has not been
+repeated with the current flux. Halving the time step to 0.025 moves the
+6,763-cell values by 0.0001.
 
 The benchmark domain is small on purpose — inlet 10 D upstream, sides at
 ±10 D — and part of the excess is confinement. Widening the sides to ±40 D
@@ -92,29 +110,29 @@ meshes.
 One more gate runs the refined cylinder at a time step where an earlier form
 of the Rhie–Chow flux let pressure and velocity decouple, and it judges the
 fastest cell in the domain rather than a norm, because a norm is how that
-defect went unnoticed.
+defect went unnoticed. The wake gate itself also judges the fastest cell, at
+every step of its statistics window, against 1.5: the physical peak beside
+the cylinder is 1.36.
 
 ## Known limits
 
-- **The Strouhal number is 3–4% high on the benchmark domain, and the drag
-  above the band.** Confinement explains part of it: the inlet ten
-  diameters upstream is worth about 0.0026 of St (ADR-032) and the sides at
-  ±10 D up to 0.0015 more and 0.022 of drag (ADR-029). Unconfined, St would
-  be 1–2% above Williamson's value. Doubling the wall resolution lowers the
-  drag by 0.024 without moving St (ADR-027); a three-level grid study is
-  running (ADR-033).
-- **The Rhie–Chow old-flux term misbehaves at small time steps.** At
-  dt = 0.025 it lets a spurious velocity of up to 2.1 grow in the far wake
-  and makes the wake values drift with dt; with it off, the drift nearly
-  disappears (ADR-030, ADR-031). At the dt = 0.05 used everywhere else the
-  flow stays physical. A dt-consistent form, with the dt-independence gate
-  ADR-010 asked for written first, is pending.
+- **The Strouhal number is 2.8% high on the benchmark domain, and the drag
+  above the band.** Most of it is the domain, which is small on purpose:
+  the inlet ten diameters upstream is worth about 0.0026 of St (ADR-032) and
+  the sides at ±10 D up to 0.0015 more and 0.022 of drag (ADR-029).
+  Resolution is none of the Strouhal excess and 0.027 of the drag
+  (ADR-033). Taken off, St is 0.3–1.2% above Williamson's value and drag
+  about 1.365, just above the band. What remains of the Strouhal excess is
+  not explained.
 - Hexahedral cells only.
 - Written on Kokkos throughout, but no GPU build has been attempted yet.
-- Every rank still reads the whole mesh description (points and
-  connectivity), though it builds only its own part.
-- The pressure stage is 85% of the cost of a time step (6,763-cell cylinder:
-  0.6 s per step on two cores).
+- The distributed mesh read needs the binary `.vmesh` format, which only
+  code writes so far (`vmesh::write`). The text `.hex` and CGNS readers
+  still read the whole file on every rank, and the cylinder cases use them.
+- The pressure stage is 88% of the cost of a time step (6,763-cell cylinder:
+  0.63 s per step on two cores). Restarting the boundary-pressure
+  extrapolation cold is part of that price: a warm-started one saves its
+  sweeps and doubles the non-orthogonal loop's (ADR-034).
 
 ## Build
 
@@ -152,7 +170,7 @@ describes a fuller dependency set but has not been exercised yet.
 ```sh
 python3 tests/mms/run_gates.py v0     # about a minute
 sh cases/cylinder/make_meshes.sh      # the two cylinder meshes, about 15 s
-python3 tests/mms/run_gates.py v1     # just under an hour on two cores
+python3 tests/mms/run_gates.py v1     # about an hour on two cores
 ```
 
 The cylinder meshes are generated rather than stored. With gmsh 4.15.2 the
@@ -197,7 +215,7 @@ The architecture, the stage plan and a record of each round of work, in
 Korean, are in [`ROADMAP.md`](ROADMAP.md), a copy of the living roadmap
 document kept in step with it.
 
-[`docs/DECISIONS.md`](docs/DECISIONS.md) is append-only: 33 entries, each
+[`docs/DECISIONS.md`](docs/DECISIONS.md) is append-only: 37 entries, each
 saying what was decided, why, and what would reverse it. It keeps the wrong
 turns too, marked where later entries corrected them. Two runs of entries are
 worth reading as a story:
@@ -208,6 +226,14 @@ worth reading as a story:
   own run. It was a checkerboard mode that the Rhie–Chow flux itself created,
   found by a probe that followed one cell term by term instead of a norm over
   the whole field.
+- **ADR-010 → ADR-030 → ADR-031 → ADR-037.** A trap named in the first
+  week — the Rhie–Chow flux letting the time step into a steady state — got
+  a report instead of a gate, the report pointed the wrong way and was left
+  alone. Twenty entries later, halving the time step made the wake drift
+  and a spurious velocity grow far downstream. The gate was finally written,
+  failed as the report had, and the cause turned out to be two
+  interpolations, each second order, that differed by a skewness term the
+  old-flux term divided by a number proportional to dt.
 - **ADR-012 and ADR-013.** A quadratic least-squares gradient was built to
   fix a disappointing order of accuracy. It is a second-order operator and it
   made the solver slightly worse; the real problem was that the mesh family
