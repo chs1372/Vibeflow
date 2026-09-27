@@ -1624,3 +1624,89 @@ has not been measured.
 Whatever comes out is combined with ADR-029's blockage extrapolation
 (drag −0.022 as B → 0) to say how far a grid-converged, unconfined value
 sits from the literature.
+
+## ADR-034 — The boundary-pressure extrapolation: warm start and gradient caching. Stated before the runs, answered after
+**Question.** ADR-025 left the boundary-pressure extrapolation at 19% of the
+cylinder run and proposed the warm start that had just paid off for the
+non-orthogonal correction: start each extrapolation from the boundary values
+the previous one produced and sweep once, instead of three times from zero
+normal gradient. Two changes are tested — that warm start, and handing over
+the pressure gradient wherever it is recomputed from a pressure that has not
+changed. Written and committed before the cylinder runs.
+
+**Already known**, from runs made while the code was written, before this
+entry; the rule below is written with them in view.
+
+- *Caching.* Of the 42.5 pressure-gradient evaluations per step on the
+  cylinder (169,902 in 4,000 steps, ADR-030's gate log), nine take the
+  gradient of an unchanged pressure: one at the start of each of the three
+  outer iterations, and one after each of the six correctors, whose pressure
+  solve has just computed it. Handing it over is exact by construction. On
+  Ethier–Steinman, at the same thread count, the errors, outer iterations,
+  non-orthogonal sweeps and pressure iterations match the main build's in
+  every printed digit. (Across thread counts the errors differ in the
+  thirteenth digit, from the order of the reductions.)
+- *Warm start, on Ethier–Steinman.* It changes the answer and costs more:
+  orthogonal error at n = 8 goes from 5.5635e-3 to 5.6290e-3, a difference
+  that shrinks faster than the error (3.5356e-4 against 3.5381e-4 at
+  n = 32); the orthogonal runs need 6 outer iterations instead of 4, and the
+  distorted n = 32 run 24,012 pressure iterations instead of 22,068. The
+  reading at the time: three cold sweeps are a truncated fixed-point
+  iteration, so a warm start, which keeps iterating across calls, computes a
+  different boundary pressure, closer to the fixed point, and trails the
+  current pressure by a sweep, which slows the outer loop.
+- *The extrapolation's own convergence.* On the cylinder mesh each sweep
+  halves the change the next one makes (a five-step instrument check:
+  4.5e-2, 2.2e-2, 1.0e-2, 5.0e-3 of max|p| for sweeps 1–4, 6e-5 at sweep
+  10). That is what the 1/d² least-squares weights predict for a wall cell,
+  where the boundary face and the opposite neighbour carry equal weight: the
+  error contracts by one half per sweep. Three sweeps leave about an eighth
+  of the first change; ten leave about a thousandth.
+
+Two things could make the cylinder differ from Ethier–Steinman. Its outer
+loop is capped at three iterations and always uses all three (36,000
+momentum solves in 4,000 steps), so a slower outer loop cannot cost
+iterations there; it can only leave each step less converged. And its
+boundary pressure changes little from one step to the next, which is where
+ADR-025's warm start paid off.
+
+**Test.** The development build, `debug.hex`, dt = 0.05, 4,000 steps, the
+usual statistics window, one run at a time:
+
+| run | extrapolation | role |
+| --- | --- | --- |
+| R1 | 3 cold sweeps, gradient cached | the proposed default; must reproduce the main build's 0.1698, 1.4233, 0.3671 |
+| R2 | warm start, gradient cached | the candidate |
+| R3 | 10 cold sweeps, gradient cached | the extrapolation close to its fixed point: the reference R1 and R2 are measured against |
+
+and Ethier–Steinman (8, 16, 32, orthogonal and distorted) with the same
+three settings. Every cylinder run prints, for its final field, the
+largest change per sweep of a cold extrapolation for sweeps 1 to 30.
+
+Cost is judged on counts, not seconds: identical runs of the gate's case
+took 2,395 s in one suite and 2,897 s in another. Each run's modeled cost is
+R1's wall time plus the difference in its counts — pressure iterations,
+momentum iterations, extrapolation sweeps, gradient evaluations — priced at
+R1's own seconds per unit. Wall time is reported beside it.
+
+**Decision rule.**
+
+- *Caching is kept* if R1 reproduces the main build's Strouhal number, drag
+  and lift amplitude in every printed digit and its gradient evaluations
+  fall by nine per step. Anything else is a defect, and it comes out.
+- *The warm start is adopted* only if all three hold: (a) R2's modeled cost
+  is at least 5% below R1's; (b) R2 is at least as close to R3 as R1 is,
+  within St 0.0002 and Cd 0.002, i.e. |R2 − R3| ≤ |R1 − R3| plus that
+  margin; (c) the C++ order gates pass with it. Adopting it means writing
+  it into the Python reference first, because the cross-check compares the
+  two implementations to 1e-10. Otherwise it stays off, as recorded
+  evidence.
+- *Truncation on its own terms.* If R3 differs from R1 by more than St
+  0.0003 or Cd 0.003 — the thresholds ADR-031 used for a real change on one
+  mesh — three cold sweeps are a discretisation error of their own on the
+  benchmark, and an extrapolation swept to a tolerance (Python first)
+  becomes the next change whatever happens to the warm start. Below that,
+  three sweeps stand.
+- R3 is a reference only if its final-field history shows the tenth sweep
+  changing the boundary values by less than 1% of what the first did. If
+  not, (b) is not judged and the entry says so.
