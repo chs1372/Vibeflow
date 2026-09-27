@@ -181,12 +181,27 @@ int main(int argc, char** argv) {
     const Real nu = 0.1, bound = 1e-6;
     const Real tol = 1e-12;       // max change per step that counts as steady
     const Real maxTime = 400.0;
-    const std::vector<Real> dts = {0.02, 0.2, 2.0};
+    std::vector<Real> dts = {0.02, 0.2, 2.0};
+    // Exploration only (ADR-037): VIBEFLOW_STEADY_DTS="0.002,0.02,0.2,2.0"
+    // replaces the time steps. The gate itself is judged on the three above.
+    if (const char* e = std::getenv("VIBEFLOW_STEADY_DTS")) {
+      dts.clear();
+      std::string list(e);
+      std::size_t pos = 0;
+      while (pos < list.size()) {
+        const std::size_t comma = list.find(',', pos);
+        dts.push_back(std::atof(list.substr(pos, comma - pos).c_str()));
+        if (comma == std::string::npos) break;
+        pos = comma + 1;
+      }
+    }
     const char* of = std::getenv("VIBEFLOW_OLD_FLUX");
     const bool v1 = of && std::string(of) == "v1";
 
+    std::string dtList;
+    for (Real dt : dts) dtList += (dtList.empty() ? "" : ", ") + std::to_string(dt).substr(0, 6);
     std::printf("Rhie-Chow steady state independent of dt (steady MMS, n=8, nu=%.1f, "
-                "dt = 0.02, 0.2, 2.0; old-flux form %s)\n", nu, v1 ? "v1" : "exact");
+                "dt = %s; old-flux form %s)\n", nu, dtList.c_str(), v1 ? "v1" : "exact");
     std::printf("  %-12s %-11s %16s %10s %10s %10s %10s\n",
                 "problem", "mesh", "steps", "spread u", "spread p", "L2 u", "L2 p");
     bool ok = true;
