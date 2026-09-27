@@ -154,11 +154,13 @@ struct PisoControls {
   int  pressureExtrapSweeps = 3;
   // Start each extrapolation from the boundary values the last one produced,
   // and sweep once, instead of restarting from zero normal gradient. OFF, and
-  // kept only as recorded evidence (ADR-034): the three cold sweeps are a
-  // truncated fixed-point iteration, not a converged one, and warm-starting
-  // lets it keep iterating across calls towards a fixed point the cold
-  // version never reaches. The answer moves and the outer loop needs more
-  // iterations, which costs more than the sweeps it saves.
+  // kept only as recorded evidence (ADR-034). Warm-started, the truncated
+  // fixed-point iteration keeps going across calls and reaches the fixed
+  // point three cold sweeps stop short of -- the same answer as ten cold
+  // sweeps -- but it trails the pressure by a sweep, and the loops that call
+  // it pay: 6 outer iterations instead of 4 on Ethier-Steinman, twice the
+  // non-orthogonal sweeps and +52% wall time on the cylinder. Ten cold sweeps
+  // move the cylinder drag by 0.0001, so three stand.
   bool pressureExtrapWarmStart = false;
 };
 
