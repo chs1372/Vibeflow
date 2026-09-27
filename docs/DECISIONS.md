@@ -2161,9 +2161,10 @@ never leaves the cylinder's side.
 
 **What it changed besides.** At the gate's dt the cylinder moves: St −0.0009
 (0.1698 to 0.1689), drag +0.0084, lift +0.0010. The Strouhal number is now
-2.8% above Williamson on the benchmark domain, and less than 1% once
+2.8% above Williamson on the benchmark domain, and 0.3–1.2% above it once
 ADR-032's inlet and ADR-029's sides are taken off (0.1689 − 0.0026 − up to
-0.0015 = 0.165–0.166). The grid study of ADR-033 used the v1 flux; if the
+0.0015 = 0.1648–0.1663), if those corrections, measured with the v1 flux,
+carry over. The grid study of ADR-033 used the v1 flux; if the
 shift is the same on every level, its drag limit moves from 1.390 to about
 1.398 and the unconfined drag to about 1.365, just above the band. It has
 not been repeated.
