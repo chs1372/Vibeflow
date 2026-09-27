@@ -22,7 +22,8 @@
 // formulation with no dt in its steady equations meets it at the iteration
 // tolerance.
 //
-// Run:  steady_dt <fixtures>
+// Run:  steady_dt <fixtures>        VIBEFLOW_OLD_FLUX=v1 selects the v1 form,
+//                                    which fails (ADR-037).
 
 #include "mesh/HexMesh.hpp"
 #include "discretization/FaceFlux.hpp"
@@ -111,7 +112,7 @@ struct State {
 };
 
 State steadyState(const HexMesh& mesh, Real nu, Real dt, bool withPressure,
-                  Real tol, Real maxTime) {
+                  bool v1, Real tol, Real maxTime) {
   const Index nc = mesh.nCells(), nt = mesh.nTotal();
   PisoControls ctl;
   ctl.outer = 3;              // as the Python gate: n_outer = 3, 2 correctors
@@ -120,6 +121,7 @@ State steadyState(const HexMesh& mesh, Real nu, Real dt, bool withPressure,
   // that tolerance-limited convergence stays far below the bound.
   ctl.nonOrthTol = 1e-11;
   ctl.pressureSolveTol = 1e-13;
+  if (v1) ctl.oldFlux = OldFluxForm::V1;
   PisoSolver solver(mesh, nu, dt, ctl);
 
   VectorField src("src", nt, 3);
@@ -180,9 +182,11 @@ int main(int argc, char** argv) {
     const Real tol = 1e-12;       // max change per step that counts as steady
     const Real maxTime = 400.0;
     const std::vector<Real> dts = {0.02, 0.2, 2.0};
+    const char* of = std::getenv("VIBEFLOW_OLD_FLUX");
+    const bool v1 = of && std::string(of) == "v1";
 
     std::printf("Rhie-Chow steady state independent of dt (steady MMS, n=8, nu=%.1f, "
-                "dt = 0.02, 0.2, 2.0)\n", nu);
+                "dt = 0.02, 0.2, 2.0; old-flux form %s)\n", nu, v1 ? "v1" : "exact");
     std::printf("  %-12s %-11s %16s %10s %10s %10s %10s\n",
                 "problem", "mesh", "steps", "spread u", "spread p", "L2 u", "L2 p");
     bool ok = true;
@@ -200,7 +204,7 @@ int main(int argc, char** argv) {
         bool steady = true;
         std::string steps;
         for (Real dt : dts) {
-          states.push_back(steadyState(mesh, nu, dt, withPressure, tol, maxTime));
+          states.push_back(steadyState(mesh, nu, dt, withPressure, v1, tol, maxTime));
           steady &= states.back().change < tol;
           steps += (steps.empty() ? "" : "/") + std::to_string(states.back().steps);
         }

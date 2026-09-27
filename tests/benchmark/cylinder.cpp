@@ -212,6 +212,10 @@ int main(int argc, char** argv) {
     if (std::getenv("CYL_UPWIND")) ctl.deferredCorrection = false;
     if (std::getenv("CYL_NO_DIFF_NONORTH")) ctl.diffusionNonOrth = false;
     if (std::getenv("CYL_NAIVE_RC")) ctl.consistentRhieChow = false;
+    // The v1 old-flux form, whose far wake grows a spurious velocity at
+    // dt = 0.025 (ADR-031, ADR-037).
+    if (const char* e = std::getenv("CYL_OLD_FLUX"))
+      if (std::string(e) == "v1") ctl.oldFlux = OldFluxForm::V1;
     if (const char* e = std::getenv("CYL_RC_FORM")) {
       if (std::string(e) == "standard") ctl.rhieChowForm = RhieChowForm::Standard;
       if (std::string(e) == "interpolated") ctl.rhieChowForm = RhieChowForm::Interpolated;
@@ -228,6 +232,10 @@ int main(int argc, char** argv) {
                     ? "  [INTERPOLATED RHIE-CHOW: known unstable, ADR-026]" : "");
     if (!ctl.diffusionNonOrth)
       std::printf("  controls: diffusion non-orthogonal correction OFF\n");
+    std::printf("  controls: Rhie-Chow old-flux term %s\n",
+                !ctl.consistentRhieChow ? "OFF (naive)"
+                : ctl.oldFlux == OldFluxForm::V1 ? "v1 form [dt-dependent steady state, ADR-037]"
+                                                 : "exact form");
     if (ctl.convectionSweeps > 1)
       std::printf("  controls: up to %d momentum sweeps per outer iteration (tol %.0e)\n",
                   ctl.convectionSweeps, ctl.convectionSweepTol);
@@ -303,6 +311,10 @@ int main(int argc, char** argv) {
     const int reportLines =
         std::atoi(std::getenv("CYL_REPORT") ? std::getenv("CYL_REPORT") : "25");
     Real maxCont = 0.0, maxCo = 0.0;
+    // The fastest cell over the whole statistics window, every step. ADR-031:
+    // a far-wake mode reached 2.13 at dt = 0.025 while the report lines --
+    // one step in 160 -- and the decoupling gate's bound of 3 both missed it.
+    Real uMaxStats = 0.0, uMaxStatsAt[2] = {0.0, 0.0}, uMaxStatsT = 0.0;
     long long outerSum = 0, sweepSum = 0, stepsRun = 0;
     bool coWarned = false;
     for (int k = 0; k < nSteps; ++k) {
@@ -346,6 +358,11 @@ int main(int argc, char** argv) {
         break;
       }
       if (t > tStats) maxCont = std::max(maxCont, rep.continuityError);
+      if (t > tStats && rep.uMax > uMaxStats) {
+        uMaxStats = rep.uMax;
+        uMaxStatsAt[0] = rep.uMaxAt[0]; uMaxStatsAt[1] = rep.uMaxAt[1];
+        uMaxStatsT = t;
+      }
       maxCo = std::max(maxCo, rep.courant);
       if (rep.courant > COURANT_WARN && !coWarned) {
         coWarned = true;
@@ -420,10 +437,15 @@ int main(int argc, char** argv) {
 
     const Real stRef = williamsonSt(Re);
     struct Check { const char* name; Real value, lo, hi; };
+    // The fastest cell's bound sits near the physical peak, not at potential
+    // flow's 2: the viscous flow peaks at 1.33-1.36 beside the cylinder on
+    // every mesh and time step run so far, and the far-wake mode of ADR-031
+    // spent most of its window above 1.6 (ADR-037).
     const Check checks[] = {
       {"Strouhal number", St, 0.150, 0.178},
       {"mean drag Cd", cdMean, 1.25, 1.45},
       {"lift amplitude", clAmp, 0.25, 0.42},
+      {"fastest cell", uMaxStats, 0.0, 1.5},
     };
     std::printf("\n  %d shedding cycles measured after t = %.0f, max div %.1e, "
                 "max Courant %.2f\n", cycles, tStats, maxCont, maxCo);
@@ -436,6 +458,9 @@ int main(int argc, char** argv) {
       std::printf("  %-18s %10.4f   [%.3f, %.3f]  %s\n",
                   c.name, c.value, c.lo, c.hi, pass ? "ok" : "OUT");
     }
+    std::printf("  fastest cell over t > %.0f: %.3f at (%.2f, %.2f), r = %.2f, t = %.2f\n",
+                tStats, uMaxStats, uMaxStatsAt[0], uMaxStatsAt[1],
+                std::hypot(uMaxStatsAt[0], uMaxStatsAt[1]), uMaxStatsT);
     std::printf("  Williamson correlation gives St = %.4f; ours differs by %.1f%%\n",
                 stRef, 100.0 * (St - stRef) / stRef);
     std::printf("\ncylinder wake benchmark GATE: %s\n", ok ? "PASS" : "FAIL");

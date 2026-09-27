@@ -113,6 +113,9 @@ Row run(Index n, Real dt, int nsteps, Real nu, Real skew, int outer = 6) {
   // for the same reason: ADR-034 measures both here before the cylinder.
   if (const char* e = std::getenv("VIBEFLOW_PEXTRAP")) ctl.pressureExtrapSweeps = std::atoi(e);
   if (std::getenv("VIBEFLOW_PB_WARM")) ctl.pressureExtrapWarmStart = true;
+  // The v1 old-flux form, for the record (ADR-037).
+  if (const char* e = std::getenv("VIBEFLOW_OLD_FLUX"))
+    if (std::string(e) == "v1") ctl.oldFlux = OldFluxForm::V1;
   // Momentum predictor sweeps per outer iteration (ADR-036).
   if (const char* e = std::getenv("VIBEFLOW_CONV_SWEEPS")) ctl.convectionSweeps = std::atoi(e);
   if (const char* e = std::getenv("VIBEFLOW_CONV_TOL")) ctl.convectionSweepTol = std::atof(e);

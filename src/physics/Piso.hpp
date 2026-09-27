@@ -69,6 +69,26 @@ enum class PressureBC : int { FixedFlux = 0, FixedValue = 1 };
 // Kept only so the defect can be demonstrated on demand.
 enum class RhieChowForm : int { Interpolated = 0, Standard = 1 };
 
+// How the old-flux term and the damping coefficient are built (ADR-037).
+//   Exact - the steady equations contain no dt at all:
+//     * the old residual R = F - I[u].S uses the SAME skew-corrected
+//       interpolation I as the predicted flux;
+//     * the predicted flux interpolates q = H/aP - (V/aP) grad p and adds
+//       D_f L[grad p].S back, so the product is never interpolated as one;
+//     * D_f = V_f / aP_f, volume and aP interpolated separately, so that
+//       1/D_f - a0 = aPs_f / V_f exactly;
+//     * an outlet face carries the old-flux term too, with the cell value in
+//       place of the interpolation.
+//     A steady state then has F = I[u].S + (V_f/aPs_f)(L[grad p].Delta -
+//     a_f (p_N - p_P)): the damping with the spatial part of aP only.
+//   V1 - R = F - L[u].S with plain linear L, D_f = interp(V/aP). On a skewed
+//     mesh the steady residual carries (I - L)[u].S divided by 1 - D_f a0,
+//     about (2/3) Co in a cell, which falls with dt: the steady state moved by
+//     69% of its discretisation error across dt = 0.02 .. 2.0, and the
+//     cylinder's far wake grew a spurious velocity at dt = 0.025 (ADR-031).
+//     Kept so the gate can be shown to fail on it.
+enum class OldFluxForm : int { Exact = 0, V1 = 1 };
+
 struct PisoControls {
   int correctors = 2;        // PISO pressure correctors
   int nonOrthCorrectors = 40;  // iterated to convergence, not a fixed count
@@ -110,6 +130,7 @@ struct PisoControls {
   Real convectionSweepTol = 0.0;
   bool consistentRhieChow = true;
   RhieChowForm rhieChowForm = RhieChowForm::Standard;
+  OldFluxForm oldFlux = OldFluxForm::Exact;
   // Second-order convection is carried as a deferred correction on the
   // right-hand side, which is explicit. Turning it off leaves first-order
   // upwind: wrong, but unconditionally stable in the convective term. It is
@@ -292,8 +313,14 @@ class PisoSolver {
   VectorField skew_;
 
   VectorField u_, uOld_, uOld2_, HbyA_, gp_;
-  VectorField gH0_, gH1_, gH2_;   // gradients of H/aP, for the
-                                  // skewness correction on its face value
+  VectorField gH0_, gH1_, gH2_;   // gradients of the interpolated cell
+                                  // vector (H/aP, or q in the exact form),
+                                  // for the skewness correction on its face
+                                  // value
+  VectorField q_;              // H/aP - (V/aP) grad p, the exact form's
+                               // interpolated vector (ADR-037)
+  ScalarField rOld_, rOldB_;   // old Rhie-Chow residual per internal face and
+                               // per outlet face, once per step (ADR-037)
   ScalarField p_, F_, FOld_, Fb_;
   VectorField bSrc_;           // pressure-free momentum right-hand sides
   ScalarField diag_, upper_, lower_;
@@ -319,6 +346,12 @@ class PisoSolver {
   // iteration can use it instead of recomputing it: the same numbers, nine
   // fewer gradient-plus-extrapolation passes per step (ADR-034).
   bool gpValid_{false};
+
+  bool exactOldFlux() const {
+    return ctl_.oldFlux == OldFluxForm::Exact &&
+           ctl_.rhieChowForm == RhieChowForm::Standard;
+  }
+  void computeOldResidual();
 };
 
 }  // namespace vibeflow

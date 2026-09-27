@@ -33,6 +33,8 @@ PisoSolver::PisoSolver(const Mesh& mesh, Real nu, Real dt, PisoControls ctl, Com
       gp_("gp", mesh.nTotal(), 3),
       gH0_("gH0", mesh.nTotal(), 3), gH1_("gH1", mesh.nTotal(), 3),
       gH2_("gH2", mesh.nTotal(), 3),
+      q_("q", mesh.nTotal(), 3),
+      rOld_("rOld", mesh.nInternalFaces()), rOldB_("rOldB", mesh.nBoundaryFaces()),
       p_("p", mesh.nTotal()), F_("F", mesh.nInternalFaces()),
       FOld_("FOld", mesh.nInternalFaces()), Fb_("Fb", mesh.nBoundaryFaces()),
       bSrc_("bSrc", mesh.nTotal(), 3),
@@ -393,18 +395,87 @@ void PisoSolver::computeHbyA() {
   // centre sits off the line joining the two cell centres, so it needs the
   // same skewness correction every other face value gets -- which needs the
   // gradient of each component.
+  //
+  // In the exact form (ADR-037) the vector interpolated is q = H/aP -
+  // (V/aP) grad p instead -- the velocity the last pressure implies -- and
+  // rhieChow adds D_f L[grad p].S back, so the product (V/aP) grad p is never
+  // interpolated as a product. gp_ is grad(p_) for the p_ now stored.
+  VectorField Q = HbyA_;
+  if (exactOldFlux()) {
+    if (!gpValid_) { gradP(p_, gp_); gpValid_ = true; }
+    auto q = q_; auto gp = gp_; auto vol = m_.cellVolume();
+    Kokkos::parallel_for("qInterp", Kokkos::RangePolicy<ExecSpace>(0, nt),
+      KOKKOS_LAMBDA(const Index c) {
+        for (int d = 0; d < 3; ++d) q(c, d) = H(c, d) - gp(c, d) * vol(c) / aP(c);
+      });
+    Kokkos::fence();
+    sync(q_);
+    Q = q_;
+  }
   const Index nb = m_.nBoundaryFaces();
   VectorField* gs[3] = {&gH0_, &gH1_, &gH2_};
   for (int d = 0; d < 3; ++d) {
     ScalarField comp("Hcomp", nt), compB("HcompB", nb);
     auto bc = m_.boundaryCell();
     Kokkos::parallel_for("Hex", Kokkos::RangePolicy<ExecSpace>(0, nt),
-      KOKKOS_LAMBDA(const Index c) { comp(c) = H(c, d); });
+      KOKKOS_LAMBDA(const Index c) { comp(c) = Q(c, d); });
     Kokkos::parallel_for("Hexb", Kokkos::RangePolicy<ExecSpace>(0, nb),
-      KOKKOS_LAMBDA(const Index f) { compB(f) = H(bc(f), d); });
+      KOKKOS_LAMBDA(const Index f) { compB(f) = Q(bc(f), d); });
     Kokkos::fence();
     grad_(comp, compB, *gs[d]);
   }
+}
+
+void PisoSolver::computeOldResidual() {
+  // R = F_old - I[u_old].S, with the same skew-corrected interpolation I the
+  // predicted flux uses (ADR-037), once per step. The gradient of u_old takes
+  // the cell values as its boundary values, as the gradient of q does, so I
+  // is the same linear operator on both. gH* are scratch here: computeHbyA
+  // overwrites them before rhieChow reads them.
+  const Index nt = m_.nTotal(), nf = m_.nInternalFaces(), nb = m_.nBoundaryFaces();
+  auto uo = uOld_; auto bc = m_.boundaryCell();
+  VectorField* gs[3] = {&gH0_, &gH1_, &gH2_};
+  for (int d = 0; d < 3; ++d) {
+    ScalarField comp("uOcomp", nt), compB("uOcompB", nb);
+    Kokkos::parallel_for("uOex", Kokkos::RangePolicy<ExecSpace>(0, nt),
+      KOKKOS_LAMBDA(const Index c) { comp(c) = uo(c, d); });
+    Kokkos::parallel_for("uOexb", Kokkos::RangePolicy<ExecSpace>(0, nb),
+      KOKKOS_LAMBDA(const Index f) { compB(f) = uo(bc(f), d); });
+    Kokkos::fence();
+    grad_(comp, compB, *gs[d]);
+  }
+  auto own = m_.owner(); auto nei = m_.neighbour(); auto fa = m_.faceArea();
+  auto w = w_; auto sk = skew_; auto FOld = FOld_; auto r = rOld_;
+  auto G0 = gH0_; auto G1 = gH1_; auto G2 = gH2_;
+  Kokkos::parallel_for("rOld", Kokkos::RangePolicy<ExecSpace>(0, nf),
+    KOKKOS_LAMBDA(const Index f) {
+      Real uf = 0.0;
+      for (int i = 0; i < 3; ++i) {
+        Real v = w(f) * uo(own(f), i) + (1.0 - w(f)) * uo(nei(f), i);
+        for (int j = 0; j < 3; ++j) {
+          const Real go = i == 0 ? G0(own(f), j) : i == 1 ? G1(own(f), j) : G2(own(f), j);
+          const Real gn = i == 0 ? G0(nei(f), j) : i == 1 ? G1(nei(f), j) : G2(nei(f), j);
+          v += (w(f) * go + (1.0 - w(f)) * gn) * sk(f, j);
+        }
+        uf += v * fa(f, i);
+      }
+      r(f) = FOld(f) - uf;
+    });
+  // An outlet face: Fb_ still holds last step's solved flux here, and the
+  // interpolation to a boundary face is the cell value.
+  auto rb = rOldB_;
+  Kokkos::deep_copy(rb, 0.0);
+  if (openDomain_) {
+    auto bar = m_.boundaryArea(); auto pt = pType_; auto fb = Fb_;
+    Kokkos::parallel_for("rOldB", Kokkos::RangePolicy<ExecSpace>(0, nb),
+      KOKKOS_LAMBDA(const Index f) {
+        if (pt(f) != static_cast<int>(PressureBC::FixedValue)) return;
+        Real s = 0.0;
+        for (int i = 0; i < 3; ++i) s += uo(bc(f), i) * bar(f, i);
+        rb(f) = fb(f) - s;
+      });
+  }
+  Kokkos::fence();
 }
 
 void PisoSolver::rhieChow() {
@@ -413,7 +484,8 @@ void PisoSolver::rhieChow() {
   auto own = m_.owner(); auto nei = m_.neighbour();
   auto fa = m_.faceArea(); auto vol = m_.cellVolume();
   auto w = w_; auto aP = aP_; auto Df = Df_; auto Fstar = Fstar_; auto FOld = FOld_;
-  auto H = HbyA_; auto uo = uOld_; auto gp = gp_;
+  const bool exact = exactOldFlux();
+  auto H = exact ? q_ : HbyA_; auto uo = uOld_; auto gp = gp_; auto rOld = rOld_;
   auto sk = skew_; auto GH0 = gH0_; auto GH1 = gH1_; auto GH2 = gH2_;
   auto ap = pdiff_.aInt();
   auto p = p_;
@@ -425,8 +497,12 @@ void PisoSolver::rhieChow() {
 
   Kokkos::parallel_for("rhieChow", Kokkos::RangePolicy<ExecSpace>(0, nf),
     KOKKOS_LAMBDA(const Index f) {
-      const Real D = w(f) * (vol(own(f)) / aP(own(f)))
-                   + (1.0 - w(f)) * (vol(nei(f)) / aP(nei(f)));
+      // Exact form: V_f / aP_f, so that 1/D - aPt = aPs_f / V_f exactly.
+      const Real D = exact
+          ? (w(f) * vol(own(f)) + (1.0 - w(f)) * vol(nei(f)))
+              / (w(f) * aP(own(f)) + (1.0 - w(f)) * aP(nei(f)))
+          : w(f) * (vol(own(f)) / aP(own(f)))
+              + (1.0 - w(f)) * (vol(nei(f)) / aP(nei(f)));
       Df(f) = D;
       Real flux = 0.0, gpf = 0.0, ufOld = 0.0;
       for (int i = 0; i < 3; ++i) {
@@ -443,18 +519,25 @@ void PisoSolver::rhieChow() {
       const Real snGrad = ap(f) * (p(nei(f)) - p(own(f)));
       const Real HfS = flux;
       if (interpolatedForm) flux += D * (gpf - snGrad);
+      // Exact form: the pressure comes back with the face coefficient. Like
+      // the term it replaces inside I[H/aP], it is an interpolated cell
+      // gradient, blind to a checkerboard -- not the compact old-pressure
+      // term of the interpolated form (ADR-026).
+      if (exact) flux += D * gpf;
       Real choi = 0.0;
       if (consistent) {
         // Old-flux term (Choi 1999): carrying the Rhie-Chow residual forward
         // with coefficient Df*aP_t cancels the transient part of aP, so the
-        // pressure damping does not vanish as dt shrinks.
-        choi = D * aPt * (FOld(f) - ufOld);
+        // pressure damping does not vanish as dt shrinks -- exactly only in
+        // the exact form, whose residual uses the interpolation the flux
+        // uses (ADR-037).
+        choi = D * aPt * (exact ? rOld(f) : FOld(f) - ufOld);
         flux += choi;
       }
       Fstar(f) = flux;
       if (probing) {
         comp(f, 0) = HfS;
-        comp(f, 1) = interpolatedForm ? D * gpf : 0.0;
+        comp(f, 1) = (interpolatedForm || exact) ? D * gpf : 0.0;
         comp(f, 2) = interpolatedForm ? D * snGrad : 0.0;
         comp(f, 3) = choi;
       }
@@ -466,12 +549,17 @@ void PisoSolver::rhieChow() {
   if (openDomain_) {
     auto bc = m_.boundaryCell(); auto bar = m_.boundaryArea();
     auto fbs = FbStar_; auto pt = pType_; auto fb = Fb_;
-    auto Hb = HbyA_;
+    auto Hb = HbyA_; auto rb = rOldB_;
+    // At a boundary face q + (V/aP) grad p is H/aP exactly, so the exact
+    // form's prediction is unchanged there; it adds the old-flux term with
+    // the cell's own coefficient.
+    const bool choiB = exact && consistent;
     Kokkos::parallel_for("rcBnd", Kokkos::RangePolicy<ExecSpace>(0, m_.nBoundaryFaces()),
       KOKKOS_LAMBDA(const Index f) {
         if (pt(f) != static_cast<int>(PressureBC::FixedValue)) { fbs(f) = fb(f); return; }
         Real s = 0.0;
         for (int i = 0; i < 3; ++i) s += Hb(bc(f), i) * bar(f, i);
+        if (choiB) s += vol(bc(f)) / aP(bc(f)) * aPt * rb(f);
         fbs(f) = s;
       });
     Kokkos::fence();
@@ -820,6 +908,7 @@ StepReport PisoSolver::advance(const VectorField& uB, const ScalarField& fB,
   // Everything downstream reads u at ghost cells: the convection matrix, the
   // deferred correction, the velocity gradients.
   sync(u_); sync(p_);
+  if (exactOldFlux() && ctl_.consistentRhieChow) { sync(uOld_); computeOldResidual(); }
 
   Stopwatch _sw(&t_.total);
   StepReport rep;
