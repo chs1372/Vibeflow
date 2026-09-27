@@ -1446,6 +1446,11 @@ because dt = 0.025 is not yet small enough to show that.
   BDF2's own two time levels (the current one uses aP_t = 1.5/dt on the
   latest level only, which agrees with BDF2 only at steady state), and a
   limited coupling coefficient of the kind OpenFOAM's `ddtCorr` applies.
+  **[Corrected by ADR-037]** The first candidate had already been measured
+  and rejected: `prototype/piso.py` records that its recursion has a root at
+  exactly one, so the initial residual never decays and the converged state
+  depends on the path (2.6% apart at dt 0.05 and 2.0). ADR-037 finds the
+  cause elsewhere.
 - The wake gate should judge the fastest cell over the statistics window,
   with a bound near the physical peak, rather than 3 over any 100 steps.
 - Results at dt = 0.05 are unaffected in the sense that matters for the
@@ -1817,3 +1822,105 @@ capped loop leaves the correction lagging.
   St 0.0003 or Cd 0.003, the benchmark's capped outer loop leaves a lag of
   that size; it is recorded as a known limit of every cylinder number so
   far, whatever the default.
+
+## ADR-037 — A dt-consistent Rhie-Chow flux, ADR-010's gate first. Stated before the change, answered after
+**Question.** ADR-031 traced the wake's dt drift, and a spurious velocity
+growing in the far wake at dt = 0.025, to the old-flux (Choi) term of the
+Rhie-Chow flux, and asked for ADR-010's gate before any change. This entry
+states the gate, the diagnosis, the candidate and what decides it. Written
+and committed before the flux is changed.
+
+**The gate** (`prototype/ethier_steinman.py`, `gate_dt_independence`,
+committed failing on the development line before any change to the flux).
+Two steady manufactured problems — the existing one with constant pressure,
+and a new one with p = cos πx cos πy cos πz so that the pressure-damping part
+of the flux has work to do — on an orthogonal and a randomly skewed 8³ mesh,
+each run from rest until u and p stop changing by 1e-13 per step, at
+dt = 0.02, 0.2 and 2.0. A steady state has no temporal error — the BDF2 terms
+cancel exactly — so the three states must coincide. The spread is the
+largest L2 difference between two of them, relative to the discretisation
+error of the dt = 2.0 run, for u and for p. Bound: 1e-6; a formulation with no
+dt in its steady equations meets it at the iteration tolerance, about 1e-10.
+The current form fails, and so does the naive one:
+
+| form | mesh | spread u / p, constant p | spread u / p, grad p |
+| --- | --- | --- | --- |
+| v1 old-flux | orthogonal | 8.1e-4 / 9.9e-4 | 4.8e-3 / 7.1e-3 |
+| v1 old-flux | skewed | 6.9e-1 / 1.5 | 6.6e-1 / 1.5 |
+| naive | orthogonal | 2.1e-2 / 3.6e-2 | 9.4e-2 / 1.5e-1 |
+| naive | skewed | 6.7e-2 / 1.8e-1 | 1.1e-1 / 2.3e-1 |
+
+On the skewed mesh the current form moves the steady velocity by 69% of its
+own discretisation error between dt = 0.02 and 2.0. One exploratory run came
+before the gate and pointed at the cause: the old reporting check, which
+compared L2 values rather than fields, gave 9.2e-5 on the orthogonal mesh
+against 3.9e-2 on the skewed one.
+
+**Diagnosis.** The predicted flux interpolates H/aP with the skewness
+correction — call it I — without which the scheme is first order on skewed
+meshes (the comment in `rhie_chow` records that). The old-flux residual
+subtracts a plain linear interpolation L of the old velocity instead:
+R = F − L[u]·S. With β = D_f·a0, the transient share of aP (D_f the
+interpolated V/aP, a0 = 3/(2dt)), a steady state satisfies
+
+    R (1 − β) = (I − L)[u]·S  +  I[(V/aP) ∇p]·S − D_f × (compact gradient terms)
+
+The first term is the skewness correction of the velocity itself: second
+order, zero on an orthogonal mesh, and divided by 1 − β = aP_s/aP, which in
+a cell is about (2/3)·Co and so falls in proportion to dt. In the cylinder's
+far wake, where cells are a diameter across and Co ≈ 0.025 at dt = 0.025,
+it is multiplied by about sixty. That is where ADR-031's spurious velocity
+lived. The second group leaks too, less: the interpolation of the product
+(V/aP)∇p is not the product of interpolations, and interp(V/aP) does not
+satisfy 1/D_f − a0 = (something dt-free), so 1 − β does not cancel even on
+an orthogonal mesh — the 8e-4.
+
+**The candidate**, three changes, each needed for the steady equations to
+lose dt exactly:
+
+1. The residual uses the same interpolation as the prediction:
+   R = F − I[u]·S, the old velocity interpolated with its own skewness
+   correction.
+2. The predicted flux interpolates q = H/aP − (V/aP)∇p — the velocity the
+   last pressure implies — with the skewness correction, and adds the
+   pressure back with the face coefficient: F* = I[q]·S + D_f L[∇p]·S +
+   D_f a0 R. Both pressure terms are interpolated cell gradients, blind to a
+   checkerboard, so this is not the compact old-pressure term ADR-026 found
+   turning the checkerboard into an eigenvalue of −1.
+3. D_f = V_f / aP_f, volume and aP interpolated separately, so that
+   1/D_f − a0 = aP_s,f / V_f exactly.
+
+Then a steady state has F = I[u]·S + (V_f / aP_s,f)(L[∇p]·Δ − a_f (p_N − p_P)),
+with Δ the orthogonal part of the face vector: the Rhie-Chow damping with the
+spatial part of aP only, and no dt anywhere. The same treatment applies at
+an outlet face, with the cell value in place of an interpolation.
+
+**Predictions.** The gate's default spreads at the iteration tolerance. The
+Ethier–Steinman orders unchanged in character (second order on both
+families). On the cylinder at dt = 0.025, no far-wake mode: the fastest cell
+within 1.5 over the whole statistics window (the physical peak beside the
+cylinder is 1.33–1.36 on every run so far), and St and drag within 0.0003
+and 0.003 of their dt = 0.05 values, as the naive form was (+0.0003,
++0.0015, ADR-031). The cylinder numbers themselves move, since the damping
+coefficient changes; by how much is not predicted.
+
+**Decision rule.** The candidate is adopted if all of these hold:
+
+1. the Python gate passes, every spread ≤ 1e-6;
+2. every other Python gate passes;
+3. the C++ implementation passes a C++ port of the gate at the same bound,
+   and the Python–C++ cross-checks agree as tightly as before;
+4. the full suite passes;
+5. on the cylinder at dt = 0.025, both predictions above hold.
+
+If (1) fails, the derivation is wrong somewhere; the gate stays as written
+and the candidate is not adopted. If (1)–(4) hold and (5) does not, the
+steady-state defect is fixed but the far-wake mode has a second cause: the
+candidate is adopted, since the gate is the specification, and (5) is
+recorded as open.
+
+**The wake gate tightens either way.** The cylinder case will record the
+fastest cell at every step of the statistics window, not every 160th, and
+the gate will require it to stay within 1.5 — ADR-031's recommendation. A
+far-wake mode like the one at dt = 0.025 fails that; the physical flow, at
+1.36, passes with room.
