@@ -81,10 +81,13 @@ Cylinder wake at Re = 100, the first unsteady case, on gmsh meshes:
 | mean drag | 1.4233 | 1.3991 | 1.32–1.36 |
 | lift amplitude | 0.3671 | 0.3491 | 0.30–0.35 |
 
-Widening the lateral boundaries from ±10 D to ±40 D lowers the drag by 0.018
-and leaves the Strouhal number within the scatter that node placement alone
-produces at 6,763 cells: ±0.0006 in St and ±0.005 in drag, one standard
-deviation.
+The benchmark domain is small on purpose — inlet 10 D upstream, sides at
+±10 D — and part of the excess is confinement. Widening the sides to ±40 D
+lowers the drag by 0.018; moving the inlet to 20 D upstream lowers the
+Strouhal number by 0.0013. Both are read against the scatter that node
+placement alone produces at 6,763 cells, ±0.0006 in St and ±0.005 in drag
+(one standard deviation), by repeating each run on independently placed
+meshes.
 
 One more gate runs the refined cylinder at a time step where an earlier form
 of the Rhie–Chow flux let pressure and velocity decouple, and it judges the
@@ -93,11 +96,13 @@ defect went unnoticed.
 
 ## Known limits
 
-- **The Strouhal number is 3–4% high, and the drag above the band.**
-  Doubling the wall resolution lowers the drag by 0.024 and widening the
-  domain from ±10 D to ±40 D by 0.018 more; neither moves the Strouhal number
-  beyond scatter (ADR-027, ADR-029), and a smaller time step raises it
-  (ADR-030).
+- **The Strouhal number is 3–4% high on the benchmark domain, and the drag
+  above the band.** Confinement explains part of it: the inlet ten
+  diameters upstream is worth about 0.0026 of St (ADR-032) and the sides at
+  ±10 D up to 0.0015 more and 0.022 of drag (ADR-029). Unconfined, St would
+  be 1–2% above Williamson's value. Doubling the wall resolution lowers the
+  drag by 0.024 without moving St (ADR-027); a three-level grid study is
+  running (ADR-033).
 - **The Rhie–Chow old-flux term misbehaves at small time steps.** At
   dt = 0.025 it lets a spurious velocity of up to 2.1 grow in the far wake
   and makes the wake values drift with dt; with it off, the drift nearly
@@ -192,7 +197,7 @@ The architecture, the stage plan and a record of each round of work, in
 Korean, are in [`ROADMAP.md`](ROADMAP.md), a copy of the living roadmap
 document kept in step with it.
 
-[`docs/DECISIONS.md`](docs/DECISIONS.md) is append-only: 31 entries, each
+[`docs/DECISIONS.md`](docs/DECISIONS.md) is append-only: 33 entries, each
 saying what was decided, why, and what would reverse it. It keeps the wrong
 turns too, marked where later entries corrected them. Two runs of entries are
 worth reading as a story:

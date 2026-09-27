@@ -1488,6 +1488,97 @@ that flux, so the real effect should be smaller; take those as upper bounds.
   deviation (0.0005 and 0.0043).
 - *Anything in between* bounds it: at most twice the measured shift.
 
+### Result
+
+Everything above this heading was committed before the first run. One
+sample was replaced during the test; the replacement is described below and
+was chosen before it ran.
+
+| mesh | inlet | lateral boundaries | cells | St | Cd | lift amplitude |
+| --- | --- | --- | --- | --- | --- | --- |
+| A | −20 D | ±10 D | 6,956 | 0.1693 | 1.4201 | 0.3708 |
+| B — not independent of A, dropped | −20.001 D | ±10 D | 6,952 | 0.1693 | 1.4199 | 0.3708 |
+| C | −20 D | ±9.999 D | 6,972 | 0.1688 | 1.4075 | 0.3610 |
+| D — B's replacement | −20 D | ±10.001 D | 6,984 | 0.1686 | 1.4086 | 0.3591 |
+
+Every run: dt = 0.05, 4,000 steps, 13 shedding cycles after t = 120, maximum
+Courant number 2.8–3.2, fastest cell after t = 120 at 1.35–1.36 beside the
+cylinder, which is physical. Each mesh is `cases/cylinder/make_mesh.py` with
+`CYL_SIZEMIN=0.06 CYL_SIZEMAX=1.0 CYL_XIN=-20` plus nothing (A),
+`CYL_YHALF=9.999` (C) or `CYL_YHALF=10.001` (D); B had `CYL_XIN=-20.001`.
+
+**The deviation.** B was meant to be a third node placement and is not one.
+It reproduced A to the fourth digit, and comparing the meshes showed why:
+its nodes within 2 D of the cylinder sit a median 0.0026 D from A's, where
+every other pair — here and in ADR-029 — differs by 0.025–0.028 D. Moving
+the inlet by a thousandth of a diameter re-placed the far field and left the
+body's neighbourhood almost as it was. B was dropped as a sample. By then A
+and B had finished and C was running. Four candidate meshes were generated,
+and the one whose smaller node offset from A and C was largest (0.026 D from
+both) was run as D, chosen on geometry alone. The statistics below are over
+A, C and D. Had B been counted instead, the St shift would be −0.0011: the
+same verdict, from a sample that is really one mesh twice.
+
+| | St | Cd | lift amplitude |
+| --- | --- | --- | --- |
+| mean, inlet at −10 D (ADR-029's three meshes) | 0.1702 | 1.4173 | 0.3642 |
+| mean, inlet at −20 D (A, C, D) | 0.1689 | 1.4121 | 0.3636 |
+| shift | −0.0013 | −0.0053 | −0.0006 |
+| shift in standard deviations of the difference (0.0005, 0.0043, 0.0031) | −2.6 | −1.2 | −0.2 |
+
+**Verdict under the rule: the inlet is a significant part of the Strouhal
+excess.** St fell by 0.0013, past the 0.0010 threshold. The inlet's whole
+effect at −10 D is then about twice that: St −0.0026, ±0.0010 with the
+shift's standard deviation doubled. The drag shift is 1.2 standard
+deviations, which the test does not resolve; if it is real, the whole effect
+is about −0.011 ± 0.009.
+
+**The two shifts do not fit the estimate above well.** The St shift exceeds
+its stated upper bound (−0.0009) by less than one standard deviation, which
+alone would be unremarkable. But the picture behind the bound — the body
+meeting a slightly faster stream — ties the two together, drag moving about
+fifteen times as much as St (0.014 against 0.0009). Measured, it moved four
+times as much. Matching the St shift at face value would need a drag shift
+near −0.02, more than three standard deviations from the −0.0053 measured. Either St
+landed on the high side of its noise and drag on the low side, or the inlet
+reaches the shedding frequency by some route other than the approach
+velocity. The verdict does not depend on which, but the whole-effect figures
+are rough and should be read with their error bars.
+
+**Combined picture at D/17 and dt = 0.05**, taking the confinement effects
+as additive, to first order:
+
+- *Strouhal number.* 0.1702 on the −10 D, ±10 D domain; the inlet's whole
+  effect −0.0026 ± 0.0010; the lateral boundaries' at most −0.0015
+  (ADR-029). An unconfined value of about 0.166–0.168: 1–2% above
+  Williamson's 0.1643 instead of 3.6%, and the lower end reaches the 0.166
+  that ADR-029 would have counted as explained. The inlet is about 40% of
+  the excess (0.0026 of 0.0059), and with the lateral boundaries up to 70%.
+  Resolution barely moves St (ADR-027); the time step and the Rhie-Chow form
+  each move it by a few ten-thousandths (ADR-030, ADR-031).
+- *Drag.* 1.4173 on the same domain; lateral −0.022 (ADR-029); inlet about
+  −0.011, unresolved; resolution −0.018 to −0.024 from D/17 to D/33
+  (ADR-027 — the range is whether the D/17 value is `debug.hex` or the
+  three-mesh mean). About 1.36–1.37, the top of the literature band, before
+  ADR-033 adds the finer levels.
+
+**What this changes.**
+
+- A control is independent only if it re-places the nodes near the body,
+  and moving a boundary by a thousandth of a diameter does not guarantee
+  that. From here, a mesh counts as a separate sample only after its median
+  near-body node offset from every other sample has been measured at 0.02 D
+  or more. ADR-029's three meshes pass (0.025–0.027 D).
+- The wake gate's case keeps its −10 D inlet and ±10 D sides, so that its
+  history stays comparable and ADR-033 compares like with like. A comparison
+  with the literature needs a larger domain than the gate's; by these
+  estimates even −20 D and ±20 D would leave about 1% of confinement in St
+  (0.0013 from the inlet, 0.0005 from the sides).
+- What is left of the Strouhal excess after confinement, 0.002–0.003 with
+  about 0.001 of uncertainty from the two extrapolations, is probably real
+  but no longer large. ADR-033 says whether resolution holds any of it; the
+  outlet at +25 D is the one boundary not yet moved.
+
 ## ADR-033 — Three-level grid convergence of the wake. Stated before the run, answered after
 **Question.** ADR-027 had two meshes, which can show that resolution moves
 the drag but cannot give a grid-independent value: Richardson extrapolation
