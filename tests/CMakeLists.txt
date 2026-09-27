@@ -32,6 +32,11 @@ add_executable(ethier_steinman mms/ethier_steinman.cpp)
 target_link_libraries(ethier_steinman PRIVATE vibeflow_physics)
 add_test(NAME ethier_steinman COMMAND ethier_steinman)
 
+# ADR-010 / ADR-037: a steady state must not depend on the time step.
+add_executable(steady_dt mms/steady_dt.cpp)
+target_link_libraries(steady_dt PRIVATE vibeflow_physics)
+add_test(NAME steady_dt COMMAND steady_dt ${CMAKE_SOURCE_DIR}/tests/fixtures)
+
 add_executable(mms_parallel_mem mms/mms_parallel_mem.cpp)
 target_link_libraries(mms_parallel_mem PRIVATE vibeflow_mesh)
 add_test(NAME mms_parallel_mem COMMAND mms_parallel_mem)
