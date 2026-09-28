@@ -115,7 +115,7 @@ def _setup(name, variant, n, skew):
 def _model(m, f, variant):
     from sst import SstModel
     wall = np.abs(m.b_centre[:, 1]) < 1e-12           # y = 0
-    model = SstModel(m, f["nu"], variant=variant, wall=wall)
+    model = SstModel(m, f["nu"], variant=variant, wall=wall, advection="second")
     nb = len(m.b_cell)
     model.set_boundary(scalar_face_average(m, f["k"]), scalar_face_average(m, f["w"]),
                        np.zeros(nb, dtype=int))        # Dirichlet everywhere

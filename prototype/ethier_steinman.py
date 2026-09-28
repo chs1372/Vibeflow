@@ -62,10 +62,10 @@ def adjust_boundary_flux(mesh, Fb):
 
 
 def run(n, dt, nsteps, nu, skew, seed=1, ncorr=2, nouter=20, consistent=True,
-        skew_mode="planar"):
+        skew_mode="planar", convection="linear"):
     m = HexMesh(n, skew=skew, seed=seed, skew_mode=skew_mode)
     solver = PisoSolver(m, nu, dt, n_correctors=ncorr, n_outer=nouter,
-                        consistent_rhie_chow=consistent)
+                        consistent_rhie_chow=consistent, convection=convection)
 
     # Initialise from the exact state, INCLUDING pressure. Starting from p = 0
     # leaves the Rhie-Chow flux residual far from its converged value, and it

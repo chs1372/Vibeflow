@@ -37,7 +37,10 @@ BIN = ROOT / "build" / "tests" / "ethier_steinman"
 REL_TOL = 1e-4
 import os
 OUTER = os.environ.get("VIBEFLOW_OUTER", "6")
-ENV = {"OMP_PROC_BIND": "false", "PATH": "/usr/bin:/bin", "VIBEFLOW_OUTER": OUTER}
+# Momentum's face value (ADR-042): linear, or linearUpwind on both sides.
+CONVECTION = os.environ.get("VIBEFLOW_CONVECTION", "linear")
+ENV = {"OMP_PROC_BIND": "false", "PATH": "/usr/bin:/bin", "VIBEFLOW_OUTER": OUTER,
+       "VIBEFLOW_CONVECTION": CONVECTION}
 GRIDS = (6, 12)
 
 ROW = re.compile(r"^\s*(\d+)\s+([\d.]+)\s+([\d.eE+-]+)")
@@ -65,8 +68,8 @@ def py_values():
     out = {}
     for key, skew, mode in (("orthogonal", 0.0, "smooth"), ("distorted", 0.25, "smooth")):
         for n in GRIDS:
-            out[(key, n)] = ES.run(n, 2e-4, 2, 0.05, skew,
-                                   skew_mode=mode, nouter=int(OUTER))["l2"]
+            out[(key, n)] = ES.run(n, 2e-4, 2, 0.05, skew, skew_mode=mode,
+                                   nouter=int(OUTER), convection=CONVECTION)["l2"]
     return out
 
 
@@ -87,7 +90,7 @@ def main():
         bad += rel > REL_TOL
         print(f"{k[0]:<13}{k[1]:>4}{a[k]:>22.12e}{b[k]:>22.12e}{rel:>12.2e}")
     print(f"\n{len(shared)} rows compared, worst relative difference {worst:.2e} "
-          f"(tolerance {REL_TOL:.0e})")
+          f"(tolerance {REL_TOL:.0e}), momentum convection {CONVECTION}")
     print("NS cross-check gate: " + ("PASS" if not bad else f"FAIL ({bad} rows over)"))
     return 0 if not bad else 1
 

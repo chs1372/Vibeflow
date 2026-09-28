@@ -41,7 +41,7 @@ class PisoSolver:
                  n_outer=1, outer_tol=1e-10, consistent_rhie_chow=True,
                  gradient="linear", rhie_chow_form="standard", old_flux="exact",
                  kappa=None, beta_g=None, t_ref=0.0, t_ref_grad=None,
-                 buoyancy_form="cell", turbulence=None):
+                 buoyancy_form="cell", turbulence=None, convection="linear"):
         self.m = mesh
         self.nu = nu
         self.dt = dt
@@ -93,6 +93,15 @@ class PisoSolver:
         if rhie_chow_form not in ("standard", "interpolated"):
             raise ValueError(rhie_chow_form)
         self.rhie_chow_form = rhie_chow_form
+        # Momentum's convected face value, the deferred correction's target
+        # (ADR-042). "linear": linear interpolation plus the skewness
+        # correction -- central, blind to the odd-even mode. "linearUpwind":
+        # the upwind cell's value extrapolated to the face centre by its
+        # least-squares gradient, second order too, and the odd-even mode it
+        # sees as upwinding does; the flat plate's.
+        if convection not in ("linear", "linearUpwind"):
+            raise ValueError(convection)
+        self.convection = convection
 
         m = mesh
         self.diff = DiffusionOperator(mesh, nu)      # momentum viscous term
@@ -319,7 +328,12 @@ class PisoSolver:
                           shape=(m.nc, m.nc)).tocsr()
 
         grads = np.stack([self.grad(self.u[:, d], u_b[:, d]) for d in range(3)], axis=1)
-        ho = self.face_interp(self.u, grads)
+        if self.convection == "linearUpwind":
+            up = np.where(self.F > 0.0, m.owner, m.neigh)
+            ho = self.u[up] + np.einsum("fdi,fi->fd", grads[up],
+                                        m.face_centre - m.cell_centre[up])
+        else:
+            ho = self.face_interp(self.u, grads)
         if self.turb is not None:
             # div(nu_t grad(u)^T): component i of the face flux is
             # nu_t,f sum_j (du_j/dx_i)_f S_j, explicit from the latest u.

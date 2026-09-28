@@ -177,8 +177,8 @@ GATES = {
         ("benchmark: cylinder wake vortex shedding at Re = 100",
          cylinder_wake, BUILD / "cylinder"),
     ],
-    # v2a: heat transfer and buoyancy (ADR-038). v2b (SST: flat plate Cf,
-    # backward-facing step) and v2c are added when their gates are stated.
+    # v2a: heat transfer and buoyancy (ADR-038). v2b's backward-facing step
+    # and v2c are added when their gates are stated.
     "v2": [
         ("python: energy equation and Boussinesq buoyancy",
          lambda: run([PY, str(PROTO / "boussinesq.py")], PROTO), None),
@@ -210,6 +210,21 @@ GATES = {
     "v2b": [
         ("python: SST wall distance and manufactured solutions",
          lambda: run([PY, str(PROTO / "sst_gates.py")], PROTO), None),
+        ("c++: SST wall distance and manufactured solutions",
+         lambda: run([str(BUILD / "sst_mms"), str(FIX)]), BUILD / "sst_mms"),
+        ("cross-check: python and c++ SST agree",
+         lambda: run([PY, str(Path(__file__).parent / "crosscheck_v2b.py")]),
+         BUILD / "sst_mms"),
+        ("mpi: SST is independent of the rank count",
+         lambda: parallel_sweep(binary_name="mms_parallel_sst"),
+         BUILD / "mms_parallel_sst"),
+        ("c++: momentum's face value where convection matters",
+         lambda: run([str(BUILD / "convection_order")]), BUILD / "convection_order"),
+        # Hours: four TMR grids up to 209k cells, each marched to a steady
+        # state. VIBEFLOW_FP_REUSE=1 judges runs already made.
+        ("benchmark: flat plate against NASA TMR's SST results",
+         lambda: run([PY, str(ROOT / "tests" / "benchmark" / "flat_plate_gate.py")]),
+         BUILD / "flat_plate"),
     ],
     # v3: sod_shock_tube, naca0012_transonic
     # v4: dam_break, rising_bubble

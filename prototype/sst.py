@@ -10,9 +10,9 @@ benchmarks were run); ADR-042 has the table of what differs. P = nu_t S^2
 exactly, the flow being incompressible.
 
 k and omega are transported as the temperature is (ADR-038): BDF2, upwind in
-the matrix plus the deferred correction to the skew-corrected face value,
-diffusion with the non-orthogonal correction, the face diffusivity
-interpolated linearly from the cells. Destruction is implicit, production
+the matrix -- plus, with advection="second", the deferred correction to the
+skew-corrected face value -- diffusion with the non-orthogonal correction,
+the face diffusivity interpolated linearly from the cells. Destruction is implicit, production
 explicit, the cross diffusion explicit where positive and implicit where
 negative. PisoSolver calls solve() once per outer iteration, after the
 pressure correctors; advance_frozen() marches the pair alone in a given flow.
@@ -42,7 +42,8 @@ BETA_STAR, KAPPA, A1 = 0.09, 0.41, 0.31
 
 
 class SstModel:
-    def __init__(self, mesh, nu, variant="2003", wall=None, k_floor=1e-20, w_floor=1e-20):
+    def __init__(self, mesh, nu, variant="2003", wall=None, k_floor=1e-20, w_floor=1e-20,
+                 advection="upwind"):
         if variant == "2003":
             self.g1, self.g2 = 5.0 / 9.0, 0.44
             self.cd_floor, self.plim = 1e-10, 10.0
@@ -56,6 +57,15 @@ class SstModel:
         else:
             raise ValueError(variant)
         self.variant = variant
+        # Advection of k and omega (ADR-042's revision): first-order upwind by
+        # default, as TMR's CFL3D and FUN3D run it -- omega jumps by five
+        # orders of magnitude from the free stream to the first cell on a
+        # wall, and central differencing across that jump drives the cell
+        # upstream of it negative. "second": upwind plus the deferred
+        # correction, what the manufactured gates verify.
+        if advection not in ("upwind", "second"):
+            raise ValueError(advection)
+        self.second_order = advection == "second"
         m = mesh
         self.m = m
         self.nu = nu
@@ -205,10 +215,11 @@ class SstModel:
         lin = self.fw * phi[m.owner] + (1.0 - self.fw) * phi[m.neigh]
         gfs = self.fw[:, None] * gphi[m.owner] + (1.0 - self.fw)[:, None] * gphi[m.neigh]
         ho = lin + np.einsum("ij,ij->i", gfs, self.skew_vec)
-        ud = np.where(F > 0.0, phi[m.owner], phi[m.neigh])
-        dc = F * (ho - ud)
-        np.add.at(rhs, m.owner, -dc)
-        np.add.at(rhs, m.neigh, +dc)
+        if self.second_order:
+            ud = np.where(F > 0.0, phi[m.owner], phi[m.neigh])
+            dc = F * (ho - ud)
+            np.add.at(rhs, m.owner, -dc)
+            np.add.at(rhs, m.neigh, +dc)
         conv_b = np.where(fixed, Fb * phib, np.minimum(Fb, 0.0) * phib)
         np.add.at(rhs, m.b_cell, -conv_b)
         return spla.spsolve(A.tocsc(), rhs)
@@ -244,10 +255,12 @@ class SstModel:
         k_new = self._transport(k, self.k_old, self.k_old2, f["kb"], f["gk"],
                                 self.nu + sk * nut, self.nu + skb * f["nutb"], F, Fb, bdf,
                                 BETA_STAR * w + ks_neg / k, Pk + ks_pos)
+        # beta w^2 by Newton, 2 beta w_old w - beta w_old^2: the Picard form
+        # makes the balance with production a period-two map (ADR-042).
         w_new = self._transport(w, self.w_old, self.w_old2, f["wb"], f["gw"],
                                 self.nu + sw * nut, self.nu + swb * f["nutb"], F, Fb, bdf,
-                                beta * w + np.where(cross < 0.0, -cross / w, 0.0) + ws_neg / w,
-                                prod_w + np.where(cross > 0.0, cross, 0.0) + ws_pos)
+                                2.0 * beta * w + np.where(cross < 0.0, -cross / w, 0.0) + ws_neg / w,
+                                prod_w + beta * w * w + np.where(cross > 0.0, cross, 0.0) + ws_pos)
         low = (k_new < self.k_floor) | (w_new < self.w_floor)
         self.bounded = int(low.sum())
         self.bounded_total += self.bounded
