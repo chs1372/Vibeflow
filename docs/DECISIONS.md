@@ -3126,3 +3126,23 @@ steps with either solver, and with BoomerAMG, give Cf, CD and the ν_t
 peak equal to ten digits; the linear solves take 8 s instead of 189, the
 whole march 112 s instead of 289. 69×49, 137×97 and 273×193 in SST-1994
 stand as run, with the native solver.
+
+*545×385 from 273×193's steady state.* Restarted so, 545×385 blew up at its
+260th step, at dt = 6.25e-4 in the ramp, as the layer near the leading
+edge went turbulent: ω in the wall cells at x ≈ 0.04 ran away from its
+wall value (2e8) to 5e10 within ten steps and to 1e46 by step 300, k
+having dropped to its floor where ν_t had peaked; the native-solver run,
+stopped between steps 250 and 300, was on the same path (the same Cf to
+seven digits at step 250, and the same 59% change of u at x = 0.034 near
+the wall). The
+coarser grids went through that transient; 545×385, whose wall cells are
+half as thick, did not. So it starts instead from 273×193's steady state,
+each cell taking the state of the coarse cell that contains it
+(`VIBEFLOW_FP_INIT`, with `VIBEFLOW_FP_SAVE` writing the state), and
+marches from there with the same ramp to the same steady criterion: grid
+sequencing, as the heated cavity does. Checked on the grids below it:
+137×97 started from 69×49's state reaches Cf, CD and the ν_t peak within
+1.2e-9, 1.8e-8 and 4e-8 of its uniform start, in 1,000 steps instead of
+1,300. 273×193 is marched again with the ILU solver to provide the state;
+its result is reported beside the native run's. Gate 4's criteria are
+unchanged.

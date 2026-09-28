@@ -37,6 +37,7 @@
 #include <petscsys.h>
 #endif
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -122,6 +123,64 @@ Columns columnsAt(const PolyMesh& mesh) {
   std::sort(col.left.begin(), col.left.end(), byY);
   std::sort(col.right.begin(), col.right.end(), byY);
   return col;
+}
+
+// A coarser grid's steady state, for grid sequencing (ADR-042). Each cell
+// takes the state of the coarse cell containing its centre: on TMR's nested
+// grids, whose cells are rectangles, that is the nearest coarse column in x
+// and, within it, the nearest coarse cell in y.
+struct CoarseState {
+  std::vector<Real> xcol;                          // column centres, sorted
+  std::vector<std::vector<std::pair<Real, Index>>> col;   // (y, row) per column
+  std::vector<std::array<Real, 6>> v;              // u, v, w, p, k, omega
+};
+
+CoarseState readState(const std::string& path) {
+  CoarseState cs;
+  std::FILE* f = std::fopen(path.c_str(), "r");
+  if (!f) { std::printf("cannot read %s\n", path.c_str()); std::exit(2); }
+  long n = 0;
+  if (std::fscanf(f, "%ld", &n) != 1) { std::printf("bad state file %s\n", path.c_str()); std::exit(2); }
+  std::vector<std::pair<Real, Real>> xy(n);
+  cs.v.resize(n);
+  for (long c = 0; c < n; ++c) {
+    double x, y, a[6];
+    if (std::fscanf(f, "%lf %lf %lf %lf %lf %lf %lf %lf", &x, &y, &a[0], &a[1], &a[2], &a[3],
+                    &a[4], &a[5]) != 8) { std::printf("bad state file %s\n", path.c_str()); std::exit(2); }
+    xy[c] = {x, y};
+    for (int i = 0; i < 6; ++i) cs.v[c][i] = a[i];
+  }
+  std::fclose(f);
+  std::vector<Index> order(n);
+  for (long c = 0; c < n; ++c) order[c] = c;
+  std::sort(order.begin(), order.end(), [&](Index a, Index b) { return xy[a].first < xy[b].first; });
+  for (Index c : order) {
+    const Real x = xy[c].first;
+    if (cs.xcol.empty() || std::abs(x - cs.xcol.back()) > 1e-12 * std::max(1.0, std::abs(x))) {
+      cs.xcol.push_back(x);
+      cs.col.emplace_back();
+    }
+    cs.col.back().push_back({xy[c].second, c});
+  }
+  for (auto& cl : cs.col) std::sort(cl.begin(), cl.end());
+  return cs;
+}
+
+template <class V> Index nearest(const V& sorted, Real x, Real (*key)(const typename V::value_type&)) {
+  std::size_t lo = 0, hi = sorted.size();
+  while (hi - lo > 1) {
+    const std::size_t mid = (lo + hi) / 2;
+    (key(sorted[mid]) <= x ? lo : hi) = mid;
+  }
+  if (lo + 1 < sorted.size() && std::abs(key(sorted[lo + 1]) - x) < std::abs(key(sorted[lo]) - x)) ++lo;
+  return static_cast<Index>(lo);
+}
+
+Index coarseCell(const CoarseState& cs, Real x, Real y) {
+  const Index i = nearest(cs.xcol, x, +[](const Real& v) { return v; });
+  const auto& cl = cs.col[i];
+  const Index j = nearest(cl, y, +[](const std::pair<Real, Index>& v) { return v.first; });
+  return cl[j].second;
 }
 
 }  // namespace
@@ -234,16 +293,48 @@ int main(int argc, char** argv) {
     PisoSolver solver(mesh, NU, dtNow, ctl);
     solver.setBoundaryTypes(uType);
     solver.setPressureBoundary(pType, pval);
+    // VIBEFLOW_FP_INIT=<coarser grid's .state>: start from that steady state
+    // (grid sequencing, ADR-042) instead of the uniform stream.
+    const char* initPath = std::getenv("VIBEFLOW_FP_INIT");
+    CoarseState coarse;
+    std::vector<Index> fromCoarse;
+    if (initPath) {
+      coarse = readState(initPath);
+      auto cc = host(mesh.cellCentre());
+      fromCoarse.resize(nt);
+      for (Index c = 0; c < nt; ++c) fromCoarse[c] = coarseCell(coarse, cc(c,0), cc(c,1));
+      std::printf("  initial state: %s (%zu coarse columns)\n", initPath, coarse.xcol.size());
+    }
     {
       VectorField u0("u0", nt, 3);
+      ScalarField p0("p0", nt), F0("F0", mesh.nInternalFaces());
       Kokkos::deep_copy(u0, 0.0);
       auto hu = host(u0);
-      for (Index c = 0; c < nt; ++c) hu(c, 0) = U_IN;
-      Kokkos::deep_copy(u0, hu);
-      ScalarField p0("p0", nt), F0("F0", mesh.nInternalFaces());
-      auto fa = mesh.faceArea();
+      auto hp = host(p0);
+      for (Index c = 0; c < nt; ++c) {
+        if (initPath) {
+          const auto& q = coarse.v[fromCoarse[c]];
+          hu(c,0) = q[0]; hu(c,1) = q[1]; hu(c,2) = q[2]; hp(c) = q[3];
+        } else {
+          hu(c, 0) = U_IN;
+        }
+      }
+      Kokkos::deep_copy(u0, hu); Kokkos::deep_copy(p0, hp);
+      // The face flux from the cells, each face weighted by its distances.
+      auto fa = mesh.faceArea(); auto fc = mesh.faceCentre(); auto ccd = mesh.cellCentre();
+      auto own = mesh.owner(); auto nei = mesh.neighbour();
       Kokkos::parallel_for("F0", Kokkos::RangePolicy<ExecSpace>(0, mesh.nInternalFaces()),
-        KOKKOS_LAMBDA(const Index f) { F0(f) = U_IN * fa(f, 0); });
+        KOKKOS_LAMBDA(const Index f) {
+          Real lo = 0.0, ln = 0.0;
+          for (int i = 0; i < 3; ++i) {
+            const Real ro = fc(f, i) - ccd(own(f), i), rn = fc(f, i) - ccd(nei(f), i);
+            lo += ro * ro; ln += rn * rn;
+          }
+          const Real w = Kokkos::sqrt(ln) / (Kokkos::sqrt(lo) + Kokkos::sqrt(ln));
+          Real sum = 0.0;
+          for (int i = 0; i < 3; ++i) sum += (w * u0(own(f), i) + (1.0 - w) * u0(nei(f), i)) * fa(f, i);
+          F0(f) = sum;
+        });
       Kokkos::fence();
       solver.setState(u0, p0, F0);
     }
@@ -273,16 +364,29 @@ int main(int argc, char** argv) {
       ScalarField k0("k0", nt), w0("w0", nt);
       Kokkos::deep_copy(k0, K_IN);
       Kokkos::deep_copy(w0, W_IN);
+      if (initPath) {
+        auto hk = host(k0); auto hw = host(w0);
+        for (Index c = 0; c < nt; ++c) {
+          hk(c) = coarse.v[fromCoarse[c]][4]; hw(c) = coarse.v[fromCoarse[c]][5];
+        }
+        Kokkos::deep_copy(k0, hk); Kokkos::deep_copy(w0, hw);
+      }
       solver.setTurbulence(k0, w0);
     }
 
-    // Momentum, k and omega share one solver: the native Jacobi BiCGStab, or
-    // a PETSc configuration (VIBEFLOW_MOMENTUM=bicgstab+ilu). The steady
-    // state does not depend on which (ADR-042).
+    // Momentum, k and omega share one solver: PETSc's BiCGStab with ILU(0)
+    // where PETSc is built in, else the native Jacobi BiCGStab, which needs
+    // ten times the iterations at these aspect ratios; VIBEFLOW_MOMENTUM
+    // picks either (native, or a PETSc configuration). The steady state does
+    // not depend on which (ADR-042).
     std::unique_ptr<LinearSolver> momentumPtr;
     {
       const char* e = std::getenv("VIBEFLOW_MOMENTUM");
+#ifdef VIBEFLOW_HAVE_PETSC
+      const std::string cfg = e ? e : "bicgstab+ilu";
+#else
       const std::string cfg = e ? e : "native";
+#endif
       if (cfg == "native") momentumPtr = std::make_unique<NativeBiCGStab>(mesh);
 #ifdef VIBEFLOW_HAVE_PETSC
       else momentumPtr = std::make_unique<PetscSolver>(mesh, Comm(), cfg);
@@ -420,6 +524,17 @@ int main(int argc, char** argv) {
         drag += tau[i] * area;
       }
       std::fclose(fc);
+      if (std::getenv("VIBEFLOW_FP_SAVE")) {
+        // The state a finer grid can start from (VIBEFLOW_FP_INIT).
+        auto k = host(solver.turbulentKineticEnergy()); auto w = host(solver.specificDissipation());
+        auto pp = host(solver.pressure());
+        std::FILE* fs = std::fopen((out + ".state").c_str(), "w");
+        std::fprintf(fs, "%ld\n", static_cast<long>(nc));
+        for (Index c = 0; c < nc; ++c)
+          std::fprintf(fs, "%.17g %.17g %.17g %.17g %.17g %.17g %.17g %.17g\n", cc(c,0), cc(c,1),
+                       u(c,0), u(c,1), u(c,2), pp(c), k(c), w(c));
+        std::fclose(fs);
+      }
       if (std::getenv("VIBEFLOW_FP_DUMP")) {
         // Exploration only: every cell's x, y, u, v, k, omega, nu_t/nu.
         auto k = host(solver.turbulentKineticEnergy()); auto w = host(solver.specificDissipation());
