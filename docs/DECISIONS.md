@@ -3012,3 +3012,10 @@ finest meshes in the v1 bands, rising on the distortion.
 
 Gate 4's criteria are unchanged. The 69×49 result above is the linear
 scheme's and does not count for the gate: 69×49 is run again with the rest.
+
+**545×385 is run.** The gate left it to the cost. Measured on the runs so
+far — 69×49 steady in 1,100 steps (72 s), 137×97 in 1,300 (559 s), 273×193
+at about 3 s a step on one shared core — 545×385 is a few hours on two
+threads, so it is run, and gate 4 is judged on 137×97, 273×193 and
+545×385, as TMR's own extrapolations are; 69×49 is reported. Decided with
+273×193 at step 300 of its march, before its result.
