@@ -9,8 +9,9 @@
 // The setup is the onset gate's (rb_common.hpp).
 //
 // Every step's outer loop is iterated to convergence: outerTol 1e-10, a cap of
-// 400 iterations, and a step that reaches the cap fails the gate. Pressure
-// solves go to 1e-12.
+// 2000 iterations, and a step that reaches the cap fails the gate. Pressure
+// solves go to 1e-12. (The cap was 400 when the gate was written; 32 cells
+// needs 648 a step, and ADR-040 records the revision.)
 //
 //   1. Space: 16, 24 and 32 cells across the layer at dt = 0.01. Observed
 //      order in [1.5, 2.6]; Richardson extrapolation within 1% of sigma*.
@@ -29,6 +30,7 @@
 #include "rb_common.hpp"
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <exception>
 #include <vector>
 
@@ -39,7 +41,7 @@ namespace {
 
 constexpr Real RA = 1800.0;
 constexpr Real SIGMA_REF = 0.693973025;
-constexpr int OUTER_CAP = 400;
+constexpr int OUTER_CAP = 2000;
 
 Marching converged(Real dt) {
   Marching mk;
@@ -69,6 +71,16 @@ bool sound(const Growth& g) {
 int main(int argc, char** argv) {
   Kokkos::initialize(argc, argv);
   int rc = 0;
+  // Exploration only: VIBEFLOW_PROBE_N=<N> marches 20 steps of dt 0.01 on N
+  // cells at the gate's settings and prints the most outer iterations a step
+  // needed to converge -- the cost the cap has to allow for.
+  if (const char* e = std::getenv("VIBEFLOW_PROBE_N")) {
+    const Growth g = growthRate(std::atoi(e), RA, converged(0.01), 0.1, 0.2);
+    std::printf("probe: N=%s, 20 steps of dt 0.01: at most %d outer iterations a step\n",
+                e, g.maxOuterUsed);
+    Kokkos::finalize();
+    return 0;
+  }
   {
     bool ok = true;
     std::printf("Rayleigh-Benard growth rate at Ra = %.0f against linear theory, "

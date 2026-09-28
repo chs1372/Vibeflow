@@ -2405,7 +2405,9 @@ accurate, so the order is the last pair's, as the gate defines it.
   PIMPLE loop contracting slowly, so a small fixed count advances the slow
   modes by a fraction of dt. Steady answers are unaffected. Unsteady ones at
   large diffusion numbers are not, and no gate yet measures a transient
-  coupling against an exact rate.
+  coupling against an exact rate. *Correction (ADR-040):* 100 iterations did
+  not converge the loop. 32 cells needs about 648 a step to reach 1e-10, so
+  0.743 is the rate at 100 iterations, not the converged one.
 - *The same slowness makes steady states on fine meshes expensive.* The
   cavity at Ra = 1e3 needed 4.9 time units to settle on 64², where 32² needed
   2.7, and 128² from rest was on course for hours. Starting each mesh from the
@@ -2535,6 +2537,38 @@ the outer loop converged, 0.9196 on 16 cells (40 iterations, 1e-11) and
 temporal study, and none at the gate's settings. The bands above come from
 the onset gate and from the argument just given, not from those two
 numbers — but they were written knowing them, and that is recorded here.
+
+### First run, and a revision before the result
+
+The first run (ae03f73, in the cell form, the only one then) finished two of
+the three meshes and was stopped during the third:
+
+    N = 16   0.920868008   +32.7%   halves agree to 8e-9   outer ≤ 191   four fixed: 0.528849
+    N = 24   0.793826686   +14.4%   halves agree to 1e-9   outer ≤ 384   four fixed: 0.280965
+
+24 cells had used 384 of the 400 iterations the cap allows. A probe then
+marched 20 steps on each mesh with a cap of 2000 (`VIBEFLOW_PROBE_N`): a step
+needs at most 190, 384 and 648 outer iterations to reach 1e-10 on 16, 24 and
+32 cells, where the diffusion number dt·ν/h² is 2.6, 5.8 and 10.2. So the gate
+as written would have failed on 32 cells at its own effort limit, whatever
+the accuracy.
+
+**Revision.** The cap is raised to 2000, three times what 32 cells needs.
+Nothing else changes: dt = 0.01, outerTol 1e-10, the pressure tolerance, the
+bands, and the rule that a step which reaches the cap fails the gate. The cap
+of 400 was a guess at the cost, made without measuring it; the criterion it
+guards — every step's loop converged — stays as it was.
+
+Known when the revision was made: the two rates above. Assuming order 2,
+they alone extrapolate to 0.692194, −0.26% from σ*.
+
+**A correction to ADR-038, and to this entry's data.** The runs listed above
+as converged were not. 40 iterations on 16 cells and 100 on 32 stopped at
+their caps, short of the 190 and 648 a step needs, so 0.9196 and 0.7429 are
+capped rates; the first gate run's 0.920868 is the converged one on 16
+cells. ADR-038's finding stands — the rate is right only with the loop
+converged — but its 0.743 is the rate at 100 iterations, not the converged
+rate. A note there points here.
 
 ## ADR-041 — Balanced buoyancy: the force in the face flux, its hydrostatic part in a pressure of its own. Stated before the code
 **Decided.** ADR-038's buoyancy is a cell force. A fluid at rest in a
