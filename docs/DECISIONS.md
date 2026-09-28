@@ -2177,3 +2177,89 @@ was not decoupling but an interpolation mismatch that no order study can
 see, because both interpolations are second order, and that the benchmark's
 own time step kept small until a halving of dt made it sixty times larger in
 the far wake.
+
+## ADR-038 — v2 begins with heat transfer and buoyancy; its gates, stated before the code
+**Decided.** v2 (turbulence and heat transfer, roadmap: k-ω SST, wall
+functions, energy equation, Boussinesq buoyancy, conjugate heat transfer) is
+split, and heat transfer goes first:
+
+| part | scope | gates |
+| --- | --- | --- |
+| v2a | energy equation, Boussinesq buoyancy, slip walls | below |
+| v2b | k-ω SST (Menter 2003), low-Reynolds wall treatment | manufactured solution for the model equations; flat plate Cf and log law; backward-facing step reattachment — each stated before its code |
+| v2c | wall functions, conjugate heat transfer | stated when v2b passes |
+
+*Why this order:* v2a reuses the verified convection–diffusion operator and
+builds the one thing every later part needs — a transported scalar coupled
+into the pressure-velocity loop, which k and ω will be too — against
+benchmarks with sharp reference values. v2b is larger and its first gate
+further away. The user chose this order.
+
+### v2a design
+
+- **Temperature** obeys ∂T/∂t + ∇·(uT) = ∇·(κ∇T) + S, discretised like a
+  momentum component: BDF2, upwind in the matrix plus the deferred
+  correction to the skew-corrected face value, diffusion with the
+  non-orthogonal correction. Boundary faces: fixed temperature, or fixed
+  heat flux (zero for an adiabatic wall). It is solved inside every outer
+  iteration, after the pressure correctors, with the corrected face flux, so
+  that at a converged outer loop the coupling carries no lag.
+- **Buoyancy** is the body force f = −β(T − T_ref(x)) g, per unit mass,
+  added to the momentum source. T_ref(x) is a reference stratification,
+  constant by default or linear along g. Its buoyancy is a gradient, so it
+  is absorbed into the pressure analytically, and a fluid resting in exactly
+  that stratification is an exact discrete fixed point on any mesh.
+  Without a matching reference, the discrete hydrostatic balance is not
+  exact on distorted meshes. The complete remedy — the body force in the
+  face flux and the cell velocity reconstructed from face fluxes, as
+  OpenFOAM's buoyantBoussinesqPimpleFoam does with p_rgh and phig — would
+  change the velocity correction every v1 gate stands on, and is deferred
+  until a case needs it.
+- **Slip walls**: a velocity boundary type with zero normal velocity and
+  zero tangential stress, so that a symmetry plane can bound a roll.
+
+### v2a gates
+
+Python first, then C++, each written and shown to fail or skip before the
+code it judges.
+
+1. **Energy equation in an exact flow.** Ethier–Steinman flow with a
+   manufactured temperature T = e^{−t} sin πx sin πy sin πz and the source
+   that makes it exact, β = 0. Spatial order on 8³/16³/32³ (6³/12³/24³ in
+   Python) within the Navier–Stokes gate's bands: [1.85, 2.15] orthogonal,
+   [1.6, 2.3] and rising on the smooth distortion. BDF2 order in time for T
+   at least 1.8.
+2. **Boussinesq, steady, manufactured.** The steady solenoidal velocity of
+   ADR-037's gate, p = cos πx cos πy cos πz, T = 1 + ½ sin πx sin πy sin πz,
+   buoyancy on (β g = (0, 0, −1) per unit temperature), sources that make all
+   three exact. Order of u and T in the same bands. The same steady state at
+   dt = 0.2 and 2.0 to 1e-6 of the discretisation error: the buoyancy coupling
+   must not bring dt back in.
+3. **A stratified fluid at rest stays at rest.** The Rayleigh–Bénard
+   conduction profile, T linear between a hot bottom and a cold top,
+   adiabatic sides, the reference stratification equal to it, on a
+   Cartesian and a distorted mesh: after 50 steps max|u| ≤ 1e-12 and T
+   linear to 1e-12. With a constant reference instead, the spurious velocity
+   is reported, not gated.
+4. **Rayleigh–Bénard onset.** Rigid, isothermal plates one unit apart; slip,
+   adiabatic side walls π/k_c apart, which hold exactly one roll of the
+   infinite layer's critical mode; Pr = 1. Linear growth rates, from a
+   perturbation of 1e-6, at Ra = 1600, 1700 and 1800, on meshes of 16, 24
+   and 32 cells across the layer; each mesh's critical Ra is the zero of the
+   growth rate interpolated in Ra. Reference: Ra_c = 1707.762, k_c = 3.117
+   (Chandrasekhar; Scholarpedia's Rayleigh–Bénard article). Pass: the finest
+   mesh within 1%, the observed order in [1.5, 2.6], the Richardson
+   extrapolation within 0.3%.
+5. **De Vahl Davis cavity.** The differentially heated square cavity, air
+   (Pr = 0.71), Ra = 10³, 10⁴, 10⁵, 10⁶, run to a steady state on uniform
+   meshes of 32², 64² and 128². The hot wall's mean Nusselt number,
+   Richardson-extrapolated, within 0.5% of 1.1178, 2.2448, 4.5216 and 8.8252
+   (Wang et al., Hortmann et al., Le Quéré, as tabulated in a lattice
+   Boltzmann validation study that cites them; de Vahl Davis's own wall
+   values are 1.117, 2.238, 4.509, 8.817), and on 128² within 1%. The maximum
+   horizontal and vertical velocities on the mid-lines within 1% of de Vahl
+   Davis's 3.649 / 3.697, 16.178 / 19.617, 34.73 / 68.59, 64.63 / 219.36
+   (in units of κ/L).
+
+**Not in v2a:** conjugate heat transfer, radiation, temperature-dependent
+properties, the p_rgh reconstruction. Each needs a case to justify it.
