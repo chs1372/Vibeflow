@@ -2264,6 +2264,26 @@ code it judges.
 **Not in v2a:** conjugate heat transfer, radiation, temperature-dependent
 properties, the p_rgh reconstruction. Each needs a case to justify it.
 
+### Revisions before the result
+
+Two changes, made after the first Python run and before any C++ code, and
+recorded here because they change what the gate would have said.
+
+- *Gate 2's steady marching step.* The order runs used dt = 2.0. At 24³ that
+  is a Courant number near 50, and the solver diverged there — plain
+  Navier-Stokes without the energy equation included, measured separately —
+  so the order runs use dt = 0.2. The dt-independence check still compares
+  0.2 with 2.0, on the 8³ mesh where both converge. No criterion changed.
+- *"Rising" becomes "approaching 2".* The rising-order condition was copied
+  from the Navier-Stokes gate, whose pre-asymptotic orders approach two from
+  below. Gate 2's approach it from above — 2.16 then 2.03 for u, 2.09 then
+  2.04 for T on the smooth distortion — and fail it. For every v2a gate the
+  condition is now that the last order is no further from 2 than the one
+  before it, within 0.02. It catches a falling order as before, and a rising
+  one past 2 as well; the Navier-Stokes gate's own orders (1.762 then 2.034)
+  meet it. It is a change made after seeing the numbers whose verdict it
+  changes, and it is recorded as that.
+
 ## ADR-039 — Slip walls, gated by the Taylor–Green vortex. Stated before the code
 **Decided.** ADR-038 adds a slip velocity boundary — zero normal velocity,
 zero tangential stress — so that a symmetry plane can bound a roll, and
@@ -2288,3 +2308,27 @@ Python, within [1.85, 2.15] on the orthogonal meshes and [1.6, 2.3], rising,
 on the smooth distortion — whose walls stay planar and axis-aligned while
 the cells beside them are not. Python first, then C++, each failing before
 its implementation.
+
+### Revision before the result
+
+The first Python run failed the orthogonal half: the velocity error fell at
+order 1.05 then 1.46. The same test with the exact velocity prescribed on
+the walls instead of slip gives 1.03 then 1.38, and its errors are larger at
+every mesh (1.517e-4, 7.415e-5, 2.849e-5 against slip's 1.504e-4, 7.275e-5,
+2.645e-5). So the orthogonal half measured the test problem, not the slip
+wall. On a uniform mesh the Taylor–Green interior error is exceptionally
+small — 1.5e-4 at 6³, against 1.3e-2 on the distortion — and an error in the
+wall-adjacent layer, which converges more slowly, dominates it whichever
+boundary is used. Longer runs (20 steps of 2e-3) do not settle it either:
+slip gives orders 1.71 then 2.94, the exact wall velocity 1.67 then 2.65.
+
+The gate is revised to what it was meant to test, before any C++ code:
+
+1. on the smooth distortion, the observed order in [1.6, 2.3] and
+   approaching 2 (ADR-038's revised condition);
+2. on both families, at every mesh, the slip wall's error no more than 1.1
+   times the error with the exact wall velocity prescribed.
+
+A slip wall with an error of its own would fail the second condition at the
+finer meshes. The orthogonal family's convergence on this problem, with
+either boundary, is reported and left as an open finding.

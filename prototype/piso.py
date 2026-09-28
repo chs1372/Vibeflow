@@ -39,7 +39,8 @@ from gradient import QuadraticLSQGradient
 class PisoSolver:
     def __init__(self, mesh, nu, dt, n_correctors=2, n_nonorth=40,
                  n_outer=1, outer_tol=1e-10, consistent_rhie_chow=True,
-                 gradient="linear", rhie_chow_form="standard", old_flux="exact"):
+                 gradient="linear", rhie_chow_form="standard", old_flux="exact",
+                 kappa=None, beta_g=None, t_ref=0.0, t_ref_grad=None):
         self.m = mesh
         self.nu = nu
         self.dt = dt
@@ -121,6 +122,25 @@ class PisoSolver:
         self.Fb = np.zeros(len(m.b_cell))
         self.step_index = 0
         self._pb = np.zeros(len(m.b_cell))
+
+        # Energy equation and Boussinesq buoyancy (ADR-038). Off unless kappa
+        # is given. Temperature is transported like a velocity component --
+        # BDF2, upwind plus the deferred correction to the skew-corrected face
+        # value, diffusion with the non-orthogonal correction -- and solved
+        # inside every outer iteration after the pressure correctors, so a
+        # converged outer loop carries no coupling lag. The body force per
+        # unit mass is f = -(T - T_ref(x)) beta_g, with beta_g = beta * g and
+        # T_ref(x) = t_ref + t_ref_grad . x a reference stratification along
+        # g: its buoyancy is a gradient, absorbed into the pressure, so a fluid
+        # resting in exactly that stratification is an exact fixed point.
+        self.energy = kappa is not None
+        self.kappa = kappa
+        self.beta_g = np.zeros(3) if beta_g is None else np.asarray(beta_g, float)
+        self.t_ref = t_ref
+        self.t_ref_grad = np.zeros(3) if t_ref_grad is None else np.asarray(t_ref_grad, float)
+        self.T = np.zeros(m.nc)
+        self.T_old = np.zeros(m.nc)
+        self.T_old2 = np.zeros(m.nc)
 
     # ------------------------------------------------------------ time scheme
     def bdf(self):
@@ -209,8 +229,27 @@ class PisoSolver:
         return lin + np.einsum("ijk,ik->ij", gf, self.skew_vec)
 
     # -------------------------------------------------------------- momentum
-    def assemble_momentum(self, u_b, src):
-        """Matrix and pressure-free right-hand sides for the three components."""
+    def slip_values(self, u_b, slip):
+        """Boundary velocity with slip faces replaced by the tangential part
+        of the adjacent cell's velocity (ADR-039)."""
+        if slip is None or not slip.any():
+            return u_b
+        m = self.m
+        n = m.b_area / np.linalg.norm(m.b_area, axis=1)[:, None]
+        uc = self.u[m.b_cell]
+        tang = uc - np.einsum("ij,ij->i", uc, n)[:, None] * n
+        return np.where(slip[:, None], tang, u_b)
+
+    def assemble_momentum(self, u_b, src, slip=None):
+        """Matrix and pressure-free right-hand sides for the three components.
+
+        A slip face (ADR-039) is treated as a Dirichlet face whose value is the
+        tangential part of the cell velocity, taken from the latest iterate:
+        the implicit diagonal nu*a_b balances the lagged cell value, so at
+        convergence the viscous flux through the face is -nu a_b (u.n) n --
+        the normal component driven to zero, the tangential stress zero. Its
+        non-orthogonal correction acts on the normal component only.
+        """
         m = self.m
         aP_t, a1, a2 = self.bdf()
         Fp = np.maximum(self.F, 0.0)
@@ -243,8 +282,13 @@ class PisoSolver:
             corr = nu * np.einsum("ij,ij->i", self.diff.k_int, gf)
             np.add.at(rhs, m.owner, corr)
             np.add.at(rhs, m.neigh, -corr)
-            np.add.at(rhs, m.b_cell,
-                      nu * np.einsum("ij,ij->i", self.diff.k_bnd, g[m.b_cell]))
+            nonorth_b = nu * np.einsum("ij,ij->i", self.diff.k_bnd, g[m.b_cell])
+            if slip is not None and slip.any():
+                n_hat = m.b_area / np.linalg.norm(m.b_area, axis=1)[:, None]
+                g_n = np.einsum("fe,fek->fk", n_hat, grads[m.b_cell])   # grad(u.n)
+                slip_corr = nu * n_hat[:, d] * np.einsum("ij,ij->i", self.diff.k_bnd, g_n)
+                nonorth_b = np.where(slip, slip_corr, nonorth_b)
+            np.add.at(rhs, m.b_cell, nonorth_b)
 
             ud = np.where(self.F > 0.0, self.u[m.owner, d], self.u[m.neigh, d])
             dc = self.F * (ho[:, d] - ud)
@@ -408,19 +452,102 @@ class PisoSolver:
         return np.abs(div).max()
 
     # ------------------------------------------------------------------ step
-    def advance(self, u_b, Fb, src):
+    # --------------------------------------------------------- temperature
+    def buoyancy(self):
+        """Body force per unit mass, -(T - T_ref(x)) beta g, per cell."""
+        t_ref = self.t_ref + self.m.cell_centre @ self.t_ref_grad
+        return -(self.T - t_ref)[:, None] * self.beta_g[None, :]
+
+    def solve_energy(self, T_b, T_src, T_bc):
+        """One implicit solve for T with the current face flux (ADR-038).
+
+        T_bc per boundary face: 0 = fixed temperature T_b, 1 = fixed heat
+        flux T_b (kappa dT/dn into the domain, per unit area; 0 is adiabatic).
+        """
+        m = self.m
+        k = self.kappa
+        aP_t, a1, a2 = self.bdf()
+        Fp = np.maximum(self.F, 0.0)
+        Fn = np.maximum(-self.F, 0.0)
+        a = self.diff.a_int
+        dirichlet = T_bc == 0
+        area_b = np.linalg.norm(m.b_area, axis=1)
+
+        rows = [m.owner, m.owner, m.neigh, m.neigh, m.b_cell,
+                m.owner, m.owner, m.neigh, m.neigh, np.arange(m.nc)]
+        cols = [m.owner, m.neigh, m.neigh, m.owner, m.b_cell,
+                m.owner, m.neigh, m.neigh, m.owner, np.arange(m.nc)]
+        vals = [+k * a, -k * a, +k * a, -k * a,
+                np.where(dirichlet, k * self.diff.a_bnd, 0.0),
+                Fp, -Fn, Fn, -Fp, aP_t * m.cell_volume]
+        # Outflow through a fixed-flux face carries the cell's own value.
+        out_b = np.where(dirichlet, 0.0, np.maximum(self.Fb, 0.0))
+        rows.append(m.b_cell); cols.append(m.b_cell); vals.append(out_b)
+        A = sp.coo_matrix((np.concatenate(vals),
+                           (np.concatenate(rows), np.concatenate(cols))),
+                          shape=(m.nc, m.nc)).tocsr()
+
+        # Boundary values for the gradient: the prescribed temperature, or
+        # the cell value on a fixed-flux face.
+        tb = np.where(dirichlet, T_b, self.T[m.b_cell])
+        g = self.grad(self.T, tb)
+        ho = self.face_interp(self.T[:, None], g[:, None, :])[:, 0]
+
+        rhs = T_src * m.cell_volume - (a1 * self.T_old + a2 * self.T_old2) * m.cell_volume
+        np.add.at(rhs, m.b_cell, np.where(dirichlet, k * self.diff.a_bnd * T_b,
+                                          T_b * area_b))
+        gf = (self.diff.w_owner[:, None] * g[m.owner]
+              + (1 - self.diff.w_owner)[:, None] * g[m.neigh])
+        corr = k * np.einsum("ij,ij->i", self.diff.k_int, gf)
+        np.add.at(rhs, m.owner, corr)
+        np.add.at(rhs, m.neigh, -corr)
+        np.add.at(rhs, m.b_cell, np.where(
+            dirichlet, k * np.einsum("ij,ij->i", self.diff.k_bnd, g[m.b_cell]), 0.0))
+        ud = np.where(self.F > 0.0, self.T[m.owner], self.T[m.neigh])
+        dc = self.F * (ho - ud)
+        np.add.at(rhs, m.owner, -dc)
+        np.add.at(rhs, m.neigh, +dc)
+        # Inflow through a fixed-flux face, and every fixed-temperature face,
+        # carry the boundary value; outflow on a fixed-flux face is implicit.
+        conv_b = np.where(dirichlet, self.Fb * T_b, np.minimum(self.Fb, 0.0) * tb)
+        np.add.at(rhs, m.b_cell, -conv_b)
+        return spla.spsolve(A.tocsc(), rhs)
+
+    def advance(self, u_b, Fb, src, T_b=None, T_src=None, T_bc=None, u_bc=None):
         m = self.m
         self.Fb = Fb
+        # Velocity boundary codes per face, as in the C++ solver: 0 Dirichlet,
+        # 2 slip (ADR-039). Zero gradient (1) exists only on the C++ side.
+        slip = None
+        if u_bc is not None:
+            u_bc = np.asarray(u_bc)
+            if np.any(u_bc == 1):
+                raise NotImplementedError("zero-gradient velocity faces")
+            slip = u_bc == 2
+        u_b_given = u_b
         # Time levels shift ONCE per step, not once per outer iteration.
         self.u_old2 = self.u_old.copy()
         self.u_old = self.u.copy()
         self.F_old2 = self.F_old.copy()
         self.F_old = self.F.copy()
+        if self.energy:
+            self.T_old2 = self.T_old.copy()
+            self.T_old = self.T.copy()
+            nb = len(m.b_cell)
+            T_b = np.zeros(nb) if T_b is None else np.asarray(T_b, float)
+            T_src = np.zeros(m.nc) if T_src is None else np.asarray(T_src, float)
+            T_bc = np.zeros(nb, dtype=int) if T_bc is None else np.asarray(T_bc)
 
         for outer in range(self.nOuter):
             u_prev = self.u.copy()
+            if self.energy:
+                T_prev = self.T.copy()
+                src_total = src + self.buoyancy()
+            else:
+                src_total = src
 
-            A, b = self.assemble_momentum(u_b, src)
+            u_b = self.slip_values(u_b_given, slip)
+            A, b = self.assemble_momentum(u_b, src_total, slip)
             aP = A.diagonal()
             lu = spla.splu(A.tocsc())
 
@@ -435,9 +562,16 @@ class PisoSolver:
                 gp = self.grad_p(self.p)
                 self.u = hba - gp * (m.cell_volume / aP)[:, None]
 
+            if self.energy:
+                self.T = self.solve_energy(T_b, T_src, T_bc)
+
             self.outer_used = outer + 1
             scale = max(np.abs(self.u).max(), 1e-300)
-            if np.abs(self.u - u_prev).max() < self.outerTol * scale:
+            change = np.abs(self.u - u_prev).max() / scale
+            if self.energy:
+                change = max(change, np.abs(self.T - T_prev).max()
+                             / max(np.abs(self.T).max(), 1e-300))
+            if change < self.outerTol:
                 break
 
         self.step_index += 1

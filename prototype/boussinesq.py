@@ -52,14 +52,18 @@ def orders(errs, hs):
             for i in range(1, len(errs))]
 
 
-def verdict(label, orders_, lo, hi, rising=False):
+def verdict(label, orders_, lo, hi, approaching=False):
+    """Order in [lo, hi]; with approaching, also no further from 2 than the
+    order before it, within 0.02 (ADR-038's revision: the Navier-Stokes gate's
+    'rising' condition assumed an approach from below)."""
     last = orders_[-1]
     ok = lo <= last <= hi
     msg = f"  -> {label}: order {last:.3f} in [{lo}, {hi}]"
-    if rising and len(orders_) > 1:
-        r = all(orders_[i] >= orders_[i - 1] - 0.02 for i in range(1, len(orders_)))
+    if approaching and len(orders_) > 1:
+        r = all(abs(orders_[i] - 2.0) <= abs(orders_[i - 1] - 2.0) + 0.02
+                for i in range(1, len(orders_)))
         ok &= r
-        msg += f", trend {'rising' if r else 'FALLING'}"
+        msg += f", {'approaching 2' if r else 'MOVING AWAY FROM 2'}"
     print(msg + (": PASS" if ok else ": FAIL"))
     return ok
 
@@ -202,7 +206,11 @@ def gate_boussinesq_mms():
                                       (0.25, 1.6, 2.3, True, "smooth distortion")):
         eu, eT, hs = [], [], []
         for n in (6, 12, 24):
-            m, s, k, ch = steady_boussinesq(n, skew, "smooth", 2.0)
+            # dt = 0.2, not 2.0: at n = 24 a time step of 2.0 is a Courant
+            # number near 50, where the explicit deferred correction with three
+            # outer iterations diverges -- plain Navier-Stokes, without the
+            # energy equation, included (measured when this gate first ran).
+            m, s, k, ch = steady_boussinesq(n, skew, "smooth", 0.2)
             eu.append(l2(s.u - SF.velocity(m.cell_centre), m.cell_volume))
             eT.append(l2(s.T - b_temperature(m.cell_centre), m.cell_volume))
             hs.append(1.0 / n)
