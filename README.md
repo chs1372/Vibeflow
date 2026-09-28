@@ -130,8 +130,8 @@ force −β(T − T_ref)g joins the momentum equation. Orders, C++ (Python):
 
 The steady Boussinesq state is the same at dt = 0.2 and 2.0 to 1e-10 of its
 discretisation error, and a fluid resting in its reference stratification
-stays at rest to 1e-14. Python and C++ agree to 1e-10 on every v2a quantity;
-two to four ranks give the serial answer to 2e-15.
+stays at rest to within 3e-14. Python and C++ agree to 1e-10 on every v2a
+quantity; two to four ranks give the serial answer to 2.3e-15.
 
 The onset of Rayleigh–Bénard convection between rigid plates, from linear
 growth rates on 16, 24 and 32 cells across the layer:

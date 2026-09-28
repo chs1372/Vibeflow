@@ -2386,6 +2386,11 @@ accurate, so the order is the last pair's, as the gate defines it.
   criterion: the pressure solve uses BoomerAMG where PETSc is built, as the
   cylinder does (0.41 s a step on 128² against 1.47), and each mesh starts
   from the previous mesh's steady state, interpolated (below).
+- **The whole suite:** `run_gates.py v0 v1 v2` passes all 31 gates in one
+  run, none skipped: 3 h 28 min on two cores, 64 minutes of it v0 and v1.
+  The v1 benchmarks did not move — cylinder St 0.1689, drag 1.4317, lift
+  0.3681, fastest cell 1.361 — and the cavity repeated its separate run to
+  every printed digit.
 
 ### Findings the gates did not ask for
 
