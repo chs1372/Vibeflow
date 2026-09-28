@@ -6,7 +6,7 @@ applied to two exact states on the unit cube with a wall at y = 0 (so the wall
 distance is d = y exactly):
 
   MS-A  blending on, eddy-viscosity limiter off
-  MS-B  eddy-viscosity limiter on everywhere
+  MS-B  eddy-viscosity limiter on everywhere (F1 = F2 = 1)
 
 Why two: the limiter max(a1 w, S F2) cannot switch on and off inside the
 domain without a kink in nu_t, and no scheme converges through a kink at
@@ -68,23 +68,30 @@ def state(name):
     MS-B, as sympy expressions."""
     s, c, pi = sp.sin, sp.cos, sp.pi
     su, sa = _solenoidal()
+    # ADR-042's revision: k and omega vary as sin(pi x) sin(pi z) and linearly
+    # in y, so their normal curvature vanishes on every face -- the one-sided
+    # boundary flux then carries no O(1) truncation error into the first
+    # cell, which on these meshes the reaction term would not let diffusion
+    # suppress.
     if name == "A":
         U0 = sp.Rational(1, 10)
         u = [U0 * e for e in su]
         a = [U0 * e for e in sa]
         p = sp.Rational(1, 100) * c(pi*x) * c(pi*y) * c(pi*z)
-        k = sp.Rational(1, 10) * (sp.Rational(1, 2) + y) * (1 + sp.Rational(3, 10)*s(pi*x)*c(pi*z))
-        w = 5 * (1 + sp.Rational(1, 20) / (y + sp.Rational(1, 5))**2) \
-            * (1 + sp.Rational(1, 5)*c(pi*x)*s(pi*z))
+        k = sp.Rational(1, 10) * (sp.Rational(1, 2) + y) * (1 + sp.Rational(3, 10)*s(pi*x)*s(pi*z))
+        w = 5 * (sp.Rational(3, 2) - y/2) * (1 + sp.Rational(1, 5)*s(pi*x)*s(pi*z))
         nu = sp.Rational(5, 100000)
     elif name == "B":
-        eps = sp.Rational(1, 20)
-        u = [y + y**2 + eps*su[0], eps*su[1], eps*su[2]]
-        # curl (0, 0, y^2/2 + y^3/3) = (y + y^2, 0, 0)
-        a = [eps*sa[0], eps*sa[1], y**2/2 + y**3/3 + eps*sa[2]]
+        # A linear shear, whose least-squares gradient is exact, plus a small
+        # solenoidal part; slow enough that diffusion outweighs the k
+        # equation's net production, which the limiter-on state has.
+        U0, eps = sp.Rational(3, 10), sp.Rational(3, 200)
+        u = [U0*(sp.Rational(1, 2) + y) + eps*su[0], eps*su[1], eps*su[2]]
+        # curl (0, 0, U0 (y/2 + y^2/2)) = (U0 (1/2 + y), 0, 0)
+        a = [eps*sa[0], eps*sa[1], U0*(y/2 + y**2/2) + eps*sa[2]]
         p = sp.Integer(0)
-        k = sp.Rational(1, 10) * (1 - y/2) * (1 + sp.Rational(3, 10)*s(pi*x)*c(pi*z))
-        w = (1 + 2*y) * (1 + sp.Rational(1, 5)*c(pi*x)*s(pi*z))
+        k = sp.Rational(1, 2) * (1 - sp.Rational(3, 10)*y) * (1 + sp.Rational(3, 10)*s(pi*x)*s(pi*z))
+        w = sp.Rational(6, 25) * (1 + y) * (1 + sp.Rational(1, 5)*s(pi*x)*s(pi*z))
         nu = sp.Rational(5, 100000)
     else:
         raise ValueError(name)

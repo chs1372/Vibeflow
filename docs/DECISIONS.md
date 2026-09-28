@@ -2856,3 +2856,57 @@ chosen. No run of this solver with a turbulence model exists.
 
 **Cost.** Two scalar solves per outer iteration and, on the flat plate, a
 steady march on up to 52k cells, or 209k with 545×385.
+
+### Revision before the result: the manufactured solutions
+
+The first runs of gate 2a — Python, frozen velocity, SST-2003, orthogonal
+meshes, the implementation as it now stands — found both solutions unfit
+for these meshes:
+
+- *MS-A:* k converged at orders 2.00 and 2.10, ω at 1.04 and 1.36 (errors
+  9.9e-2, 4.8e-2, 1.9e-2), nearly all of it in the layer of cells on y = 0,
+  where ω = 5(1 + 0.05/(y + 0.2)²) curves by ω'' ≈ 940. There the one-sided
+  boundary flux leaves an O(1) truncation error in the first cell. Diffusion
+  suppresses such an error to O(h²) only once a cell is smaller than the
+  reaction length √(Γ/2βω), about 0.04 here — finer than 24³.
+- *MS-B:* on 6³ k and ω drifted to the floor, bounded in thousands of
+  cell-steps; on 12³ and 24³ ω converged at order 4.0, far from asymptotic.
+  With the limiter on, the k equation's production beats its destruction —
+  P/ε = a₁S/(β*ωF₂) ≥ a₁²/β* > 1 always, here about 3 — and only the
+  manufactured sink holds the balance, an equilibrium that lasts while
+  diffusion outweighs the net growth. On 6³ it did not.
+
+One change to the solver came out of this: an imposed source enters by
+Patankar's rule, its negative part on the diagonal as −s/φ, so that a sink
+cannot drive φ negative; the steady state is the same. It slowed MS-B's
+drift on 6³ and did not stop it — the solution was the cause.
+
+Both solutions are revised, before any verdict, keeping their purpose:
+
+- *MS-A:* k = 0.1 (0.5 + y)(1 + 0.3 sin πx sin πz),
+  ω = 5 (1.5 − 0.5y)(1 + 0.2 sin πx sin πz): no steep wall term, and — sin
+  in x and z, linear in y — zero normal curvature on every face, so the
+  boundary flux carries no O(1) error. Velocity, pressure and ν unchanged.
+  F₁ spans [0.42, 1]; the first branch of arg₁ is active wherever F₁ is
+  unsaturated, 26 times the second and 9.7 times the third;
+  a₁ω ≥ 1.25 S F₂ and 2.11 Ω F₂; P ≤ 0.07 of its limit.
+- *MS-B:* u = 0.3 (0.5 + y, 0, 0) plus 0.015 times the solenoidal field — a
+  linear shear, whose least-squares gradient is exact, so S carries no
+  boundary error of its own — k = 0.5 (1 − 0.3y)(1 + 0.3 sin πx sin πz),
+  ω = 0.24 (1 + y)(1 + 0.2 sin πx sin πz), p = 0, ν = 5e-5. S F₂ ≥ 1.69 a₁ω
+  and Ω F₂ ≥ 1.66 a₁ω; P ≤ 0.50 of its limit; ν_t ≈ 0.1 makes the diffusion
+  rate several times the net production. F₁ = F₂ = 1 throughout: MS-B now
+  tests the limiter and MS-A the blending, and F₂ joins the list of what
+  these solutions do not reach, for the flat plate.
+
+Data seen in choosing them, all SST-2003, orthogonal, frozen velocity: the
+revised MS-A at orders 2.13, 2.03 (k) and 2.11, 2.04 (ω); the revised MS-B
+at 1.91, 1.97 and 1.93, 1.98. Five other candidates for MS-B were tried and
+dropped: two kept the original flow with smoother k and ω and still failed
+on 6³; two converged well above second order on 12³/24³ (ω at 2.67 and
+2.13 on the last pair, after 3.30 and 2.49), one of them also losing its
+branch margins on the finer meshes; and the same flow slowed to U₀ = 0.3
+with its quadratic shear brought k to 1.74 then 1.89, from below, near the
+band's edge — the linear shear removes the boundary error of S that held
+it there. Not yet run: the distortion, SST-1994, and gate 2b. The criteria
+are unchanged.
