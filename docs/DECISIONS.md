@@ -2488,7 +2488,7 @@ Rayleigh–Bénard roll and the faces of the one-cell slabs (ADR-038). The
 orthogonal family's slow convergence stays open; it belongs to the test
 problem, not to the boundary.
 
-## ADR-040 — A transient-coupling gate: the Rayleigh–Bénard growth rate against linear theory. Stated before its runs
+## ADR-040 — A transient-coupling gate: the Rayleigh–Bénard growth rate against linear theory. Stated before its runs, answered after
 **Decided.** ADR-038's onset gate judges only the zero of the growth rate,
 which does not depend on how the solver marches. Its runs showed that the
 rates themselves do: four fixed outer iterations gave 0.173 at Ra = 1800 on
@@ -2569,6 +2569,31 @@ capped rates; the first gate run's 0.920868 is the converged one on 16
 cells. ADR-038's finding stands — the rate is right only with the loop
 converged — but its 0.743 is the rate at 100 iterations, not the converged
 rate. A note there points here.
+
+### Result
+
+**Passes**, in the cell form (the tree of a97008b, one thread, 46 minutes):
+
+    N = 16   0.920868009   +32.7%   outer ≤ 190   four fixed: 0.528849
+    N = 24   0.793826684   +14.4%   outer ≤ 384   four fixed: 0.280965
+    N = 32   0.749703122    +8.0%   outer ≤ 648   four fixed: 0.172594
+
+The observed order is 2.021 and the Richardson extrapolation 0.693762,
+−0.030% from σ*. In time, on 16 cells against dt = 0.00125 (0.920842570),
+the errors at dt = 0.04, 0.02 and 0.01 are 4.05e-4, 1.02e-4 and 2.54e-5:
+orders 1.986 then 2.008. Every fit's halves agree to 8e-9 or better, and no
+step came near the cap: 648 iterations at most, 499 at dt = 0.04, 45 at
+dt = 0.00125. The first run's two rates repeat to 2e-9; it ran on two
+threads, which sum the reductions in another order.
+
+So the coupled scheme's dynamics converge to linear theory at second order
+in space and in time, once each step's outer loop converges. With four fixed
+iterations they do not: those rates fall with refinement — 0.53, 0.28, 0.17
+— away from σ*, as the diffusion number grows. A converged step at a
+diffusion number of 10 costs 648 outer iterations, and that cost is this
+loop's, not the gate's: the pressure correction sees only the momentum
+diagonal. Faster transients at large diffusion numbers need a better outer
+iteration, not fewer of them.
 
 ## ADR-041 — Balanced buoyancy: the force in the face flux, its hydrostatic part in a pressure of its own. Stated before the code
 **Decided.** ADR-038's buoyancy is a cell force. A fluid at rest in a
