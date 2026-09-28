@@ -77,6 +77,11 @@ add_executable(rayleigh_benard benchmark/rayleigh_benard.cpp)
 target_link_libraries(rayleigh_benard PRIVATE vibeflow_physics)
 add_test(NAME rayleigh_benard COMMAND rayleigh_benard)
 
+# ADR-040: the growth rate itself, against linear theory.
+add_executable(rb_growth benchmark/rb_growth.cpp)
+target_link_libraries(rb_growth PRIVATE vibeflow_physics)
+add_test(NAME rb_growth COMMAND rb_growth)
+
 # Hours on two cores at 128^2 and Ra = 1e6: a suite gate, not a ctest.
 add_executable(heated_cavity benchmark/heated_cavity.cpp)
 target_link_libraries(heated_cavity PRIVATE vibeflow_physics)

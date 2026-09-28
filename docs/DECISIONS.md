@@ -2485,3 +2485,53 @@ The slip wall then carried two benchmarks: the side walls of the
 Rayleigh–Bénard roll and the faces of the one-cell slabs (ADR-038). The
 orthogonal family's slow convergence stays open; it belongs to the test
 problem, not to the boundary.
+
+## ADR-040 — A transient-coupling gate: the Rayleigh–Bénard growth rate against linear theory. Stated before its runs
+**Decided.** ADR-038's onset gate judges only the zero of the growth rate,
+which does not depend on how the solver marches. Its runs showed that the
+rates themselves do: four fixed outer iterations gave 0.173 at Ra = 1800 on
+32 cells where linear theory gives 0.694. No gate measured a transient
+coupling against an exact rate, so none would notice a scheme whose steady
+states are right and whose dynamics are not. This is that gate.
+
+**Reference.** The leading growth rate of the rigid-plate problem at
+k = 3.117, Pr = 1, from a Chebyshev collocation of the linearised equations
+(`tests/benchmark/rb_linear.py`) in the D² form of Dongarra, Straughan &
+Walker (1996): σ* = 0.693973025 at Ra = 1800, the same to 2e-9 on 24 to 64
+points. The direct fourth-order form, tried first, drifts by round-off to
+3e-5 at 128 points, which is why it was not kept. The script checks itself
+twice. Its neutral Rayleigh number is 1707.7619 against Chandrasekhar's
+1707.762. Its slope dσ/dε at onset is 13.000 against 1/τ₀ = 12.999 from the
+amplitude equation's τ₀ = (Pr + 0.5117)/(19.65 Pr) for rigid plates
+(Bodenschatz et al., arXiv patt-sol/9305001).
+
+**The gate** (`rb_growth`, C++). The onset gate's box, boundaries and
+perturbation, at Ra = 1800. Every step's outer loop is iterated to
+convergence: outerTol 1e-10 with a cap of 400 iterations, and a step that
+reaches the cap fails the gate. The pressure solves go to 1e-12, below
+anything the outer test can see.
+
+1. *Space:* the growth rate on 16, 24 and 32 cells across the layer at
+   dt = 0.01. The observed order, from the unequal ratios, must be in
+   [1.5, 2.6]. The Richardson extrapolation must be within 1% of σ*.
+2. *Time:* on 16 cells, the growth rate at dt = 0.04, 0.02 and 0.01 against
+   a dt = 0.00125 run. The order of the last pair must be in [1.8, 2.6] —
+   BDF2, as the Ethier–Steinman temporal gate asks.
+3. The fitted rate's two halves agree within 1e-3, as in the onset gate.
+
+The four-iteration rates are printed beside the converged ones and not
+gated: they are the finding this gate exists to keep in view.
+
+**Why 1%.** Close to onset a growth rate is mostly a distance from the
+critical point, σ ≈ (dσ/dRa)(Ra − Ra_c). An error of δ in the extrapolated
+Ra_c costs δ/(Ra − Ra_c) of σ, and the onset gate extrapolated Ra_c to 0.08,
+that is 0.09% of σ at Ra = 1800. The slope carries its own extrapolation
+error on top. 0.5% would leave too little room for it, and 2% would pass a
+lagging scheme that happened to extrapolate close.
+
+**Data seen before this was written,** during ADR-038's investigation: with
+the outer loop converged, 0.9196 on 16 cells (40 iterations, 1e-11) and
+0.7429 on 32 cells (100 iterations, 1e-13). No run on 24 cells, no
+temporal study, and none at the gate's settings. The bands above come from
+the onset gate and from the argument just given, not from those two
+numbers — but they were written knowing them, and that is recorded here.

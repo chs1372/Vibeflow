@@ -196,6 +196,11 @@ GATES = {
          BUILD / "mms_parallel_heat"),
         ("benchmark: Rayleigh-Benard onset against Ra_c = 1707.762",
          lambda: run([str(BUILD / "rayleigh_benard")]), BUILD / "rayleigh_benard"),
+        # ADR-040: the transient coupling, against an exact rate.
+        ("reference: the linear growth rate is converged and checks out",
+         lambda: run([PY, str(ROOT / "tests" / "benchmark" / "rb_linear.py")]), None),
+        ("benchmark: Rayleigh-Benard growth rate against linear theory",
+         lambda: run([str(BUILD / "rb_growth")]), BUILD / "rb_growth"),
         # Hours on two cores: Ra = 1e6 on 128^2 needs a Courant-limited march
         # to its steady state.
         ("benchmark: differentially heated cavity against de Vahl Davis (1983)",

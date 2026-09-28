@@ -29,10 +29,7 @@
 //
 // Run:  rayleigh_benard [N...]      default 16 24 32
 
-#include "mesh/HexMesh.hpp"
-#include "physics/Piso.hpp"
-#include "linalg/NativeBiCGStab.hpp"
-#include "linalg/NativeCG.hpp"
+#include "rb_common.hpp"
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -41,99 +38,20 @@
 #include <vector>
 
 using namespace vibeflow;
+using namespace vibeflow::rb;
 
 namespace {
 
-constexpr Real PI = 3.14159265358979323846;
-constexpr Real KC = 3.117;
 constexpr Real RA_C = 1707.762;
 
-template <class V> auto host(const V& v) {
-  return Kokkos::create_mirror_view_and_copy(HostSpace::memory_space(), v);
-}
-
-struct Growth { Real sigma, sigmaEarly, sigmaLate; int steps; };
-
-// Growth rate of the perturbation's velocity norm, d ln|u| / dt, fitted by
-// least squares over [t0, t1]; also over each half of it, as a check that the
-// transient is gone.
-Growth growthRate(Index N, Real Ra, Real dt = 0.01, Real t0 = 1.5, Real t1 = 3.5) {
-  const Real Lx = PI / KC;
-  const HexMesh mesh = HexMesh::box(N, 1, N, Lx, 1.0 / N, 1.0);
-  const Index nc = mesh.nCells(), nt = mesh.nTotal(), nb = mesh.nBoundaryFaces();
-
-  PisoControls ctl;
-  ctl.outer = 4;           // fixed: the neutral point does not depend on it
-  ctl.outerTol = 0.0;
-  ctl.correctors = 2;
-  // Exploration only: how far the growth rates AWAY from the zero depend on
-  // the marching. The gate runs the values above.
-  if (const char* e = std::getenv("VIBEFLOW_OUTER")) ctl.outer = std::atoi(e);
-  if (const char* e = std::getenv("VIBEFLOW_OUTER_TOL")) ctl.outerTol = std::atof(e);
-  PisoSolver solver(mesh, 1.0, dt, ctl);
-  EnergyModel em;
-  em.kappa = 1.0;
-  em.betaG = {0.0, 0.0, -Ra};
-  em.tRef = 1.0;
-  em.tRefGrad = {0.0, 0.0, -1.0};
-  solver.enableEnergy(em);
-
-  // Sides: 0 x-, 1 x+, 2 y-, 3 y+, 4 z- (hot plate), 5 z+ (cold plate).
-  auto side = host(mesh.boundarySide());
-  View1<int> uType("uType", nb), tType("tType", nb);
-  ScalarField tValue("tValue", nb);
-  auto hu = Kokkos::create_mirror_view(uType);
-  auto ht = Kokkos::create_mirror_view(tType);
-  auto hv = Kokkos::create_mirror_view(tValue);
-  for (Index f = 0; f < nb; ++f) {
-    const bool plate = side(f) >= 4;
-    hu(f) = static_cast<int>(plate ? VelocityBC::Dirichlet : VelocityBC::Slip);
-    ht(f) = static_cast<int>(plate ? TemperatureBC::FixedValue : TemperatureBC::FixedFlux);
-    hv(f) = side(f) == 4 ? 1.0 : 0.0;       // T = 1 below, 0 above, no flux elsewhere
-  }
-  Kokkos::deep_copy(uType, hu); Kokkos::deep_copy(tType, ht); Kokkos::deep_copy(tValue, hv);
-  solver.setBoundaryTypes(uType);
-  solver.setTemperatureBoundary(tType, tValue);
-
-  auto cc = host(mesh.cellCentre());
-  ScalarField T0("T0", nt);
-  {
-    auto h = Kokkos::create_mirror_view(T0);
-    for (Index c = 0; c < nt; ++c)
-      h(c) = 1.0 - cc(c,2) + 1e-6 * std::cos(PI * cc(c,0) / Lx) * std::sin(PI * cc(c,2));
-    Kokkos::deep_copy(T0, h);
-  }
-  solver.setTemperature(T0);
-
-  VectorField ub("ub", nb, 3), src("src", nt, 3);
-  ScalarField fb("fb", nb);
-  NativeBiCGStab momentum(mesh);
-  NativeCG pressure(mesh, Comm(), true);
-  auto vol = host(mesh.cellVolume());
-
-  std::vector<Real> ts, ls;
-  const int steps = static_cast<int>(std::lround(t1 / dt));
-  for (int k = 0; k < steps; ++k) {
-    solver.advance(ub, fb, src, momentum, pressure);
-    const Real t = (k + 1) * dt;
-    if (t < t0 - 1e-9) continue;
-    auto u = host(solver.velocity());
-    Real e = 0.0;
-    for (Index c = 0; c < nc; ++c)
-      e += (u(c,0)*u(c,0) + u(c,1)*u(c,1) + u(c,2)*u(c,2)) * vol(c);
-    ts.push_back(t);
-    ls.push_back(0.5 * std::log(e));
-  }
-  auto slope = [&](std::size_t a, std::size_t b) {
-    Real st = 0.0, sl = 0.0, stt = 0.0, stl = 0.0;
-    const Real n = static_cast<Real>(b - a);
-    for (std::size_t i = a; i < b; ++i) {
-      st += ts[i]; sl += ls[i]; stt += ts[i] * ts[i]; stl += ts[i] * ls[i];
-    }
-    return (n * stl - st * sl) / (n * stt - st * st);
-  };
-  const std::size_t m = ts.size() / 2;
-  return {slope(0, ts.size()), slope(0, m), slope(m, ts.size()), steps};
+// The onset gate's march: four outer iterations, fixed. Exploration only:
+// VIBEFLOW_OUTER and VIBEFLOW_OUTER_TOL show how far the growth rates AWAY
+// from the zero depend on the marching (ADR-038); the gate runs the defaults.
+Marching onsetMarching() {
+  Marching mk;
+  if (const char* e = std::getenv("VIBEFLOW_OUTER")) mk.outer = std::atoi(e);
+  if (const char* e = std::getenv("VIBEFLOW_OUTER_TOL")) mk.outerTol = std::atof(e);
+  return mk;
 }
 
 // Zero of the quadratic through three (x, y) points, nearest to x[1].
@@ -147,25 +65,6 @@ Real quadraticZero(const Real x[3], const Real y[3]) {
   if (disc < 0.0) return std::nan("");
   const Real r1 = (-b + std::sqrt(disc)) / (2.0 * c), r2 = (-b - std::sqrt(disc)) / (2.0 * c);
   return x[1] + (std::abs(r1) < std::abs(r2) ? r1 : r2);
-}
-
-// Observed order from three meshes with arbitrary refinement ratios:
-// (f1 - f2)/(f2 - f3) = (h1^p - h2^p)/(h2^p - h3^p), solved by bisection.
-Real observedOrder(const Real h[3], const Real f[3]) {
-  const Real d1 = f[0] - f[1], d2 = f[1] - f[2];
-  if (d1 * d2 <= 0.0) return std::nan("");
-  const Real target = d1 / d2;
-  auto g = [&](Real p) {
-    return (std::pow(h[0], p) - std::pow(h[1], p)) / (std::pow(h[1], p) - std::pow(h[2], p))
-           - target;
-  };
-  Real lo = 0.05, hi = 12.0;
-  if (g(lo) * g(hi) > 0.0) return std::nan("");
-  for (int i = 0; i < 200; ++i) {
-    const Real mid = 0.5 * (lo + hi);
-    (g(lo) * g(mid) <= 0.0 ? hi : lo) = mid;
-  }
-  return 0.5 * (lo + hi);
 }
 
 }  // namespace
@@ -189,7 +88,7 @@ int main(int argc, char** argv) {
           // Exploration only: VIBEFLOW_RA runs that one Rayleigh number.
           if (const char* e = std::getenv("VIBEFLOW_RA"))
             if (std::atof(e) != ras[i]) { sig[i] = std::nan(""); continue; }
-          const Growth g = growthRate(N, ras[i]);
+          const Growth g = growthRate(N, ras[i], onsetMarching());
           sig[i] = g.sigma;
           std::printf("  N=%-3d Ra %6.0f  growth rate %+.6e   halves %+.6e %+.6e\n",
                       N, ras[i], g.sigma, g.sigmaEarly, g.sigmaLate);
