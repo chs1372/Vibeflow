@@ -21,6 +21,7 @@
 //      bounded.
 //
 // Run:  sst_mms <fixtures> [gates: any of 1 a b, default all] [grids, default 8 16 32]
+//       VIBEFLOW_STEADY_TOL=<tol> changes the steady criterion (cross-check).
 
 #include "mesh/HexMesh.hpp"
 #include "discretization/FaceFlux.hpp"
@@ -166,7 +167,12 @@ HexMesh family(Index n, Real skew) {
   return HexMesh::generate(n, skew, skew == 0.0 ? "none" : "smooth");
 }
 
-constexpr Real STEADY = 1e-8;
+// The steady criterion: ADR-042's 1e-8 for the order runs; the cross-check
+// (crosscheck_v2b.py) asks for 1e-12 through VIBEFLOW_STEADY_TOL.
+const Real STEADY = [] {
+  const char* e = std::getenv("VIBEFLOW_STEADY_TOL");
+  return e ? std::atof(e) : 1e-8;
+}();
 
 // ------------------------------------------------------------ 1. wall distance
 bool gateWallDistance(const std::string& fixtures) {
@@ -263,6 +269,7 @@ void setupModel(PisoSolver& solver, const HexMesh& m, const Ms& s, SstVariant v)
   Kokkos::deep_copy(wall, hw);
   TurbulenceModel tm;
   tm.variant = v;
+  tm.secondOrderAdvection = true;     // the order these gates judge
   solver.enableTurbulence(tm, wall);
   View1<int> kind("kind", nb);                       // all Dirichlet
   solver.setTurbulenceBoundary(kind, faceAverage(m, s.k), faceAverage(m, s.w));

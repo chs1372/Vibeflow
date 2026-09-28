@@ -60,6 +60,7 @@ class DistributedMesh final : public Mesh {
   View1<Index> boundaryCell()   const override { return bCell_; }
   VectorField  boundaryArea()   const override { return bArea_; }
   VectorField  boundaryCentre() const override { return bCentre_; }
+  VectorField  boundaryCorners() const override { return bCorners_; }
 
   Real maxNonOrthogonality() const override;
   Real maxSkewness()         const override;
@@ -97,6 +98,7 @@ class DistributedMesh final : public Mesh {
 
   View1<Index> owner_, neigh_, bCell_;
   VectorField faceArea_, faceCentre_, bArea_, bCentre_, cellCentre_;
+  VectorField bCorners_;            // (4 nBnd, 3), for the wall distance
   ScalarField cellVolume_;
 };
 

@@ -78,4 +78,8 @@ Real PolyMesh::maxSkewness() const {
   return geometry::maxSkewness(owner_, neigh_, cellCentre_, faceCentre_);
 }
 
+VectorField PolyMesh::boundaryCorners() const {
+  return geometry::faceCorners(points_, bVerts_, nBoundary_);
+}
+
 }  // namespace vibeflow

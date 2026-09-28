@@ -61,6 +61,7 @@ class HexMesh final : public Mesh {
   View1<Index> boundaryCell()   const override { return bCell_; }
   VectorField  boundaryArea()   const override { return bArea_; }
   VectorField  boundaryCentre() const override { return bCentre_; }
+  VectorField  boundaryCorners() const override;
 
   // Defining points and hex connectivity, for output. Geometry alone cannot
   // draw cells, so the writer needs these.

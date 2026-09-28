@@ -119,6 +119,9 @@ Row run(Index n, Real dt, int nsteps, Real nu, Real skew, int outer = 6) {
   // Momentum predictor sweeps per outer iteration (ADR-036).
   if (const char* e = std::getenv("VIBEFLOW_CONV_SWEEPS")) ctl.convectionSweeps = std::atoi(e);
   if (const char* e = std::getenv("VIBEFLOW_CONV_TOL")) ctl.convectionSweepTol = std::atof(e);
+  // Momentum's face value (ADR-042): VIBEFLOW_CONVECTION=linearUpwind.
+  if (const char* e = std::getenv("VIBEFLOW_CONVECTION"))
+    if (std::string(e) == "linearUpwind") ctl.convection = ConvectionScheme::LinearUpwind;
   PisoSolver solver(mesh, nu, dt, ctl);
 
   VectorField u0("u0", nt, 3);
@@ -260,6 +263,8 @@ int main(int argc, char** argv) {
     std::printf("pressure backend: %s (pc rebuild interval %s)\n",
                 backendName().c_str(),
                 std::getenv("VIBEFLOW_PC_REUSE") ? std::getenv("VIBEFLOW_PC_REUSE") : "1");
+    if (const char* e = std::getenv("VIBEFLOW_CONVECTION"))
+      std::printf("momentum convection: %s\n", e);
     std::vector<Row> ortho, dist;
     for (Index n : grids) ortho.push_back(run(n, 2e-4, 2, 0.05, 0.0, outer));
     ok &= report("spatial order / orthogonal  (dt=2e-4, 2 steps)", ortho, 1.85, 2.15, false);

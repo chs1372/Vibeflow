@@ -16,6 +16,11 @@ namespace vibeflow::geometry {
 void quadGeometry(const VectorField& points, const View2<Index>& faceVerts,
                   Index nFaces, VectorField& area, VectorField& centre);
 
+// Corner coordinates of quadrilateral faces, row 4f + t for corner t of face
+// f -- what Mesh::boundaryCorners returns.
+VectorField faceCorners(const std::vector<Vec3>& points, const View2<Index>& faceVerts,
+                        Index nFaces);
+
 // Cell volume and centroid by pyramid decomposition from the average of the
 // cell's face centres.
 void cellGeometry(Index nCells,

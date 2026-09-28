@@ -192,4 +192,18 @@ FaceTopology buildFaces(const std::vector<std::array<Index, 8>>& hexes) {
   return t;
 }
 
+VectorField faceCorners(const std::vector<Vec3>& points, const View2<Index>& faceVerts,
+                        Index nFaces) {
+  auto fv = Kokkos::create_mirror_view_and_copy(HostSpace::memory_space(), faceVerts);
+  VectorField out("faceCorners", 4 * nFaces, 3);
+  auto h = Kokkos::create_mirror_view(out);
+  for (Index f = 0; f < nFaces; ++f)
+    for (int t = 0; t < 4; ++t) {
+      const Vec3& p = points[static_cast<std::size_t>(fv(f, t))];
+      h(4*f + t, 0) = p.x; h(4*f + t, 1) = p.y; h(4*f + t, 2) = p.z;
+    }
+  Kokkos::deep_copy(out, h);
+  return out;
+}
+
 }  // namespace vibeflow::geometry

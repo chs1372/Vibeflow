@@ -125,6 +125,14 @@ enum class TurbulenceBC : int { Dirichlet = 0, ZeroGradient = 1, Wall = 2 };
 
 struct TurbulenceModel {
   SstVariant variant = SstVariant::Menter2003;
+  // Advection of k and omega. First-order upwind by default, as TMR's CFL3D
+  // and FUN3D run it: omega jumps by five orders of magnitude between the
+  // free stream and the first cell on a wall, at a leading edge from one cell
+  // to the next, and central differencing across that jump drives the cell
+  // upstream of it negative (ADR-042's revision). true: upwind plus the
+  // deferred correction to the skew-corrected face value, second order, as
+  // the temperature -- what the manufactured gates verify.
+  bool secondOrderAdvection = false;
   // After each solve k and omega are bounded below by these; the solver
   // counts the cells it touched (boundedCells), which the manufactured gates
   // require to stay zero.
@@ -182,6 +190,20 @@ enum class RhieChowForm : int { Interpolated = 0, Standard = 1 };
 //     Kept so the gate can be shown to fail on it.
 enum class OldFluxForm : int { Exact = 0, V1 = 1 };
 
+// Momentum's convected face value, carried as the deferred correction to
+// upwind (ADR-042).
+//   Linear       - linear interpolation plus the skewness correction. Central:
+//                  it does not see the odd-even mode, and where no diffusion
+//                  damps that mode -- cells long in the stream direction at a
+//                  large cell Peclet number -- a sharp change downstream sets
+//                  it going upstream. The default.
+//   LinearUpwind - the upwind cell's value extrapolated to the face centre by
+//                  its least-squares gradient, u_U + grad(u)_U . (x_f - x_U).
+//                  Exact for a linear field, so second order too; the
+//                  odd-even mode it sees as upwinding does. The flat plate's,
+//                  whose leading edge showed the mode on TMR's grids.
+enum class ConvectionScheme : int { Linear = 0, LinearUpwind = 1 };
+
 struct PisoControls {
   int correctors = 2;        // PISO pressure correctors
   int nonOrthCorrectors = 40;  // iterated to convergence, not a fixed count
@@ -230,6 +252,9 @@ struct PisoControls {
   // here as a diagnostic -- when a run grows without bound, this says in one
   // experiment whether the explicit correction is what is growing.
   bool deferredCorrection = true;
+  // Which second-order face value that correction goes to, for momentum only;
+  // the energy equation and k and omega have their own (see the enum).
+  ConvectionScheme convection = ConvectionScheme::Linear;
   // The non-orthogonal part of the momentum DIFFUSION flux, also carried
   // explicitly on the right-hand side -- and, unlike the pressure equation's
   // non-orthogonal loop, not iterated at all. Its stability limit scales like
@@ -405,6 +430,11 @@ class PisoSolver {
   // equation than the one being solved.
   Vec3 boundaryForce(const View1<int>& mask) const;
 
+  // A new time step size. The next step restarts BDF at first order, so the
+  // old two-level history is never combined with the new step. A steady state
+  // does not depend on the step (ADR-037), so a march may ramp it.
+  void setTimeStep(Real dt) { dt_ = dt; step_ = 0; turbSteps_ = 0; }
+
   StepReport advance(const VectorField& uBoundary, const ScalarField& fBoundary,
                      const VectorField& source, LinearSolver& momentumSolver,
                      LinearSolver& pressureSolver);
@@ -537,8 +567,21 @@ class PisoSolver {
   ScalarField kValue_, wValue_, kSrc_, wSrc_;
   long long bounded_{0};
   Index turbSteps_{0};         // advanceTurbulenceFrozen's own BDF counter
-  void solveTurbulence(LinearSolver& solver, const VectorField& uB);
+  bool nutValid_{false};       // nu_t computed from the current k, omega and u
+  // k and omega, then nu_t: one call per outer iteration, with the BDF
+  // coefficients of the step.
+  void solveTurbulence(LinearSolver& solver, const VectorField& uB, Real aPt, Real a1, Real a2);
   void updateEddyViscosity(const VectorField& uB);
+  // Face values of k and omega: prescribed, the wall's, or the cell's.
+  void turbulenceBoundaryValues(ScalarField& kb, ScalarField& wb) const;
+  // S = sqrt(2 S_ij S_ij) and Omega = sqrt(2 W_ij W_ij) from the velocity
+  // gradient with the momentum equation's boundary values.
+  void velocityInvariants(const VectorField& uB, ScalarField& S, ScalarField& Om) const;
+  void transportSolve(ScalarField& phi, const ScalarField& old, const ScalarField& old2,
+                      const ScalarField& phib, const VectorField& gphi,
+                      const ScalarField& Gc, const ScalarField& Gb,
+                      const ScalarField& diagV, const ScalarField& rhsV,
+                      Real aPt, Real a1, Real a2, LinearSolver& solver);
 
   // Balanced buoyancy (ADR-041).
   bool balanced_{false};

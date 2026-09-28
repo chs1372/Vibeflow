@@ -550,13 +550,20 @@ void DistributedMesh::build(const std::vector<Index>& subGlobal,
   auto h_b = Kokkos::create_mirror_view(bCell_);
   auto h_ba = Kokkos::create_mirror_view(bArea_);
   auto h_bcn = Kokkos::create_mirror_view(bCentre_);
+  bCorners_ = VectorField("bCorners", 4 * nBnd_, 3);
+  auto h_bco = Kokkos::create_mirror_view(bCorners_);
   for (Index f = 0; f < nBnd_; ++f) {
     h_b(f) = localOfSub[topo.bCell[bnd[f]]];
     for (int k = 0; k < 3; ++k) {
       h_ba(f, k) = h_sba(bnd[f], k);
       h_bcn(f, k) = h_sbcn(bnd[f], k);
     }
+    for (int t = 0; t < 4; ++t) {
+      const Vec3& q = subPts[static_cast<std::size_t>(topo.bVerts[bnd[f]][t])];
+      h_bco(4*f + t, 0) = q.x; h_bco(4*f + t, 1) = q.y; h_bco(4*f + t, 2) = q.z;
+    }
   }
+  Kokkos::deep_copy(bCorners_, h_bco);
   auto h_cc = Kokkos::create_mirror_view(cellCentre_);
   auto h_cv = Kokkos::create_mirror_view(cellVolume_);
   for (Index s = 0; s < nSub; ++s) {

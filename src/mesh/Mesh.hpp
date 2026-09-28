@@ -60,6 +60,11 @@ class Mesh {
   virtual View1<Index> boundaryCell()   const = 0;
   virtual VectorField  boundaryArea()   const = 0;
   virtual VectorField  boundaryCentre() const = 0;
+  // The four corners of each boundary face, in the face's own order: row
+  // 4f + t is corner t of boundary face f. The wall distance splits each face
+  // into the triangles its geometry uses (ADR-042). A mesh that does not keep
+  // its points returns an empty field.
+  virtual VectorField  boundaryCorners() const { return VectorField(); }
 
   // -- quality metrics, checked once at start-up and logged
   virtual Real maxNonOrthogonality() const = 0;  // degrees

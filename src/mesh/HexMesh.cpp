@@ -140,4 +140,8 @@ HexMesh HexMesh::fromVertexFile(Index n, const std::string& path) {
   return HexMesh(n, raw::readVertexFile(path));
 }
 
+VectorField HexMesh::boundaryCorners() const {
+  return geometry::faceCorners(points_, bVerts_, nBoundary_);
+}
+
 }  // namespace vibeflow

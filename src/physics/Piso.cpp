@@ -242,11 +242,18 @@ void PisoSolver::assembleMomentum(const VectorField& uB, const VectorField& src)
   auto diag = diag_; auto up = upper_; auto lo = lower_;
   auto w = w_; auto sk = skew_; auto F = F_; auto Fb = Fb_;
   auto b = bSrc_; auto u = u_; auto uo = uOld_; auto uo2 = uOld2_;
+  auto fa = m_.faceArea();
   const Real nu = nu_;
   const bool deferred = ctl_.deferredCorrection;
+  const bool linearUpwind = ctl_.convection == ConvectionScheme::LinearUpwind;
+  auto fcen = m_.faceCentre(); auto ccen = m_.cellCentre();
   const bool dNonOrth = ctl_.diffusionNonOrth;
   Real aPt, a1, a2; bdf(aPt, a1, a2);
   (void)nc;
+  // The eddy viscosity (ADR-042): nu + nu_t on every face. Off, the face
+  // viscosity is exactly nu, as it always was.
+  const bool turb = turb_;
+  auto nut = nut_; auto nutB = nutB_;
 
   Kokkos::deep_copy(diag, 0.0);
   Kokkos::parallel_for("mtrans", Kokkos::RangePolicy<ExecSpace>(0, nt),
@@ -255,10 +262,11 @@ void PisoSolver::assembleMomentum(const VectorField& uB, const VectorField& src)
   Kokkos::parallel_for("mint", Kokkos::RangePolicy<ExecSpace>(0, nf),
     KOKKOS_LAMBDA(const Index f) {
       const Real Fp = Kokkos::max(F(f), 0.0), Fn = Kokkos::max(-F(f), 0.0);
-      Kokkos::atomic_add(&diag(own(f)), nu * a(f) + Fp);
-      Kokkos::atomic_add(&diag(nei(f)), nu * a(f) + Fn);
-      up(f) = -nu * a(f) - Fn;
-      lo(f) = -nu * a(f) - Fp;
+      const Real nuf = turb ? nu + (w(f) * nut(own(f)) + (1.0 - w(f)) * nut(nei(f))) : nu;
+      Kokkos::atomic_add(&diag(own(f)), nuf * a(f) + Fp);
+      Kokkos::atomic_add(&diag(nei(f)), nuf * a(f) + Fn);
+      up(f) = -nuf * a(f) - Fn;
+      lo(f) = -nuf * a(f) - Fp;
     });
   auto bt = bcType_;
   auto FbA = Fb_;
@@ -267,7 +275,8 @@ void PisoSolver::assembleMomentum(const VectorField& uB, const VectorField& src)
       if (bt(f) != static_cast<int>(VelocityBC::ZeroGradient)) {
         // Dirichlet, and slip: a Dirichlet face whose value is the tangential
         // part of the cell velocity (ADR-039), so the same implicit diagonal.
-        Kokkos::atomic_add(&diag(bc(f)), nu * ab(f));
+        const Real nub = turb ? nu + nutB(f) : nu;
+        Kokkos::atomic_add(&diag(bc(f)), nub * ab(f));
       } else {
         // Zero gradient: the face value IS the cell value, so the convective
         // flux through it is implicit. Leaving it on the right-hand side makes
@@ -335,10 +344,31 @@ void PisoSolver::assembleMomentum(const VectorField& uB, const VectorField& src)
           ho += gf[i] * sk(f, i);
         }
         ho += w(f) * u(own(f), d) + (1.0 - w(f)) * u(nei(f), d);
-        const Real ud = F(f) > 0.0 ? u(own(f), d) : u(nei(f), d);
+        const Index upc = F(f) > 0.0 ? own(f) : nei(f);
+        const Real ud = u(upc, d);
+        if (linearUpwind) {
+          // The upwind cell's value, extrapolated to the face centre.
+          ho = ud;
+          for (int i = 0; i < 3; ++i) {
+            const Real gu = d == 0 ? G0(upc, i) : d == 1 ? G1(upc, i) : G2(upc, i);
+            ho += gu * (fcen(f, i) - ccen(upc, i));
+          }
+        }
         const Real dc = deferred ? F(f) * (ho - ud) : 0.0;
-        Kokkos::atomic_add(&b(own(f), d), nu * nonorth - dc);
-        Kokkos::atomic_add(&b(nei(f), d), -nu * nonorth + dc);
+        Real nuf = nu, tflux = 0.0;
+        if (turb) {
+          // div(nu_t grad(u)^T), component d: nu_t,f sum_j (du_j/dx_d)_f S_j.
+          const Real ntf = w(f) * nut(own(f)) + (1.0 - w(f)) * nut(nei(f));
+          nuf = nu + ntf;
+          for (int j = 0; j < 3; ++j) {
+            const Real go = j == 0 ? G0(own(f), d) : j == 1 ? G1(own(f), d) : G2(own(f), d);
+            const Real gn = j == 0 ? G0(nei(f), d) : j == 1 ? G1(nei(f), d) : G2(nei(f), d);
+            tflux += (w(f) * go + (1.0 - w(f)) * gn) * fa(f, j);
+          }
+          tflux *= ntf;
+        }
+        Kokkos::atomic_add(&b(own(f), d), nuf * nonorth - dc + tflux);
+        Kokkos::atomic_add(&b(nei(f), d), -nuf * nonorth + dc - tflux);
       }
     });
   auto bar = m_.boundaryArea();
@@ -368,8 +398,19 @@ void PisoSolver::assembleMomentum(const VectorField& uB, const VectorField& src)
               }
             }
           }
+          const Real nub = turb ? nu + nutB(f) : nu;
+          Real tflux = 0.0;
+          if (turb && !slip) {
+            // The transpose part on a Dirichlet face, from the cell gradient;
+            // a slip face carries no tangential stress, so none there.
+            for (int j = 0; j < 3; ++j) {
+              const Real gj = j == 0 ? G0(bc(f), d) : j == 1 ? G1(bc(f), d) : G2(bc(f), d);
+              tflux += gj * bar(f, j);
+            }
+            tflux *= nutB(f);
+          }
           Kokkos::atomic_add(&b(bc(f), d),
-                             nu * (ab(f) * uB(f, d) + nonorth) - Fb(f) * uB(f, d));
+                             nub * (ab(f) * uB(f, d) + nonorth) - Fb(f) * uB(f, d) + tflux);
         } else {
           // No diffusive flux. The outflow part of the convective flux is in
           // the matrix; only backflow is left here.
@@ -954,6 +995,10 @@ StepReport PisoSolver::advance(const VectorField& uB, const ScalarField& fB,
     Kokkos::deep_copy(TOld2_, TOld_);
     Kokkos::deep_copy(TOld_, T_);
   }
+  if (turb_) {
+    Kokkos::deep_copy(kOld2_, kOld_); Kokkos::deep_copy(kOld_, k_);
+    Kokkos::deep_copy(wOld2_, wOld_); Kokkos::deep_copy(wOld_, w_t_);
+  }
 
   Kokkos::deep_copy(uBnd_, uB);
   // Everything downstream reads u at ghost cells: the convection matrix, the
@@ -970,6 +1015,8 @@ StepReport PisoSolver::advance(const VectorField& uB, const ScalarField& fB,
   VectorField uSweep("uSweep", nt, 3);
   ScalarField TPrev;
   if (energy_) TPrev = ScalarField("TPrev", nt);
+  ScalarField kPrev, wPrev;
+  if (turb_) { kPrev = ScalarField("kPrev", nt); wPrev = ScalarField("wPrev", nt); }
   for (int outer = 0; outer < ctl_.outer; ++outer) {
     Kokkos::deep_copy(uPrev, u_);
     // The buoyancy of the latest temperature: from the last outer iteration's
@@ -984,6 +1031,8 @@ StepReport PisoSolver::advance(const VectorField& uB, const ScalarField& fB,
     if (nSweeps > 1) Kokkos::deep_copy(uSweep, u_);
     // Slip faces take the tangential part of the latest cell velocity.
     if (hasSlip_) slipBoundaryVelocity(uB);
+    // nu_t of the initial state, before the first momentum assembly needs it.
+    if (turb_ && !nutValid_) updateEddyViscosity(hasSlip_ ? uBEff_ : uB);
     assembleMomentum(hasSlip_ ? uBEff_ : uB, srcUse);
     // p_ has not changed since the last pressure solve (or since the last
     // step), so neither has its gradient.
@@ -1048,6 +1097,14 @@ StepReport PisoSolver::advance(const VectorField& uB, const ScalarField& fB,
     // Temperature with the corrected flux, inside the outer loop, so that a
     // converged outer loop carries no coupling lag (ADR-038).
     if (energy_) solveEnergy(momentumSolver);
+    // k and omega likewise, then nu_t for the next outer iteration (ADR-042).
+    if (turb_) {
+      Kokkos::deep_copy(kPrev, k_);
+      Kokkos::deep_copy(wPrev, w_t_);
+      if (hasSlip_) slipBoundaryVelocity(uB);
+      Real aPt, a1, a2; bdf(aPt, a1, a2);
+      solveTurbulence(momentumSolver, hasSlip_ ? uBEff_ : uB, aPt, a1, a2);
+    }
 
     rep.outerUsed = outer + 1;
     Real delta = 0.0, scale = 1e-300;
@@ -1073,6 +1130,21 @@ StepReport PisoSolver::advance(const VectorField& uB, const ScalarField& fB,
         KOKKOS_LAMBDA(const Index c, Real& acc) { acc = Kokkos::max(acc, Kokkos::abs(T(c))); },
         Kokkos::Max<Real>(sT));
       converged = converged && comm_.max(dT) < ctl_.outerTol * comm_.max(sT);
+    }
+    if (turb_) {
+      // So must k and omega, each relative to its size.
+      for (int q2 = 0; q2 < 2; ++q2) {
+        auto now = q2 == 0 ? k_ : w_t_; auto was = q2 == 0 ? kPrev : wPrev;
+        Real dq = 0.0, sq = 1e-300;
+        Kokkos::parallel_reduce("outerDeltaKW", Kokkos::RangePolicy<ExecSpace>(0, nc),
+          KOKKOS_LAMBDA(const Index c, Real& acc) {
+            acc = Kokkos::max(acc, Kokkos::abs(now(c) - was(c)));
+          }, Kokkos::Max<Real>(dq));
+        Kokkos::parallel_reduce("outerScaleKW", Kokkos::RangePolicy<ExecSpace>(0, nc),
+          KOKKOS_LAMBDA(const Index c, Real& acc) { acc = Kokkos::max(acc, Kokkos::abs(now(c))); },
+          Kokkos::Max<Real>(sq));
+        converged = converged && comm_.max(dq) < ctl_.outerTol * comm_.max(sq);
+      }
     }
     if (converged) break;
   }

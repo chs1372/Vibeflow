@@ -35,6 +35,7 @@ class PolyMesh final : public Mesh {
   View1<Index> boundaryCell()   const override { return bCell_; }
   VectorField  boundaryArea()   const override { return bArea_; }
   VectorField  boundaryCentre() const override { return bCentre_; }
+  VectorField  boundaryCorners() const override;
 
   Real maxNonOrthogonality() const override;
   Real maxSkewness()         const override;

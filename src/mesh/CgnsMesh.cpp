@@ -147,4 +147,8 @@ Real CgnsMesh::maxSkewness() const {
   return geometry::maxSkewness(owner_, neigh_, cellCentre_, faceCentre_);
 }
 
+VectorField CgnsMesh::boundaryCorners() const {
+  return geometry::faceCorners(points_, bVerts_, nBoundary_);
+}
+
 }  // namespace vibeflow
