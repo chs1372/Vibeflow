@@ -261,7 +261,9 @@ void PisoSolver::assembleMomentum(const VectorField& uB, const VectorField& src)
   auto FbA = Fb_;
   Kokkos::parallel_for("mbnd", Kokkos::RangePolicy<ExecSpace>(0, nb),
     KOKKOS_LAMBDA(const Index f) {
-      if (bt(f) == static_cast<int>(VelocityBC::Dirichlet)) {
+      if (bt(f) != static_cast<int>(VelocityBC::ZeroGradient)) {
+        // Dirichlet, and slip: a Dirichlet face whose value is the tangential
+        // part of the cell velocity (ADR-039), so the same implicit diagonal.
         Kokkos::atomic_add(&diag(bc(f)), nu * ab(f));
       } else {
         // Zero gradient: the face value IS the cell value, so the convective
@@ -336,17 +338,33 @@ void PisoSolver::assembleMomentum(const VectorField& uB, const VectorField& src)
         Kokkos::atomic_add(&b(nei(f), d), -nu * nonorth + dc);
       }
     });
+  auto bar = m_.boundaryArea();
   Kokkos::parallel_for("msrcBnd", Kokkos::RangePolicy<ExecSpace>(0, nb),
     KOKKOS_LAMBDA(const Index f) {
-      const bool dirichlet = bt(f) == static_cast<int>(VelocityBC::Dirichlet);
+      const bool zeroGradient = bt(f) == static_cast<int>(VelocityBC::ZeroGradient);
+      const bool slip = bt(f) == static_cast<int>(VelocityBC::Slip);
+      // A slip face's non-orthogonal correction acts on the normal component
+      // only (ADR-039): n (k . grad(u.n)). Its tangential stress is zero.
+      Real n[3] = {0.0, 0.0, 0.0}, kgn = 0.0;
+      if (slip && dNonOrth) {
+        const Real mag = Kokkos::sqrt(bar(f,0)*bar(f,0) + bar(f,1)*bar(f,1) + bar(f,2)*bar(f,2));
+        for (int i = 0; i < 3; ++i) n[i] = bar(f, i) / mag;
+        for (int k2 = 0; k2 < 3; ++k2)
+          kgn += kb(f, k2) * (n[0] * G0(bc(f), k2) + n[1] * G1(bc(f), k2) + n[2] * G2(bc(f), k2));
+      }
       for (int d = 0; d < 3; ++d) {
-        if (dirichlet) {
+        if (!zeroGradient) {
           Real nonorth = 0.0;
-          if (dNonOrth)
-            for (int i = 0; i < 3; ++i) {
-              const Real gi = d == 0 ? G0(bc(f), i) : d == 1 ? G1(bc(f), i) : G2(bc(f), i);
-              nonorth += kb(f, i) * gi;
+          if (dNonOrth) {
+            if (slip) {
+              nonorth = n[d] * kgn;
+            } else {
+              for (int i = 0; i < 3; ++i) {
+                const Real gi = d == 0 ? G0(bc(f), i) : d == 1 ? G1(bc(f), i) : G2(bc(f), i);
+                nonorth += kb(f, i) * gi;
+              }
             }
+          }
           Kokkos::atomic_add(&b(bc(f), d),
                              nu * (ab(f) * uB(f, d) + nonorth) - Fb(f) * uB(f, d));
         } else {
@@ -863,21 +881,35 @@ Vec3 PisoSolver::boundaryForce(const View1<int>& mask) const {
   auto G0 = g0, G1 = g1, G2 = g2;
 
   Real fx = 0.0, fy = 0.0, fz = 0.0;
-  auto accumulate = [&](int d, const VectorField& G) {
+  auto bt = bcType_; auto ubv = uBnd_;
+  auto accumulate = [&](int d) {
     Real acc = 0.0;
     Kokkos::parallel_reduce("force", Kokkos::RangePolicy<ExecSpace>(0, nb),
       KOKKOS_LAMBDA(const Index f, Real& a) {
         if (!mask(f)) return;
         // Pressure acts along the outward normal; the viscous term is the
         // diffusive flux the momentum equation applies through this face,
-        // with the sign flipped to give the force ON the body.
-        Real visc = ab(f) * (0.0 - u(bc(f), d));
-        for (int i = 0; i < 3; ++i) visc += kb(f, i) * G(bc(f), i);
+        // with the sign flipped to give the force ON the body: against the
+        // face's own velocity (zero on a fixed wall), none through a
+        // zero-gradient face, the normal component alone through a slip face.
+        Real visc = 0.0;
+        if (bt(f) == static_cast<int>(VelocityBC::Dirichlet)) {
+          visc = ab(f) * (ubv(f, d) - u(bc(f), d));
+          for (int i = 0; i < 3; ++i)
+            visc += kb(f, i) * (d == 0 ? G0(bc(f), i) : d == 1 ? G1(bc(f), i) : G2(bc(f), i));
+        } else if (bt(f) == static_cast<int>(VelocityBC::Slip)) {
+          const Real mag = Kokkos::sqrt(bar(f,0)*bar(f,0) + bar(f,1)*bar(f,1) + bar(f,2)*bar(f,2));
+          const Real n0 = bar(f,0) / mag, n1 = bar(f,1) / mag, n2 = bar(f,2) / mag;
+          Real kgn = 0.0;
+          for (int k2 = 0; k2 < 3; ++k2)
+            kgn += kb(f, k2) * (n0 * G0(bc(f), k2) + n1 * G1(bc(f), k2) + n2 * G2(bc(f), k2));
+          visc = ab(f) * (ubv(f, d) - u(bc(f), d)) + (d == 0 ? n0 : d == 1 ? n1 : n2) * kgn;
+        }
         a += pb(f) * bar(f, d) - nu * visc;
       }, acc);
     return acc;
   };
-  fx = accumulate(0, G0); fy = accumulate(1, G1); fz = accumulate(2, G2);
+  fx = accumulate(0); fy = accumulate(1); fz = accumulate(2);
   return {comm_.sum(fx), comm_.sum(fy), comm_.sum(fz)};
 }
 
@@ -904,11 +936,17 @@ StepReport PisoSolver::advance(const VectorField& uB, const ScalarField& fB,
   Kokkos::deep_copy(uOld2_, uOld_);
   Kokkos::deep_copy(uOld_, u_);
   Kokkos::deep_copy(FOld_, F_);
+  if (energy_) {
+    Kokkos::deep_copy(TOld2_, TOld_);
+    Kokkos::deep_copy(TOld_, T_);
+  }
 
   Kokkos::deep_copy(uBnd_, uB);
   // Everything downstream reads u at ghost cells: the convection matrix, the
-  // deferred correction, the velocity gradients.
+  // deferred correction, the velocity gradients. T likewise, in the energy
+  // equation's convection and gradient.
   sync(u_); sync(p_);
+  if (energy_) sync(T_);
   if (exactOldFlux() && ctl_.consistentRhieChow) { sync(uOld_); computeOldResidual(); }
 
   Stopwatch _sw(&t_.total);
@@ -916,12 +954,20 @@ StepReport PisoSolver::advance(const VectorField& uB, const ScalarField& fB,
   VectorField uPrev("uPrev", nt, 3);
 
   VectorField uSweep("uSweep", nt, 3);
+  ScalarField TPrev;
+  if (energy_) TPrev = ScalarField("TPrev", nt);
   for (int outer = 0; outer < ctl_.outer; ++outer) {
     Kokkos::deep_copy(uPrev, u_);
+    // The buoyancy of the latest temperature: from the last outer iteration's
+    // energy solve, or the last step's on the first.
+    if (energy_) { Kokkos::deep_copy(TPrev, T_); addBuoyancy(src); }
+    const VectorField& srcUse = energy_ ? srcTotal_ : src;
     const int nSweeps = ctl_.convectionSweeps > 1 ? ctl_.convectionSweeps : 1;
     for (int cs = 0; cs < nSweeps; ++cs) {
     if (nSweeps > 1) Kokkos::deep_copy(uSweep, u_);
-    assembleMomentum(uB, src);
+    // Slip faces take the tangential part of the latest cell velocity.
+    if (hasSlip_) slipBoundaryVelocity(uB);
+    assembleMomentum(hasSlip_ ? uBEff_ : uB, srcUse);
     // p_ has not changed since the last pressure solve (or since the last
     // step), so neither has its gradient.
     if (!gpValid_) { gradP(p_, gp_); gpValid_ = true; }
@@ -982,6 +1028,10 @@ StepReport PisoSolver::advance(const VectorField& uB, const ScalarField& fB,
       sync(u_);
     }
 
+    // Temperature with the corrected flux, inside the outer loop, so that a
+    // converged outer loop carries no coupling lag (ADR-038).
+    if (energy_) solveEnergy(momentumSolver);
+
     rep.outerUsed = outer + 1;
     Real delta = 0.0, scale = 1e-300;
     auto u = u_; auto q = uPrev;
@@ -993,8 +1043,25 @@ StepReport PisoSolver::advance(const VectorField& uB, const ScalarField& fB,
       KOKKOS_LAMBDA(const Index c, Real& acc) {
         for (int d = 0; d < 3; ++d) acc = Kokkos::max(acc, Kokkos::abs(u(c, d)));
       }, Kokkos::Max<Real>(scale));
-    if (comm_.max(delta) < ctl_.outerTol * comm_.max(scale)) break;
+    bool converged = comm_.max(delta) < ctl_.outerTol * comm_.max(scale);
+    if (energy_) {
+      // The temperature must have stopped moving too, relative to its size.
+      Real dT = 0.0, sT = 1e-300;
+      auto T = T_; auto tp = TPrev;
+      Kokkos::parallel_reduce("outerDeltaT", Kokkos::RangePolicy<ExecSpace>(0, nc),
+        KOKKOS_LAMBDA(const Index c, Real& acc) {
+          acc = Kokkos::max(acc, Kokkos::abs(T(c) - tp(c)));
+        }, Kokkos::Max<Real>(dT));
+      Kokkos::parallel_reduce("outerScaleT", Kokkos::RangePolicy<ExecSpace>(0, nc),
+        KOKKOS_LAMBDA(const Index c, Real& acc) { acc = Kokkos::max(acc, Kokkos::abs(T(c))); },
+        Kokkos::Max<Real>(sT));
+      converged = converged && comm_.max(dT) < ctl_.outerTol * comm_.max(sT);
+    }
+    if (converged) break;
   }
+  // The force integral rebuilds the gradient the momentum equation used, so
+  // it needs the slip faces' values as the last assembly took them.
+  if (hasSlip_) Kokkos::deep_copy(uBnd_, uBEff_);
 
   ++step_;
   rep.nonOrthSweeps = lastNonOrth_;
@@ -1019,10 +1086,7 @@ StepReport PisoSolver::advance(const VectorField& uB, const ScalarField& fB,
   return rep;
 }
 
-// ------------------------------------------------------------ v2a, stubbed
-// ADR-038 and ADR-039: the entry points exist so that the C++ gates can be
-// written against them and shown to fail before the implementation does.
-// Each one refuses.
+// --------------------------------------------------------------- v2a
 void PisoSolver::setBoundaryTypes(const View1<int>& bcType) {
   bcType_ = bcType;
   Index slip = 0;
@@ -1032,24 +1096,196 @@ void PisoSolver::setBoundaryTypes(const View1<int>& bcType) {
     KOKKOS_LAMBDA(const Index f, Index& a) {
       a += bt(f) == static_cast<int>(VelocityBC::Slip) ? 1 : 0;
     }, slip);
-  if (comm_.sum(slip) > 0)
-    throw std::runtime_error("slip velocity boundaries are not implemented (ADR-039)");
+  // Summed over ranks, so that every rank takes the same path through
+  // advance whether or not it owns a slip face itself.
+  hasSlip_ = comm_.sum(slip) > 0;
+  if (hasSlip_ && uBEff_.extent(0) == 0)
+    uBEff_ = VectorField("uBEff", m_.nBoundaryFaces(), 3);
 }
 
-void PisoSolver::enableEnergy(const EnergyModel&) {
-  throw std::runtime_error("the energy equation is not implemented (ADR-038)");
+void PisoSolver::slipBoundaryVelocity(const VectorField& uB) {
+  const Index nb = m_.nBoundaryFaces();
+  auto bt = bcType_; auto bc = m_.boundaryCell(); auto bar = m_.boundaryArea();
+  auto u = u_; auto out = uBEff_;
+  Kokkos::parallel_for("slipValues", Kokkos::RangePolicy<ExecSpace>(0, nb),
+    KOKKOS_LAMBDA(const Index f) {
+      if (bt(f) != static_cast<int>(VelocityBC::Slip)) {
+        for (int d = 0; d < 3; ++d) out(f, d) = uB(f, d);
+        return;
+      }
+      const Real mag = Kokkos::sqrt(bar(f,0)*bar(f,0) + bar(f,1)*bar(f,1) + bar(f,2)*bar(f,2));
+      Real n[3], un = 0.0;
+      for (int i = 0; i < 3; ++i) { n[i] = bar(f, i) / mag; un += u(bc(f), i) * n[i]; }
+      for (int d = 0; d < 3; ++d) out(f, d) = u(bc(f), d) - un * n[d];
+    });
+  Kokkos::fence();
 }
-void PisoSolver::setTemperatureBoundary(const View1<int>&, const ScalarField&) {
-  throw std::runtime_error("the energy equation is not implemented (ADR-038)");
+
+void PisoSolver::enableEnergy(const EnergyModel& model) {
+  const Index nt = m_.nTotal(), nb = m_.nBoundaryFaces();
+  energy_ = true;
+  em_ = model;
+  T_ = ScalarField("T", nt);
+  TOld_ = ScalarField("TOld", nt);
+  TOld2_ = ScalarField("TOld2", nt);
+  TSrc_ = ScalarField("TSrc", nt);
+  tType_ = View1<int>("tType", nb);          // all FixedValue ...
+  tValue_ = ScalarField("tValue", nb);       // ... at zero
+  srcTotal_ = VectorField("srcTotal", nt, 3);
 }
-void PisoSolver::setTemperatureSource(const ScalarField&) {
-  throw std::runtime_error("the energy equation is not implemented (ADR-038)");
+
+void PisoSolver::setTemperatureBoundary(const View1<int>& type, const ScalarField& value) {
+  if (!energy_) throw std::runtime_error("setTemperatureBoundary before enableEnergy");
+  Kokkos::deep_copy(tType_, type);
+  Kokkos::deep_copy(tValue_, value);
 }
-void PisoSolver::setTemperature(const ScalarField&) {
-  throw std::runtime_error("the energy equation is not implemented (ADR-038)");
+
+void PisoSolver::setTemperatureSource(const ScalarField& source) {
+  if (!energy_) throw std::runtime_error("setTemperatureSource before enableEnergy");
+  Kokkos::deep_copy(TSrc_, source);
 }
+
+void PisoSolver::setTemperature(const ScalarField& T) {
+  if (!energy_) throw std::runtime_error("setTemperature before enableEnergy");
+  Kokkos::deep_copy(T_, T);
+  Kokkos::deep_copy(TOld_, T);
+  Kokkos::deep_copy(TOld2_, T);
+  sync(T_);
+}
+
+void PisoSolver::addBuoyancy(const VectorField& src) {
+  // f = -(T - T_ref(x)) betaG per unit mass. T_ref is evaluated at the cell
+  // centre in the same arithmetic a caller uses to write the stratification
+  // there, so a fluid resting in it feels exactly no force.
+  auto s = srcTotal_; auto T = T_; auto cc = m_.cellCentre();
+  const Real b0 = em_.betaG.x, b1 = em_.betaG.y, b2 = em_.betaG.z;
+  const Real tr = em_.tRef, g0 = em_.tRefGrad.x, g1 = em_.tRefGrad.y, g2 = em_.tRefGrad.z;
+  Kokkos::parallel_for("buoyancy", Kokkos::RangePolicy<ExecSpace>(0, m_.nTotal()),
+    KOKKOS_LAMBDA(const Index c) {
+      const Real dT = T(c) - (tr + g0 * cc(c,0) + g1 * cc(c,1) + g2 * cc(c,2));
+      s(c,0) = src(c,0) - dT * b0;
+      s(c,1) = src(c,1) - dT * b1;
+      s(c,2) = src(c,2) - dT * b2;
+    });
+  Kokkos::fence();
+}
+
+void PisoSolver::gradT(VectorField& g) const {
+  // The prescribed temperature on a FixedValue face; the cell's own on a
+  // FixedFlux face -- exact for the adiabatic walls the gates use, first
+  // order in the boundary value where a non-zero flux is prescribed.
+  const Index nb = m_.nBoundaryFaces();
+  ScalarField tb("tb", nb);
+  auto bc = m_.boundaryCell(); auto tt = tType_; auto tv = tValue_; auto T = T_;
+  Kokkos::parallel_for("tb", Kokkos::RangePolicy<ExecSpace>(0, nb),
+    KOKKOS_LAMBDA(const Index f) {
+      tb(f) = tt(f) == static_cast<int>(TemperatureBC::FixedValue) ? tv(f) : T(bc(f));
+    });
+  Kokkos::fence();
+  grad_(T_, tb, g);
+}
+
+void PisoSolver::solveEnergy(LinearSolver& solver) {
+  // One implicit solve for T with the current face flux, assembled as a
+  // velocity component is (assembleMomentum): BDF2, upwind in the matrix
+  // plus the deferred correction to the skew-corrected face value, diffusion
+  // with the non-orthogonal correction on the right-hand side.
+  const Index nt = m_.nTotal(), nf = m_.nInternalFaces(), nb = m_.nBoundaryFaces();
+  auto own = m_.owner(); auto nei = m_.neighbour(); auto bc = m_.boundaryCell();
+  auto vol = m_.cellVolume(); auto bar = m_.boundaryArea();
+  auto a = diff_.aInt(); auto ab = diff_.aBnd(); auto wo = diff_.wOwner();
+  auto k = diff_.kInt(); auto kb = diff_.kBnd();
+  auto w = w_; auto sk = skew_; auto F = F_; auto Fb = Fb_;
+  auto T = T_; auto To = TOld_; auto To2 = TOld2_; auto S = TSrc_;
+  auto tt = tType_; auto tv = tValue_;
+  const Real kap = em_.kappa;
+  const bool deferred = ctl_.deferredCorrection;
+  const bool dNonOrth = ctl_.diffusionNonOrth;
+  Real aPt, a1, a2; bdf(aPt, a1, a2);
+
+  VectorField g("gT", nt, 3);
+  gradT(g);
+
+  LinearSystem sys(m_);
+  sys.zero();
+  auto diag = sys.diag(); auto up = sys.upper(); auto lo = sys.lower(); auto b = sys.source();
+  Kokkos::parallel_for("eVol", Kokkos::RangePolicy<ExecSpace>(0, nt),
+    KOKKOS_LAMBDA(const Index c) {
+      diag(c) = aPt * vol(c);
+      b(c) = S(c) * vol(c) - (a1 * To(c) + a2 * To2(c)) * vol(c);
+    });
+  Kokkos::fence();
+  Kokkos::parallel_for("eInt", Kokkos::RangePolicy<ExecSpace>(0, nf),
+    KOKKOS_LAMBDA(const Index f) {
+      const Real Fp = Kokkos::max(F(f), 0.0), Fn = Kokkos::max(-F(f), 0.0);
+      Kokkos::atomic_add(&diag(own(f)), kap * a(f) + Fp);
+      Kokkos::atomic_add(&diag(nei(f)), kap * a(f) + Fn);
+      up(f) = -kap * a(f) - Fn;
+      lo(f) = -kap * a(f) - Fp;
+      Real nonorth = 0.0, ho = 0.0;
+      for (int i = 0; i < 3; ++i) {
+        const Real gf = w(f) * g(own(f), i) + (1.0 - w(f)) * g(nei(f), i);
+        const Real gfo = wo(f) * g(own(f), i) + (1.0 - wo(f)) * g(nei(f), i);
+        if (dNonOrth) nonorth += k(f, i) * gfo;
+        ho += gf * sk(f, i);
+      }
+      ho += w(f) * T(own(f)) + (1.0 - w(f)) * T(nei(f));
+      const Real ud = F(f) > 0.0 ? T(own(f)) : T(nei(f));
+      const Real dc = deferred ? F(f) * (ho - ud) : 0.0;
+      Kokkos::atomic_add(&b(own(f)), kap * nonorth - dc);
+      Kokkos::atomic_add(&b(nei(f)), -kap * nonorth + dc);
+    });
+  Kokkos::parallel_for("eBnd", Kokkos::RangePolicy<ExecSpace>(0, nb),
+    KOKKOS_LAMBDA(const Index f) {
+      if (tt(f) == static_cast<int>(TemperatureBC::FixedValue)) {
+        Real nonorth = 0.0;
+        if (dNonOrth)
+          for (int i = 0; i < 3; ++i) nonorth += kb(f, i) * g(bc(f), i);
+        Kokkos::atomic_add(&diag(bc(f)), kap * ab(f));
+        // Whatever crosses a fixed-temperature face carries its temperature.
+        Kokkos::atomic_add(&b(bc(f)), kap * (ab(f) * tv(f) + nonorth) - Fb(f) * tv(f));
+      } else {
+        const Real mag = Kokkos::sqrt(bar(f,0)*bar(f,0) + bar(f,1)*bar(f,1) + bar(f,2)*bar(f,2));
+        // Outflow carries the cell's own temperature, implicitly; inflow
+        // carries it too, explicitly, since no inflow temperature is given.
+        Kokkos::atomic_add(&diag(bc(f)), Kokkos::max(Fb(f), 0.0));
+        Kokkos::atomic_add(&b(bc(f)), tv(f) * mag - Kokkos::min(Fb(f), 0.0) * T(bc(f)));
+      }
+    });
+  Kokkos::fence();
+
+  solver.notifyMatrixChanged();
+  ScalarField x("Tnew", nt);
+  Kokkos::deep_copy(x, T_);
+  solver.solve(sys, x, 1e-13, 1e-18, 5000);
+  Kokkos::deep_copy(T_, x);
+  sync(T_);
+}
+
 ScalarField PisoSolver::boundaryHeatFlux() const {
-  throw std::runtime_error("the energy equation is not implemented (ADR-038)");
+  const Index nt = m_.nTotal(), nb = m_.nBoundaryFaces();
+  ScalarField q("boundaryHeatFlux", nb);
+  if (!energy_) return q;
+  VectorField g("gTq", nt, 3);
+  gradT(g);
+  auto bc = m_.boundaryCell(); auto bar = m_.boundaryArea();
+  auto ab = diff_.aBnd(); auto kb = diff_.kBnd();
+  auto T = T_; auto tt = tType_; auto tv = tValue_;
+  const Real kap = em_.kappa;
+  const bool dNonOrth = ctl_.diffusionNonOrth;
+  Kokkos::parallel_for("heatFlux", Kokkos::RangePolicy<ExecSpace>(0, nb),
+    KOKKOS_LAMBDA(const Index f) {
+      if (tt(f) == static_cast<int>(TemperatureBC::FixedValue)) {
+        Real nonorth = 0.0;
+        if (dNonOrth)
+          for (int i = 0; i < 3; ++i) nonorth += kb(f, i) * g(bc(f), i);
+        q(f) = kap * (ab(f) * (tv(f) - T(bc(f))) + nonorth);
+      } else {
+        q(f) = tv(f) * Kokkos::sqrt(bar(f,0)*bar(f,0) + bar(f,1)*bar(f,1) + bar(f,2)*bar(f,2));
+      }
+    });
+  Kokkos::fence();
+  return q;
 }
 
 }  // namespace vibeflow

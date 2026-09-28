@@ -39,12 +39,17 @@
 #include "physics/Piso.hpp"
 #include "linalg/NativeBiCGStab.hpp"
 #include "linalg/NativeCG.hpp"
+#ifdef VIBEFLOW_HAVE_PETSC
+#include "linalg/PetscSolver.hpp"
+#include <petscsys.h>
+#endif
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -63,6 +68,26 @@ constexpr Real PR = 0.71;
 
 template <class V> auto host(const V& v) {
   return Kokkos::create_mirror_view_and_copy(HostSpace::memory_space(), v);
+}
+
+// The pressure backend. The discretisation and the tolerances do not change
+// with it, so neither does the steady state; only the cost does. BoomerAMG
+// where PETSc is built, as the cylinder uses -- 0.41 s a step on 128^2 against
+// Jacobi CG's 1.47 -- and VIBEFLOW_PRESSURE selects another ("native", ...).
+std::unique_ptr<LinearSolver> makePressureSolver(const Mesh& mesh) {
+  const char* e = std::getenv("VIBEFLOW_PRESSURE");
+#ifdef VIBEFLOW_HAVE_PETSC
+  const std::string cfg = e ? e : "cg+hypre";
+#else
+  const std::string cfg = e ? e : "native";
+#endif
+  if (cfg == "native") return std::make_unique<NativeCG>(mesh, Comm(), true);
+#ifdef VIBEFLOW_HAVE_PETSC
+  return std::make_unique<PetscSolver>(mesh, Comm(), cfg);
+#else
+  std::fprintf(stderr, "built without PETSc; VIBEFLOW_PRESSURE=%s unavailable\n", cfg.c_str());
+  std::exit(2);
+#endif
 }
 
 struct Result { Real nusselt, uMax, vMax; int steps; Real resid; double seconds; };
@@ -130,14 +155,17 @@ Result run(Index N, const Reference& ref, bool verbose) {
   VectorField ub("ub", nb, 3), src("src", nt, 3);
   ScalarField fb("fb", nb);
   NativeBiCGStab momentum(mesh);
-  NativeCG pressure(mesh, Comm(), true);
+  auto pressurePtr = makePressureSolver(mesh);
+  LinearSolver& pressure = *pressurePtr;
 
   std::vector<Real> pu(nc * 3, 0.0), pT(nc, 0.0);
   {
     auto T = host(solver.temperature());
     for (Index c = 0; c < nc; ++c) pT[c] = T(c);
   }
-  const int maxSteps = 400000;
+  int maxSteps = 400000;
+  // Exploration only: cut the march short, to time it.
+  if (const char* e = std::getenv("VIBEFLOW_MAX_STEPS")) maxSteps = std::atoi(e);
   int step = 0;
   Real resid = 1e300;
   for (; step < maxSteps; ++step) {
@@ -187,6 +215,9 @@ Result run(Index N, const Reference& ref, bool verbose) {
 }  // namespace
 
 int main(int argc, char** argv) {
+#ifdef VIBEFLOW_HAVE_PETSC
+  PetscInitialize(&argc, &argv, nullptr, nullptr);
+#endif
   Kokkos::initialize(argc, argv);
   int rc = 0;
   {
@@ -259,5 +290,8 @@ int main(int argc, char** argv) {
     rc = ok ? 0 : 1;
   }
   Kokkos::finalize();
+#ifdef VIBEFLOW_HAVE_PETSC
+  PetscFinalize();
+#endif
   return rc;
 }

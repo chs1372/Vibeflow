@@ -30,8 +30,11 @@ PROTO = ROOT / "prototype"
 FIX = ROOT / "tests" / "fixtures"
 HEAT = ROOT / "build" / "tests" / "heat_transfer"
 TG = ROOT / "build" / "tests" / "taylor_green"
+# Gate 2 as Python runs it: dt = 0.2, and converged to a change per step of
+# 1e-12 rather than the C++ order runs' 1e-8 (ADR-038's revision), since the
+# steady rows are compared to 1e-6.
 ENV = {"OMP_PROC_BIND": "false", "PATH": "/usr/bin:/bin",
-       "VIBEFLOW_BOUSSINESQ_DT": "0.2"}
+       "VIBEFLOW_BOUSSINESQ_DT": "0.2", "VIBEFLOW_STEADY_TOL": "1e-12"}
 TRANSIENT, STEADY = 1e-4, 1e-6
 GRIDS = (6, 12)
 FAMILIES = (("orthogonal", 0.0), ("smooth distortion", 0.25))

@@ -159,7 +159,7 @@ int main(int argc, char** argv) {
         const Real ratio = slip[i] / exact[i];
         const bool good = ratio <= 1.1;
         ok &= good;
-        std::printf("  %-18s n=%-3d L2(u) slip %.6e   exact walls %.6e   ratio %.3f (<= 1.1) %s\n",
+        std::printf("  %-18s n=%-3d L2(u) slip %.10e   exact walls %.10e   ratio %.3f (<= 1.1) %s\n",
                     fm.tag, grids[i], slip[i], exact[i], ratio, good ? "ok" : "TOO LARGE");
       }
       if (grids.size() < 3) continue;

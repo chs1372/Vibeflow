@@ -361,7 +361,7 @@ bool gateEnergyExactFlow(const std::vector<Index>& grids) {
       for (Index c = 0; c < mesh.nCells(); ++c) e[c] = T[c] - tExact(centre(cc, c), steps * dt);
       errs.push_back(l2(mesh, e, 1));
       hs.push_back(1.0 / n);
-      std::printf("  %-18s n=%-3d L2(T) %.6e\n", fm.tag, n, errs.back());
+      std::printf("  %-18s n=%-3d L2(T) %.10e\n", fm.tag, n, errs.back());
     }
     if (grids.size() > 1)
       ok &= verdict(std::string("spatial, ") + fm.tag, orders(errs, hs), fm.lo, fm.hi,
@@ -462,7 +462,12 @@ std::pair<Real, Real> steadyErrors(const HexMesh& mesh, const Steady& s) {
 bool gateBoussinesqMms(const std::vector<Index>& grids, const std::string& fixtures,
                        Real orderDt) {
   std::printf("\n2. steady manufactured Boussinesq flow (beta g = (0, 0, -1))\n");
-  const Real tolOrder = 1e-8, tol = 1e-12;     // see the header
+  Real tolOrder = 1e-8;                        // see the header
+  const Real tol = 1e-12;
+  // The cross-check compares steady states to 1e-6 and so needs them
+  // converged further than the order runs do; on its 6^3 mesh the wobble
+  // allows it.
+  if (const char* e = std::getenv("VIBEFLOW_STEADY_TOL")) tolOrder = std::atof(e);
   bool ok = true;
   struct Fam { Real skew, lo, hi; bool approaching; const char* tag; };
   for (const Fam& fm : {Fam{0.0, 1.85, 2.15, false, "orthogonal"},
@@ -473,7 +478,7 @@ bool gateBoussinesqMms(const std::vector<Index>& grids, const std::string& fixtu
       const Steady s = steadyBoussinesq(mesh, orderDt, tolOrder);
       const auto e = steadyErrors(mesh, s);
       eu.push_back(e.first); eT.push_back(e.second); hs.push_back(1.0 / n);
-      std::printf("  %-18s n=%-3d steps %-4d L2(u) %.6e  L2(T) %.6e  last change %.0e\n",
+      std::printf("  %-18s n=%-3d steps %-4d L2(u) %.10e  L2(T) %.10e  last change %.0e\n",
                   fm.tag, n, s.steps, e.first, e.second, s.change);
       ok &= s.change < tolOrder;
     }

@@ -35,6 +35,7 @@
 #include "linalg/NativeCG.hpp"
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <exception>
 #include <string>
 #include <vector>
@@ -65,6 +66,10 @@ Growth growthRate(Index N, Real Ra, Real dt = 0.01, Real t0 = 1.5, Real t1 = 3.5
   ctl.outer = 4;           // fixed: the neutral point does not depend on it
   ctl.outerTol = 0.0;
   ctl.correctors = 2;
+  // Exploration only: how far the growth rates AWAY from the zero depend on
+  // the marching. The gate runs the values above.
+  if (const char* e = std::getenv("VIBEFLOW_OUTER")) ctl.outer = std::atoi(e);
+  if (const char* e = std::getenv("VIBEFLOW_OUTER_TOL")) ctl.outerTol = std::atof(e);
   PisoSolver solver(mesh, 1.0, dt, ctl);
   EnergyModel em;
   em.kappa = 1.0;
@@ -181,6 +186,9 @@ int main(int argc, char** argv) {
       for (Index N : grids) {
         Real sig[3];
         for (int i = 0; i < 3; ++i) {
+          // Exploration only: VIBEFLOW_RA runs that one Rayleigh number.
+          if (const char* e = std::getenv("VIBEFLOW_RA"))
+            if (std::atof(e) != ras[i]) { sig[i] = std::nan(""); continue; }
           const Growth g = growthRate(N, ras[i]);
           sig[i] = g.sigma;
           std::printf("  N=%-3d Ra %6.0f  growth rate %+.6e   halves %+.6e %+.6e\n",
