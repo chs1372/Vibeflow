@@ -2676,6 +2676,64 @@ randomly perturbed fixture mesh, in both forms.
 **Cost.** One more Poisson solve per outer iteration, with a constant matrix
 and a warm start.
 
+### Results
+
+**Every gate passes, and the balanced form becomes the default.**
+
+1. *Rest, constant reference* (the harnesses' gate 4): max|u| 1.0e-14 and
+   4.7e-15 in C++ (Cartesian, distorted), 2.2e-14 and 7.8e-15 in Python,
+   where the cell form reaches 0.47 and 0.48. T stays at 1 − z to 2e-15.
+2. *Rest, curved stratification* (gate 5): max|u| 1.3e-14 and 1.2e-14 in
+   C++, 2.0e-14 and 1.2e-14 in Python; T even within each layer to 4e-15.
+3. *Accuracy unchanged.* The temperature gate has no buoyancy and repeats to
+   every digit. The steady Boussinesq orders are the cell form's to three
+   digits — C++ u 2.021 / 2.013, T 2.003 / 2.024; Python u 2.044 / 2.030,
+   T 2.005 / 2.038 — while the errors themselves move by 0.03–0.12%, the two
+   forms differing at O(h²); dt = 0.2 against 2.0 still agree to 2.8e-12
+   (u) and 1.0e-10 (T). Gate 3 holds at 1.1e-14 / 3.9e-15. Both benchmarks
+   and the transient gate pass:
+
+   | | cell form | balanced form |
+   | --- | --- | --- |
+   | Rayleigh–Bénard onset, 16 / 24 / 32 cells | 1678.630 / 1694.884 / 1700.563 | 1696.327 / 1702.737 / 1704.959 |
+   | observed order, extrapolated Ra_c | 2.005, 1707.842 (+0.005%) | 2.026, 1707.768 (+0.000%) |
+   | growth rate at Ra 1800, 16 / 24 / 32 cells | +32.7% / +14.4% / +8.0% | +12.4% / +5.5% / +3.0% |
+   | observed order, extrapolation | 2.021, −0.030% | 2.026, −0.007% |
+   | temporal orders | 1.986, 2.008 | 1.989, 2.009 |
+   | de Vahl Davis cavity, extrapolated Nu, Ra 10³ / 10⁴ / 10⁵ / 10⁶ | 1.11779 / 2.24482 / 4.52161 / 8.81945 | 1.11779 / 2.24481 / 4.52149 / 8.81858 |
+   | cavity, 128², largest departure of a velocity maximum | +0.84% | +0.84% |
+
+   On the Rayleigh–Bénard problems the balanced form is the more accurate on
+   every mesh — on the finest onset mesh it is 0.16% low, the cell form
+   0.42%. On the cavity the two agree to 1e-4 in Nu, and the balanced
+   form's largest departure of an extrapolated Nu is −0.075% (Ra = 10⁶,
+   observed order 1.87), against 0.5% allowed.
+4. *Cross-check and MPI in the balanced form.* Python against C++, both
+   balanced: 16 rows, worst 9.5e-11, the steady Boussinesq rows 5.2e-11
+   (bound 1e-6). Two to four ranks within 4.8e-15 (u) and 2.5e-15 (T) of the
+   serial run (bound 1e-10). The serial answer is the balanced one:
+   5.95961341332706e-03 where the cell form gave 5.96211681754360e-03.
+5. *v1 untouched:* SUITE_TBD
+
+Reported, not gated: on the randomly perturbed fixture mesh, where the
+layers are gone, the resting fluid with T_ref = 0.5 reaches 0.037 in the
+balanced form against 0.50 in the cell form, in both codes.
+
+**Decision.** By the rule above the balanced form is now the default for
+buoyant runs — `EnergyModel.form = BuoyancyForm::Balanced` in C++,
+`buoyancy_form="balanced"` in Python — and the cell form stays selectable
+(`VIBEFLOW_BUOYANCY=cell` in every harness) as the recorded baseline.
+
+**Cost, measured.** Gate 2 of the C++ heat-transfer gates on 16³ plus its
+dt check, one thread: 218 s in the cell form, 263 s balanced (+21%). The
+cavity at Ra = 10⁴ on 32² and 64², one thread, under the same load: 84 s
+against 144 s (+71%). The p_h solve is Jacobi-preconditioned CG to 1e-15
+of its right-hand side, whatever backend the pressure uses, and beside the
+cavity's BoomerAMG pressure it is the dearer of the two solves; the whole
+cavity gate took 243 minutes balanced, on one shared core, where ADR-038's
+cell-form run took 71 on two. Giving p_h the pressure's backend is left as
+a follow-up; it changes no answer.
+
 ## ADR-042 — v2b: Menter's k-ω SST model, integrated to the wall; its gates, stated before the code
 **Decided.** v2b adds the k-ω SST model with low-Reynolds wall treatment:
 the equations are integrated to the wall, which the mesh resolves to y⁺ ≈ 1,
@@ -3049,3 +3107,11 @@ at about 3 s a step on one shared core — 545×385 is a few hours on two
 threads, so it is run, and gate 4 is judged on 137×97, 273×193 and
 545×385, as TMR's own extrapolations are; 69×49 is reported. Decided with
 273×193 at step 300 of its march, before its result.
+
+Then, with 273×193 steady in Cf and the ν_t peak but its march still
+settling at the leading edge, and before any 545×385 step: the march there
+needs more steps than 137×97's (1,300), and a step costs about 4 s alone
+on 273×193, so 545×385 is a matter of many hours a run. So its step is
+0.01, as on every other grid, not the 0.005 the gate script first set as a
+precaution; and SST-2003, reported and not gated, is run on 273×193, a
+grid short of the finest, instead of a second 545×385 march.
