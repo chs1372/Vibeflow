@@ -2263,3 +2263,28 @@ code it judges.
 
 **Not in v2a:** conjugate heat transfer, radiation, temperature-dependent
 properties, the p_rgh reconstruction. Each needs a case to justify it.
+
+## ADR-039 — Slip walls, gated by the Taylor–Green vortex. Stated before the code
+**Decided.** ADR-038 adds a slip velocity boundary — zero normal velocity,
+zero tangential stress — so that a symmetry plane can bound a roll, and
+gives it no gate of its own. This is that gate, written before the code.
+
+**The flow.** The two-dimensional Taylor–Green vortex,
+
+    u = ( sin πx cos πy, −cos πx sin πy, 0 ) e^{−2π²νt},
+    p = ¼ ( cos 2πx + cos 2πy ) e^{−4π²νt},
+
+solves the Navier-Stokes equations exactly, and in the unit cube it meets
+the slip condition on every wall: the normal component vanishes on each face
+and the tangential components have zero normal derivative there. The roadmap
+listed the Taylor–Green vortex as a v1 benchmark; Ethier–Steinman took its
+place, and here it tests the one thing Ethier–Steinman cannot, a boundary
+that is not a prescribed velocity.
+
+**The gate.** Slip walls on all six faces, zero boundary flux, the exact
+initial state, ν = 0.05, the Navier-Stokes spatial study's settings (dt =
+2e-4, two steps): observed order on 8³/16³/32³ in C++ and 6³/12³/24³ in
+Python, within [1.85, 2.15] on the orthogonal meshes and [1.6, 2.3], rising,
+on the smooth distortion — whose walls stay planar and axis-aligned while
+the cells beside them are not. Python first, then C++, each failing before
+its implementation.
