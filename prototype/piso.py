@@ -41,7 +41,7 @@ class PisoSolver:
                  n_outer=1, outer_tol=1e-10, consistent_rhie_chow=True,
                  gradient="linear", rhie_chow_form="standard", old_flux="exact",
                  kappa=None, beta_g=None, t_ref=0.0, t_ref_grad=None,
-                 buoyancy_form="cell"):
+                 buoyancy_form="cell", turbulence=None):
         self.m = mesh
         self.nu = nu
         self.dt = dt
@@ -142,6 +142,14 @@ class PisoSolver:
         self.T = np.zeros(m.nc)
         self.T_old = np.zeros(m.nc)
         self.T_old2 = np.zeros(m.nc)
+
+        # A turbulence model (ADR-042): an sst.SstModel, solved once per
+        # outer iteration after the pressure correctors (and the energy
+        # equation). Its eddy viscosity enters the momentum equation through
+        # the face viscosity and the explicit part div(nu_t grad(u)^T) of the
+        # stress. None: every operation is v2a's.
+        self.turb = turbulence
+        self._turb_ready = False
 
         # How the buoyancy enters (ADR-041).
         # "cell": ADR-038's cell force f = -(T - T_ref) beta_g in the momentum
@@ -292,13 +300,19 @@ class PisoSolver:
         Fp = np.maximum(self.F, 0.0)
         Fn = np.maximum(-self.F, 0.0)
         a = self.diff.a_int
-        nu = self.nu
+        nu = self.nu            # the face viscosity; nub on boundary faces
+        nub = self.nu
+        if self.turb is not None:
+            nt = self.turb.nut
+            nt_f = self.w * nt[m.owner] + (1 - self.w) * nt[m.neigh]
+            nu = self.nu + nt_f
+            nub = self.nu + self.turb.nut_b
 
         rows = [m.owner, m.owner, m.neigh, m.neigh, m.b_cell,
                 m.owner, m.owner, m.neigh, m.neigh, np.arange(m.nc)]
         cols = [m.owner, m.neigh, m.neigh, m.owner, m.b_cell,
                 m.owner, m.neigh, m.neigh, m.owner, np.arange(m.nc)]
-        vals = [+nu * a, -nu * a, +nu * a, -nu * a, +nu * self.diff.a_bnd,
+        vals = [+nu * a, -nu * a, +nu * a, -nu * a, +nub * self.diff.a_bnd,
                 Fp, -Fn, Fn, -Fp, aP_t * m.cell_volume]
         A = sp.coo_matrix((np.concatenate(vals),
                            (np.concatenate(rows), np.concatenate(cols))),
@@ -306,6 +320,17 @@ class PisoSolver:
 
         grads = np.stack([self.grad(self.u[:, d], u_b[:, d]) for d in range(3)], axis=1)
         ho = self.face_interp(self.u, grads)
+        if self.turb is not None:
+            # div(nu_t grad(u)^T): component i of the face flux is
+            # nu_t,f sum_j (du_j/dx_i)_f S_j, explicit from the latest u.
+            gfu = (self.w[:, None, None] * grads[m.owner]
+                   + (1 - self.w)[:, None, None] * grads[m.neigh])
+            tflux = nt_f[:, None] * np.einsum("fji,fj->fi", gfu, m.face_area)
+            tflux_b = self.turb.nut_b[:, None] * np.einsum("fji,fj->fi", grads[m.b_cell],
+                                                           m.b_area)
+            if slip is not None:
+                # A slip face carries no tangential stress, so none there.
+                tflux_b[slip] = 0.0
 
         b = np.empty((m.nc, 3))
         for d in range(3):
@@ -313,19 +338,23 @@ class PisoSolver:
             rhs = src[:, d] * m.cell_volume
             rhs -= (a1 * self.u_old[:, d] + a2 * self.u_old2[:, d]) * m.cell_volume
 
-            np.add.at(rhs, m.b_cell, nu * self.diff.a_bnd * u_b[:, d])
+            np.add.at(rhs, m.b_cell, nub * self.diff.a_bnd * u_b[:, d])
             gf = (self.diff.w_owner[:, None] * g[m.owner]
                   + (1 - self.diff.w_owner)[:, None] * g[m.neigh])
             corr = nu * np.einsum("ij,ij->i", self.diff.k_int, gf)
             np.add.at(rhs, m.owner, corr)
             np.add.at(rhs, m.neigh, -corr)
-            nonorth_b = nu * np.einsum("ij,ij->i", self.diff.k_bnd, g[m.b_cell])
+            nonorth_b = nub * np.einsum("ij,ij->i", self.diff.k_bnd, g[m.b_cell])
             if slip is not None and slip.any():
                 n_hat = m.b_area / np.linalg.norm(m.b_area, axis=1)[:, None]
                 g_n = np.einsum("fe,fek->fk", n_hat, grads[m.b_cell])   # grad(u.n)
-                slip_corr = nu * n_hat[:, d] * np.einsum("ij,ij->i", self.diff.k_bnd, g_n)
+                slip_corr = nub * n_hat[:, d] * np.einsum("ij,ij->i", self.diff.k_bnd, g_n)
                 nonorth_b = np.where(slip, slip_corr, nonorth_b)
             np.add.at(rhs, m.b_cell, nonorth_b)
+            if self.turb is not None:
+                np.add.at(rhs, m.owner, tflux[:, d])
+                np.add.at(rhs, m.neigh, -tflux[:, d])
+                np.add.at(rhs, m.b_cell, tflux_b[:, d])
 
             ud = np.where(self.F > 0.0, self.u[m.owner, d], self.u[m.neigh, d])
             dc = self.F * (ho[:, d] - ud)
@@ -626,6 +655,8 @@ class PisoSolver:
         self.u_old = self.u.copy()
         self.F_old2 = self.F_old.copy()
         self.F_old = self.F.copy()
+        if self.turb is not None:
+            self.turb.shift()
         if self.energy:
             self.T_old2 = self.T_old.copy()
             self.T_old = self.T.copy()
@@ -648,6 +679,11 @@ class PisoSolver:
                 src_total = src
 
             u_b = self.slip_values(u_b_given, slip)
+            if self.turb is not None and not self._turb_ready:
+                self.turb.update_nut(self.u, u_b)      # nu_t of the initial state
+                self._turb_ready = True
+            if self.turb is not None:
+                k_prev, om_prev = self.turb.k.copy(), self.turb.w.copy()
             A, b = self.assemble_momentum(u_b, src_total, slip)
             aP = A.diagonal()
             lu = spla.splu(A.tocsc())
@@ -665,6 +701,8 @@ class PisoSolver:
 
             if self.energy:
                 self.T = self.solve_energy(T_b, T_src, T_bc)
+            if self.turb is not None:
+                self.turb.solve(self.F, self.Fb, self.u, u_b, self.bdf())
 
             self.outer_used = outer + 1
             scale = max(np.abs(self.u).max(), 1e-300)
@@ -672,6 +710,10 @@ class PisoSolver:
             if self.energy:
                 change = max(change, np.abs(self.T - T_prev).max()
                              / max(np.abs(self.T).max(), 1e-300))
+            if self.turb is not None:
+                for new_, old_ in ((self.turb.k, k_prev), (self.turb.w, om_prev)):
+                    change = max(change, np.abs(new_ - old_).max()
+                                 / max(np.abs(new_).max(), 1e-300))
             if change < self.outerTol:
                 break
 
