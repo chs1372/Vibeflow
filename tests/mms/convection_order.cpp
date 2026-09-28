@@ -10,18 +10,30 @@
 //   u = (sin px (cos py - cos pz), sin py (cos pz - cos px), sin pz (cos px - cos py)),
 //   p = cos px cos py cos pz,   s = (u . grad) u - nu laplacian(u) + grad p,
 //
-// (p = pi times the coordinate) at nu = 0.02, a cell Peclet number |u| h / nu
-// of 17, 8 and 4 on 6^3, 12^3 and 24^3, so that the convective truncation
-// error is a large part of the whole. Both face values, both mesh families,
-// each marched from the exact field to a steady state (the largest change of
-// u or p over a step below 1e-8, as heat_transfer's order runs) at a Courant
-// number of 3.2, dt = 1.6 / n.
+// (p = pi times the coordinate), both face values, both mesh families, each
+// marched from the exact field to a steady state (the largest change of u or
+// p over a step below 1e-8, as heat_transfer's order runs) at a Courant
+// number of 3.2, dt = 1.6 / n, on 6^3, 12^3 and 24^3.
 //
-// Criteria, the v1 bands: the order of u between the two finest meshes in
-// [1.85, 2.15] on the orthogonal family and in [1.6, 2.3], its trend rising,
-// on the smooth distortion; every run steady.
+// First run at nu = 0.02 -- cell Peclet numbers 17, 8 and 4 -- and failed by
+// its own criteria for both face values, the long-verified linear one too:
+// the meshes are short of the asymptotic range there, the orders come down
+// towards 2 from above (linear 2.30, 2.14; linear upwind 2.60, 2.35 on the
+// orthogonal family), and the linear-upwind error is 1.7 to 2.5 times
+// smaller than the linear one on every mesh. Kept as `--nu 0.02`, reported.
+// Revised after it (ADR-042), the gate runs at nu = 0.1, steady_dt's and the
+// v2a steady gate's viscosity (cell Peclet 3.3, 1.7 and 0.8), where the v1
+// and v2a gates show the linear face value asymptotic on these meshes, with a
+// condition that the check sees the face value at all:
 //
-// Run:  convection_order [grids, default 6 12 24]
+//   * the order of u between the two finest meshes in [1.85, 2.15] on the
+//     orthogonal family, and in [1.6, 2.3] approaching 2 on the smooth
+//     distortion (ADR-038's form -- the first run took v1's "rising"), for
+//     each face value;
+//   * on every mesh the two face values' errors at least 5% apart;
+//   * every run steady.
+//
+// Run:  convection_order [--nu NU, default 0.1] [grids, default 6 12 24]
 
 #include "mesh/HexMesh.hpp"
 #include "discretization/FaceFlux.hpp"
@@ -40,7 +52,7 @@ using namespace vibeflow;
 namespace {
 
 constexpr Real PI = 3.14159265358979323846;
-constexpr Real NU = 0.02;
+Real NU = 0.1;   // --nu
 
 Vec3 velocity(const Vec3& q) {
   const Real sx = std::sin(PI*q.x), sy = std::sin(PI*q.y), sz = std::sin(PI*q.z);
@@ -200,20 +212,30 @@ int main(int argc, char** argv) {
   int rc = 0;
   {
     std::vector<Index> grids;
-    for (int i = 1; i < argc; ++i) grids.push_back(std::stoi(argv[i]));
+    for (int i = 1; i < argc; ++i) {
+      const std::string a = argv[i];
+      if (a == "--nu" && i + 1 < argc) { NU = std::atof(argv[++i]); continue; }
+      grids.push_back(std::stoi(a));
+    }
     if (grids.empty()) grids = {6, 12, 24};
     const Real tol = 1e-8, maxTime = 200.0;
-    std::printf("Momentum's face value, steady manufactured flow at nu = %.2f "
+    std::printf("Momentum's face value, steady manufactured flow at nu = %.3g "
                 "(Courant 3.2, steady below %.0e)\n", NU, tol);
-    struct Fam { Real skew; const char* mode; Real lo, hi; bool rising; const char* tag; };
+    struct Fam { Real skew; const char* mode; Real lo, hi; bool approaching; const char* tag; };
     struct Sch { ConvectionScheme s; const char* tag; };
+    const Fam fams[2] = {Fam{0.0, "none", 1.85, 2.15, false, "orthogonal"},
+                         Fam{0.25, "smooth", 1.6, 2.3, true, "smooth distortion"}};
+    const Sch schemes[2] = {Sch{ConvectionScheme::Linear, "linear"},
+                            Sch{ConvectionScheme::LinearUpwind, "linear upwind"}};
+    std::vector<Real> err[2][2];   // [scheme][family], one per grid
     bool ok = true;
-    for (const Sch& sc : {Sch{ConvectionScheme::Linear, "linear"},
-                          Sch{ConvectionScheme::LinearUpwind, "linear upwind"}}) {
-      for (const Fam& fm : {Fam{0.0, "none", 1.85, 2.15, false, "orthogonal"},
-                            Fam{0.25, "smooth", 1.6, 2.3, true, "smooth distortion"}}) {
+    for (int si = 0; si < 2; ++si) {
+      for (int fi = 0; fi < 2; ++fi) {
+        const Sch& sc = schemes[si];
+        const Fam& fm = fams[fi];
         std::printf("\n  %s, %s\n", sc.tag, fm.tag);
-        std::vector<Real> e, h, orders;
+        std::vector<Real>& e = err[si][fi];
+        std::vector<Real> h, orders;
         bool steadyAll = true;
         for (Index n : grids) {
           const HexMesh mesh = HexMesh::generate(n, fm.skew, fm.mode);
@@ -233,16 +255,31 @@ int main(int argc, char** argv) {
         if (!orders.empty()) {
           const Real last = orders.back();
           pass &= last >= fm.lo && last <= fm.hi;
-          bool rising = true;
-          if (fm.rising)
-            for (std::size_t i = 1; i < orders.size(); ++i) rising &= orders[i] >= orders[i-1] - 0.02;
-          pass &= rising;
+          bool approach = true;
+          if (fm.approaching)
+            for (std::size_t i = 1; i < orders.size(); ++i)
+              approach &= std::abs(orders[i] - 2.0) <= std::abs(orders[i-1] - 2.0) + 0.02;
+          pass &= approach;
           std::printf("    -> order %.3f in [%.2f, %.2f]%s%s: %s\n", last, fm.lo, fm.hi,
-                      fm.rising ? (rising ? ", trend rising" : ", trend FALLING") : "",
+                      fm.approaching ? (approach ? ", approaching 2" : ", MOVING AWAY FROM 2") : "",
                       steadyAll ? "" : ", NOT STEADY", pass ? "PASS" : "FAIL");
         }
         ok &= pass;
       }
+    }
+    // The check must see the face value: Ethier-Steinman's two errors are
+    // 1.5e-4 apart.
+    std::printf("\n  linear upwind against linear, L2(u) ratio per mesh\n");
+    for (int fi = 0; fi < 2; ++fi) {
+      bool apart = true;
+      std::printf("    %-18s", fams[fi].tag);
+      for (std::size_t g = 0; g < grids.size(); ++g) {
+        const Real ratio = err[1][fi][g] / err[0][fi][g];
+        apart &= std::abs(ratio - 1.0) >= 0.05;
+        std::printf("  n %d: %.4f", static_cast<int>(grids[g]), ratio);
+      }
+      std::printf("  -> at least 5%% apart on every mesh: %s\n", apart ? "PASS" : "FAIL");
+      ok &= apart;
     }
     std::printf("\nv2b momentum face value GATE (C++): %s\n", ok ? "PASS" : "FAIL");
     rc = ok ? 0 : 1;

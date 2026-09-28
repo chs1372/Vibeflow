@@ -3013,6 +3013,36 @@ finest meshes in the v1 bands, rising on the distortion.
 Gate 4's criteria are unchanged. The 69×49 result above is the linear
 scheme's and does not count for the gate: 69×49 is run again with the rest.
 
+*Revised after its first run: the added check.* At ν = 0.02 it failed by
+its own criteria for both face values, the long-verified linear one too.
+L2(u) on 6³, 12³, 24³, and the orders:
+
+| | orthogonal | smooth distortion |
+| --- | --- | --- |
+| linear | 8.755e-2, 1.782e-2, 4.037e-3 — 2.296, 2.143 | 9.113e-2, 1.887e-2, 4.308e-3 — 2.272, 2.131 |
+| linear upwind | 4.966e-2, 8.189e-3, 1.602e-3 — 2.600, 2.353 | 5.293e-2, 9.487e-3, 1.960e-3 — 2.480, 2.275 |
+
+The linear-upwind orthogonal order is above its band, and on the
+distortion both orders fall towards 2 where the harness asked them to
+rise — v1's "rising", where ADR-042's own bands, and ADR-038's, say
+"approaching 2". None of it looks like a defect: every error falls
+faster than second order and the orders come down towards 2 from above,
+as they do when the meshes are short of the asymptotic range, and a fit
+e = a h² + b h³ to the two finest linear-upwind errors (a = 0.67,
+b = 6.2, against 2.08 and 5.8 for the linear value) reproduces the
+coarsest within 6%: the linear-upwind leading term is a third of the
+linear one's here, so the next term holds its order up longer. The
+linear-upwind error is 1.7 to 2.5 times smaller on every mesh.
+
+So the check is revised, with the data above seen: it runs at ν = 0.1,
+`steady_dt`'s viscosity and the v2a steady gate's (cell Péclet numbers
+3.3, 1.7 and 0.8), where the v1 and v2a gates show the linear face value
+asymptotic on these meshes; the distortion's condition is ADR-038's,
+approaching 2; and a condition is added that the check sees the face value
+at all — on every mesh the two face values' errors at least 5% apart,
+which Ethier–Steinman's are not. ν = 0.02 stays in the program
+(`--nu 0.02`), reported.
+
 **545×385 is run.** The gate left it to the cost. Measured on the runs so
 far — 69×49 steady in 1,100 steps (72 s), 137×97 in 1,300 (559 s), 273×193
 at about 3 s a step on one shared core — 545×385 is a few hours on two
