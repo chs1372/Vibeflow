@@ -175,7 +175,12 @@ GATES = {
         ("benchmark: cylinder wake vortex shedding at Re = 100",
          cylinder_wake, BUILD / "cylinder"),
     ],
-    # v2: flat_plate_cf, backward_step, rayleigh_benard
+    # v2a: heat transfer and buoyancy (ADR-038). v2b (SST: flat plate Cf,
+    # backward-facing step) and v2c are added when their gates are stated.
+    "v2": [
+        ("python: energy equation and Boussinesq buoyancy",
+         lambda: run([PY, str(PROTO / "boussinesq.py")], PROTO), None),
+    ],
     # v3: sod_shock_tube, naca0012_transonic
     # v4: dam_break, rising_bubble
 }
