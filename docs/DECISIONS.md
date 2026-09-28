@@ -2340,6 +2340,82 @@ as steady_dt does. No criterion changed. The wobble is itself a finding about
 the solver: on a distorted mesh a steady run cannot be called steady much
 below 200 times nonOrthTol.
 
+### Result
+
+**All eight v2a gates pass.** Orders are the last of two: 8³→16³→32³ in C++,
+6³→12³→24³ in Python.
+
+| gate | Python | C++ |
+| --- | --- | --- |
+| 1. T in the exact flow, orthogonal / smooth distortion | 1.997 / 1.964 | 1.999 / 1.977 |
+| 1. BDF2 in time | 2.153 | 2.153 |
+| 2. Boussinesq u, orthogonal / distortion | 2.044 / 2.031 | 2.021 / 2.013 |
+| 2. Boussinesq T, orthogonal / distortion | 2.005 / 2.038 | 2.003 / 2.024 |
+| 2. dt = 0.2 against 2.0, spread of u / T (bound 1e-6) | 1.5e-13 / 9.5e-12 | 2.7e-12 / 1.0e-10 |
+| 3. at rest, max\|u\| Cartesian / distorted (bound 1e-12) | 2.4e-14 / 1.0e-14 | 7.2e-15 / 1.1e-14 |
+| 3. at rest, max\|T − (1 − z)\| | 3.4e-15 / 1.8e-15 | 1.3e-15 / 8.9e-16 |
+
+The temporal errors are the same in both to seven digits (3.172e-5,
+9.295e-5, 2.090e-5) and are not monotone: the coarsest step is the most
+accurate, so the order is the last pair's, as the gate defines it.
+
+- **Cross-check:** the sixteen rows agree to 9.5e-11 relative at worst,
+  against bounds of 1e-4 (transient) and 1e-6 (steady).
+- **MPI:** two, three and four ranks give the serial velocity to 8.7e-16 and
+  temperature to 2.3e-15. The gate has teeth: leaving the temperature's
+  ghosts one solve stale moves T by 1.0e-3 and u by 8.4e-6 on three ranks.
+- **Rayleigh–Bénard onset:** critical Ra 1678.630, 1694.884 and 1700.563 on
+  16, 24 and 32 cells across the layer. The observed order is 2.005 and the
+  Richardson extrapolation 1707.842, +0.005% from 1707.762. The finest mesh
+  is −0.42% off (bound 1%), the extrapolation 0.005% (bound 0.3%).
+- **De Vahl Davis:** every condition passes at every Rayleigh number.
+
+  | Ra | Nu 32² / 64² / 128² | observed order | Richardson Nu (reference) | u_max, v_max on 128² vs de Vahl Davis |
+  | --- | --- | --- | --- | --- |
+  | 10³ | 1.11909 / 1.11811 / 1.11787 | 2.01 | 1.11779 (1.1178), −0.001% | +0.01%, +0.01% |
+  | 10⁴ | 2.26442 / 2.24970 / 2.24603 | 2.00 | 2.24482 (2.2448), +0.001% | +0.02%, +0.05% |
+  | 10⁵ | 4.67173 / 4.55917 / 4.53101 | 2.00 | 4.52161 (4.5216), +0.000% | +0.06%, +0.10% |
+  | 10⁶ | 9.72632 / 9.06324 / 8.88498 | 1.90 | 8.81945 (8.8252), −0.065% | +0.49%, +0.84% |
+
+  The 128² Nusselt numbers are within 0.68% (bound 1%), the extrapolations
+  within 0.065% (bound 0.5%). The closest call is Ra = 10⁶'s vertical
+  maximum, 221.21 against de Vahl Davis's 219.36. The benchmark took 71
+  minutes on two cores with BoomerAMG, 27 of them for Ra = 10⁶ on 128².
+
+  Two harness changes were made before its first full run, neither to a
+  criterion: the pressure solve uses BoomerAMG where PETSc is built, as the
+  cylinder does (0.41 s a step on 128² against 1.47), and each mesh starts
+  from the previous mesh's steady state, interpolated (below).
+
+### Findings the gates did not ask for
+
+- *Transient accuracy needs a converged outer loop.* The onset gate's four
+  outer iterations give growth rates far below linear theory. At Ra = 1800
+  on 32 cells the gate measured 0.173, against 0.694 from a Chebyshev
+  solution of the linear problem — about 0.75 once that mesh's own offset of
+  Ra_c is allowed for — and the shortfall grows with refinement. Converging the loop (100
+  iterations, 1e-13) brings the same run to 0.743. The zeros do not move at
+  all: 1678.630 and 1700.563 with four iterations or forty. At dt·ν/h² ≈ 10
+  the pressure correction, which sees only the momentum diagonal, leaves the
+  PIMPLE loop contracting slowly, so a small fixed count advances the slow
+  modes by a fraction of dt. Steady answers are unaffected. Unsteady ones at
+  large diffusion numbers are not, and no gate yet measures a transient
+  coupling against an exact rate.
+- *The same slowness makes steady states on fine meshes expensive.* The
+  cavity at Ra = 1e3 needed 4.9 time units to settle on 64², where 32² needed
+  2.7, and 128² from rest was on course for hours. Starting each mesh from the
+  last one's steady state halves the march (1173 steps to 613 on 64²) and
+  leaves the answer unchanged; capping the diffusion number instead restores
+  the physical settling time (0.66) at the same cost.
+- *The non-orthogonal loop's wobble*, about 190 times nonOrthTol on 16³ (the
+  harness revision above).
+- *A constant reference leaves the resting fluid far from rest.* With
+  T_ref = 0.5 in place of the conduction profile, gate 3's resting fluid
+  reaches max|u| = 0.47 (Cartesian) and 0.48 (distorted) after 50 steps at
+  Ra = 1700: the boundary-pressure extrapolation cannot carry the quadratic
+  hydrostatic pressure. That is what the reference stratification is for,
+  and what the deferred p_rgh treatment would fix in general.
+
 ## ADR-039 — Slip walls, gated by the Taylor–Green vortex. Stated before the code
 **Decided.** ADR-038 adds a slip velocity boundary — zero normal velocity,
 zero tangential stress — so that a symmetry plane can bound a roll, and
@@ -2388,3 +2464,19 @@ The gate is revised to what it was meant to test, before any C++ code:
 A slip wall with an error of its own would fail the second condition at the
 finer meshes. The orthogonal family's convergence on this problem, with
 either boundary, is reported and left as an open finding.
+
+### Result
+
+**Passes in both.** On the smooth distortion the slip wall's error is the
+exact wall's to three digits at every mesh (ratios 1.000), and its order is
+1.780 then 2.045 in C++ (8³/16³/32³) and 1.461 then 1.962 in Python
+(6³/12³/24³). On the orthogonal family slip is the more accurate boundary —
+ratios 0.990, 0.967, 0.877 in C++ and 0.992, 0.981, 0.928 in Python — and
+both boundaries converge as ADR-039's revision found: slip 1.283 then 1.539
+in C++, the exact wall 1.250 then 1.398. Python and C++ agree to 9.5e-11 on
+all eight Taylor–Green errors the cross-check compares.
+
+The slip wall then carried two benchmarks: the side walls of the
+Rayleigh–Bénard roll and the faces of the one-cell slabs (ADR-038). The
+orthogonal family's slow convergence stays open; it belongs to the test
+problem, not to the boundary.

@@ -8,8 +8,12 @@
 // velocity kappa/L -- de Vahl Davis's -- kappa = 1, nu = Pr and betaG =
 // (0, -Ra Pr, 0) with a constant reference T_ref = 0.5.
 //
-// Each case runs from rest in the conduction profile to a steady state on
-// uniform meshes of 32^2, 64^2 and 128^2. Pass:
+// Each case runs to a steady state on uniform meshes of 32^2, 64^2 and 128^2:
+// the coarsest from rest in the conduction profile, each finer one from the
+// last one's steady state, interpolated (grid sequencing -- added before the
+// first full run, when 128^2 at Ra = 1e3 was on course for hours from rest;
+// the steady state is the same from either start, as VIBEFLOW_FROM_REST
+// shows). Pass:
 //   * the hot wall's mean Nusselt number, Richardson-extrapolated from the
 //     three meshes, within 0.5% of 1.1178, 2.2448, 4.5216 and 8.8252 (Wang et
 //     al., Hortmann et al., Le Quere, as tabulated by a lattice Boltzmann
@@ -90,7 +94,24 @@ std::unique_ptr<LinearSolver> makePressureSolver(const Mesh& mesh) {
 #endif
 }
 
-struct Result { Real nusselt, uMax, vMax; int steps; Real resid; double seconds; };
+// A finished run's steady cell fields on its N x N grid, index j*N + i, kept
+// to start the next finer mesh from (grid sequencing).
+struct Fields { Index N = 0; std::vector<Real> u, v, p, T; };
+
+struct Result { Real nusselt, uMax, vMax; int steps; Real resid; double seconds; Fields fields; };
+
+// Bilinear interpolation between the cell centres of a coarser field, held
+// constant beyond the outermost centres.
+Real sample(const Fields& f, const std::vector<Real>& a, Real x, Real y) {
+  const Index n = f.N;
+  const Real gx = x * n - 0.5, gy = y * n - 0.5;
+  const Index i0 = std::min<Index>(std::max<Index>(static_cast<Index>(std::floor(gx)), 0), n - 2);
+  const Index j0 = std::min<Index>(std::max<Index>(static_cast<Index>(std::floor(gy)), 0), n - 2);
+  const Real tx = std::min(std::max(gx - i0, 0.0), 1.0);
+  const Real ty = std::min(std::max(gy - j0, 0.0), 1.0);
+  return (1.0 - tx) * (1.0 - ty) * a[j0*n + i0] + tx * (1.0 - ty) * a[j0*n + i0 + 1]
+       + (1.0 - tx) * ty * a[(j0 + 1)*n + i0] + tx * ty * a[(j0 + 1)*n + i0 + 1];
+}
 
 // Vertex of the parabola through (i-1, i, i+1) of a uniformly spaced profile.
 Real peak(const std::vector<Real>& v) {
@@ -104,17 +125,21 @@ Real peak(const std::vector<Real>& v) {
   return b - 0.25 * (a - c) * s;
 }
 
-Result run(Index N, const Reference& ref, bool verbose) {
+Result run(Index N, const Reference& ref, bool verbose, const Fields* start) {
   const auto t0 = std::chrono::steady_clock::now();
   const HexMesh mesh = HexMesh::box(N, N, 1, 1.0, 1.0, 1.0 / N);
   const Index nc = mesh.nCells(), nt = mesh.nTotal(), nb = mesh.nBoundaryFaces();
   const Real h = 1.0 / N;
-  const Real dt = h / ref.vMax;          // Courant number about one
+  Real dt = h / ref.vMax;                // Courant number about one
+  // Exploration only: a diffusion-number cap on dt and the outer count.
+  if (const char* e = std::getenv("VIBEFLOW_DIFF_NUMBER"))
+    dt = std::min(dt, std::atof(e) * h * h / PR);
 
   PisoControls ctl;
   ctl.outer = 3;
   ctl.outerTol = 1e-8;
   ctl.correctors = 2;
+  if (const char* e = std::getenv("VIBEFLOW_OUTER")) ctl.outer = std::atoi(e);
   PisoSolver solver(mesh, PR, dt, ctl);
   EnergyModel em;
   em.kappa = 1.0;
@@ -147,7 +172,44 @@ Result run(Index N, const Reference& ref, bool verbose) {
   {
     ScalarField T0("T0", nt);
     auto h0 = Kokkos::create_mirror_view(T0);
-    for (Index c = 0; c < nt; ++c) h0(c) = 1.0 - cc(c,0);    // conduction profile
+    if (!start) {
+      for (Index c = 0; c < nt; ++c) h0(c) = 1.0 - cc(c,0);    // conduction profile
+    } else {
+      // The coarser mesh's steady state, interpolated: velocity, pressure and
+      // temperature, and the face flux interpolated from that velocity.
+      VectorField u0("u0", nt, 3);
+      ScalarField p0("p0", nt), F0("F0", mesh.nInternalFaces());
+      auto hu0 = Kokkos::create_mirror_view(u0);
+      auto hp0 = Kokkos::create_mirror_view(p0);
+      for (Index c = 0; c < nt; ++c) {
+        const Real x = cc(c,0), y = cc(c,1);
+        hu0(c,0) = sample(*start, start->u, x, y);
+        hu0(c,1) = sample(*start, start->v, x, y);
+        hu0(c,2) = 0.0;
+        hp0(c) = sample(*start, start->p, x, y);
+        h0(c) = sample(*start, start->T, x, y);
+      }
+      Kokkos::deep_copy(u0, hu0);
+      Kokkos::deep_copy(p0, hp0);
+      auto own = mesh.owner(); auto nei = mesh.neighbour();
+      auto fa = mesh.faceArea(); auto fc = mesh.faceCentre(); auto cd = mesh.cellCentre();
+      Kokkos::parallel_for("F0", Kokkos::RangePolicy<ExecSpace>(0, mesh.nInternalFaces()),
+        KOKKOS_LAMBDA(const Index f) {
+          Real lo = 0.0, ln = 0.0;
+          for (int i = 0; i < 3; ++i) {
+            const Real ro = fc(f, i) - cd(own(f), i);
+            const Real rn = fc(f, i) - cd(nei(f), i);
+            lo += ro * ro; ln += rn * rn;
+          }
+          const Real w = Kokkos::sqrt(ln) / (Kokkos::sqrt(lo) + Kokkos::sqrt(ln));
+          Real sum = 0.0;
+          for (int i = 0; i < 3; ++i)
+            sum += (w * u0(own(f), i) + (1.0 - w) * u0(nei(f), i)) * fa(f, i);
+          F0(f) = sum;
+        });
+      Kokkos::fence();
+      solver.setState(u0, p0, F0);
+    }
     Kokkos::deep_copy(T0, h0);
     solver.setTemperature(T0);
   }
@@ -161,7 +223,11 @@ Result run(Index N, const Reference& ref, bool verbose) {
   std::vector<Real> pu(nc * 3, 0.0), pT(nc, 0.0);
   {
     auto T = host(solver.temperature());
-    for (Index c = 0; c < nc; ++c) pT[c] = T(c);
+    auto u = host(solver.velocity());
+    for (Index c = 0; c < nc; ++c) {
+      pT[c] = T(c);
+      for (int d = 0; d < 3; ++d) pu[c*3 + d] = u(c, d);
+    }
   }
   int maxSteps = 400000;
   // Exploration only: cut the march short, to time it.
@@ -208,8 +274,21 @@ Result run(Index N, const Reference& ref, bool verbose) {
     if (i == N / 2 - 1 || i == N / 2) uLine[j] += 0.5 * u(c,0);
     if (j == N / 2 - 1 || j == N / 2) vLine[i] += 0.5 * u(c,1);
   }
+  Fields fl;
+  fl.N = N;
+  fl.u.assign(N * N, 0.0); fl.v.assign(N * N, 0.0); fl.p.assign(N * N, 0.0); fl.T.assign(N * N, 0.0);
+  {
+    auto p = host(solver.pressure());
+    auto T = host(solver.temperature());
+    for (Index c = 0; c < nc; ++c) {
+      const Index i = static_cast<Index>(std::floor(cc(c,0) * N));
+      const Index j = static_cast<Index>(std::floor(cc(c,1) * N));
+      fl.u[j*N + i] = u(c,0); fl.v[j*N + i] = u(c,1);
+      fl.p[j*N + i] = p(c); fl.T[j*N + i] = T(c);
+    }
+  }
   const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-  return {heat / area, peak(uLine), peak(vLine), step, resid, secs};
+  return {heat / area, peak(uLine), peak(vLine), step, resid, secs, fl};
 }
 
 }  // namespace
@@ -239,7 +318,9 @@ int main(int argc, char** argv) {
             std::find(ras.begin(), ras.end(), ref.ra) == ras.end()) continue;
         std::vector<Result> rs;
         for (Index N : grids) {
-          rs.push_back(run(N, ref, verbose));
+          // Each mesh starts from the last one's steady state (header).
+          const bool sequence = !rs.empty() && !std::getenv("VIBEFLOW_FROM_REST");
+          rs.push_back(run(N, ref, verbose, sequence ? &rs.back().fields : nullptr));
           const Result& r = rs.back();
           std::printf("  Ra %.0e  N=%-4d steps %7d  residual %.1e  Nu %.5f  u_max %.4f  "
                       "v_max %.4f  (%.0f s)\n", ref.ra, N, r.steps, r.resid, r.nusselt,

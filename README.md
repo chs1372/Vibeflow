@@ -21,12 +21,14 @@ gate suite is the only thing that tells the two apart.
 | --- | --- | --- |
 | v0 | mesh geometry, FVM diffusion, CGNS input, ParaView output, MPI decomposition, linear-solver backends | **complete** — 8 gates |
 | v1 | incompressible laminar flow: PISO/PIMPLE, Rhie–Chow, BDF2, inlet/outlet boundaries, MPI | **complete** — 15 gates |
-| v2 | RANS turbulence, heat transfer, buoyancy | not started |
+| v2a | energy equation, Boussinesq buoyancy, slip walls | **complete** — 8 gates |
+| v2b | RANS turbulence: k-ω SST, low-Reynolds wall treatment | not started |
+| v2c | wall functions, conjugate heat transfer | not started |
 | v2.5 | GPU build | not started |
 | v3 | compressible flow | not started |
 | v4 | multiphase (VOF) | not started |
 
-All 23 gates pass on the current code, on Ubuntu 24.04 with two cores. CI
+All 31 gates pass on the current code, on Ubuntu 24.04 with two cores. CI
 runs the v0 gates on every push.
 
 ## What the gates show
@@ -114,6 +116,46 @@ defect went unnoticed. The wake gate itself also judges the fastest cell, at
 every step of its statistics window, against 1.5: the physical peak beside
 the cylinder is 1.36.
 
+**Heat transfer and buoyancy (v2a).** The temperature is transported like a
+velocity component and solved inside every outer iteration; the Boussinesq
+force −β(T − T_ref)g joins the momentum equation. Orders, C++ (Python):
+
+| Gate | Orthogonal | Distorted |
+| --- | --- | --- |
+| temperature carried by the exact Ethier–Steinman flow | 1.999 (1.997) | 1.977 (1.964) |
+| steady manufactured Boussinesq flow, u | 2.021 (2.044) | 2.013 (2.031) |
+| steady manufactured Boussinesq flow, T | 2.003 (2.005) | 2.024 (2.038) |
+| Taylor–Green vortex between slip walls | reported | 2.045 (1.962) |
+| BDF2 in time for T | 2.153 (2.153) | |
+
+The steady Boussinesq state is the same at dt = 0.2 and 2.0 to 1e-10 of its
+discretisation error, and a fluid resting in its reference stratification
+stays at rest to 1e-14. Python and C++ agree to 1e-10 on every v2a quantity;
+two to four ranks give the serial answer to 2e-15.
+
+The onset of Rayleigh–Bénard convection between rigid plates, from linear
+growth rates on 16, 24 and 32 cells across the layer:
+
+| | 16 | 24 | 32 | extrapolated | reference |
+| --- | --- | --- | --- | --- | --- |
+| critical Rayleigh number | 1678.630 | 1694.884 | 1700.563 | 1707.842 | 1707.762 |
+
+The observed order is 2.005, and the extrapolation is 0.005% from
+Chandrasekhar's value.
+
+The differentially heated square cavity of de Vahl Davis (1983), air, run
+to a steady state on 32², 64² and 128²:
+
+| Ra | Nu, 128² | Nu, extrapolated | reference Nu | u_max / v_max, 128², vs de Vahl Davis |
+| --- | --- | --- | --- | --- |
+| 10³ | 1.11787 | 1.11779 | 1.1178 | +0.01% / +0.01% |
+| 10⁴ | 2.24603 | 2.24482 | 2.2448 | +0.02% / +0.05% |
+| 10⁵ | 4.53101 | 4.52161 | 4.5216 | +0.06% / +0.10% |
+| 10⁶ | 8.88498 | 8.81945 | 8.8252 | +0.49% / +0.84% |
+
+Observed orders are 1.90 to 2.01, and every extrapolation is within 0.07% of
+the reference.
+
 ## Known limits
 
 - **The Strouhal number is 2.8% high on the benchmark domain, and the drag
@@ -133,6 +175,26 @@ the cylinder is 1.36.
   0.63 s per step on two cores). Restarting the boundary-pressure
   extrapolation cold is part of that price: a warm-started one saves its
   sweeps and doubles the non-orthogonal loop's (ADR-034).
+- **Transient accuracy needs a converged outer loop.** The pressure
+  correction sees only the momentum diagonal, so at a diffusion number
+  dt·ν/h² near ten the PIMPLE loop contracts slowly, and a fixed handful of
+  outer iterations advances the slow modes by a fraction of dt.
+  Rayleigh–Bénard growth rates came out up to four times too small with four
+  iterations and right with a hundred; the critical Rayleigh numbers did not
+  move at all, since steady answers do not depend on it (ADR-038). No gate
+  yet measures a transient coupling against an exact rate.
+- **Hydrostatic balance is exact only for a matching reference.** Buoyancy
+  enters as a cell force, not through the face flux as in a p_rgh
+  formulation. A fluid resting in the reference stratification T_ref stays at
+  rest to round-off; with a constant T_ref instead, the same resting fluid
+  develops currents of 0.5 in units of κ/L within 50 steps on an 8³ mesh at a
+  Rayleigh-level forcing of 1700.
+- A fixed-heat-flux wall hands the gradient the cell's own temperature: exact
+  for the adiabatic walls the gates use, first order in that boundary value
+  where a non-zero flux is prescribed.
+- A steady run on a distorted mesh wobbles from step to step at about 200
+  times the non-orthogonal loop's tolerance, so it cannot be called steady
+  below that (ADR-038).
 
 ## Build
 
@@ -171,6 +233,7 @@ describes a fuller dependency set but has not been exercised yet.
 python3 tests/mms/run_gates.py v0     # about a minute
 sh cases/cylinder/make_meshes.sh      # the two cylinder meshes, about 15 s
 python3 tests/mms/run_gates.py v1     # about an hour on two cores
+python3 tests/mms/run_gates.py v2     # about two and a half hours
 ```
 
 The cylinder meshes are generated rather than stored. With gmsh 4.15.2 the
@@ -197,7 +260,7 @@ src/core/            Kokkos types, MPI communicator
 src/mesh/            geometry, generated meshes, .hex and CGNS readers, partitioning
 src/linalg/          linear systems, native CG and BiCGStab, PETSc/hypre back end
 src/discretization/  gradients, convection and diffusion operators, face fluxes
-src/physics/         PISO/PIMPLE solver: momentum, Rhie–Chow, pressure, BDF2
+src/physics/         PISO/PIMPLE solver: momentum, Rhie–Chow, pressure, BDF2, energy, buoyancy
 src/io/              VTK XML output (.vtu / .pvtu) for ParaView
 prototype/           Python reference implementation of every scheme
 tests/               unit tests, MMS gates, benchmarks, the gate runner
@@ -215,10 +278,10 @@ The architecture, the stage plan and a record of each round of work, in
 Korean, are in [`ROADMAP.md`](ROADMAP.md), a copy of the living roadmap
 document kept in step with it.
 
-[`docs/DECISIONS.md`](docs/DECISIONS.md) is append-only: 37 entries, each
+[`docs/DECISIONS.md`](docs/DECISIONS.md) is append-only: 39 entries, each
 saying what was decided, why, and what would reverse it. It keeps the wrong
-turns too, marked where later entries corrected them. Two runs of entries are
-worth reading as a story:
+turns too, marked where later entries corrected them. Three runs of entries
+are worth reading as a story:
 
 - **ADR-022 → ADR-026.** The refined cylinder mesh diverged. The divergence
   was put down to a Courant limit, then the deferred correction, the outer
