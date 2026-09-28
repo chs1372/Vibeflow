@@ -180,6 +180,8 @@ GATES = {
     "v2": [
         ("python: energy equation and Boussinesq buoyancy",
          lambda: run([PY, str(PROTO / "boussinesq.py")], PROTO), None),
+        ("python: slip walls, Taylor-Green vortex",
+         lambda: run([PY, str(PROTO / "taylor_green.py")], PROTO), None),
     ],
     # v3: sod_shock_tube, naca0012_transonic
     # v4: dam_break, rising_bubble
