@@ -17,6 +17,8 @@
 #include "linalg/NativeCG.hpp"
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <string>
 #include <vector>
 
 namespace vibeflow::rb {
@@ -26,6 +28,13 @@ constexpr Real KC = 3.117;
 
 template <class V> auto host(const V& v) {
   return Kokkos::create_mirror_view_and_copy(HostSpace::memory_space(), v);
+}
+
+// The buoyancy form the gate runs (ADR-041); VIBEFLOW_BUOYANCY=cell selects
+// ADR-038's cell force, the recorded baseline.
+inline BuoyancyForm gateForm() {
+  const char* e = std::getenv("VIBEFLOW_BUOYANCY");
+  return (e && std::string(e) == "cell") ? BuoyancyForm::Cell : BuoyancyForm::Balanced;
 }
 
 // How the march is run. The onset gate's values are the defaults.
@@ -62,6 +71,7 @@ inline Growth growthRate(Index N, Real Ra, const Marching& mk = {}, Real t0 = 1.
   em.betaG = {0.0, 0.0, -Ra};
   em.tRef = 1.0;
   em.tRefGrad = {0.0, 0.0, -1.0};
+  em.form = gateForm();
   solver.enableEnergy(em);
 
   // Sides: 0 x-, 1 x+, 2 y-, 3 y+, 4 z- (hot plate), 5 z+ (cold plate).

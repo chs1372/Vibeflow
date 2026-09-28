@@ -68,11 +68,30 @@ enum class TemperatureBC : int { FixedValue = 0, FixedFlux = 1 };
 // pressure analytically, so a fluid resting in exactly that stratification
 // is an exact discrete fixed point on any mesh. A constant T_ref (tRefGrad
 // zero) is the usual choice when no such state exists.
+// How the buoyancy enters the momentum equation (ADR-041).
+//   Cell     - ADR-038's cell force in the momentum source. A resting fluid in
+//              a stratification T_ref does not match drifts: its hydrostatic
+//              pressure is quadratic, and the least-squares gradient and the
+//              boundary extrapolation that carry it are exact only for linear
+//              fields (0.47 kappa/L within 50 steps at Ra = 1700 on 8^3).
+//   Balanced - the force enters through the faces. Each outer iteration a
+//              hydrostatic pressure p_h absorbs the gradient part of the face
+//              force B_f = f(T_f).S_f: the residual r_f = B_f - [a_f dp_h +
+//              k_f . grad p_h] is made divergence-free, with r = 0 on every
+//              boundary face. The cell force is reconstructed from r alone,
+//              g_P = M_P^-1 sum S_f r_f / |S_f|, and the predicted face flux
+//              takes the compact r_f in place of the interpolated g. On a mesh
+//              whose cells stand in layers normal to g, a resting fluid in any
+//              T(z) has r = 0 exactly. The solved pressure is then the
+//              dynamic part; p_h completes it.
+enum class BuoyancyForm : int { Cell = 0, Balanced = 1 };
+
 struct EnergyModel {
   Real kappa = 0.0;
   Vec3 betaG{0.0, 0.0, 0.0};
   Real tRef = 0.0;
   Vec3 tRefGrad{0.0, 0.0, 0.0};
+  BuoyancyForm form = BuoyancyForm::Cell;
 };
 
 // Pressure boundary condition per face.

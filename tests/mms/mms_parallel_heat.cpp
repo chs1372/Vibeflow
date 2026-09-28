@@ -16,6 +16,10 @@
 // Two steps with fixed iteration counts, so the serial and parallel runs
 // perform the same sequence of operations.
 //
+// Runs in the balanced buoyancy form (ADR-041), whose hydrostatic pressure is
+// one more field read at ghost cells; VIBEFLOW_BUOYANCY=cell selects the cell
+// force.
+//
 // Run:  mpirun -n <N> mms_parallel_heat [reference "L2u,L2T"]
 
 #include "core/Parallel.hpp"
@@ -72,6 +76,13 @@ Vec3 momentumSource(const Vec3& q, Real nu) {
   s[1] -= PI * cx * sy * cz;
   s[2] -= PI * cx * cy * sz + temperature(q);
   return {s[0], s[1], s[2]};
+}
+
+// The buoyancy form the gate runs (ADR-041); VIBEFLOW_BUOYANCY=cell selects
+// ADR-038's cell force, the recorded baseline.
+inline BuoyancyForm gateForm() {
+  const char* e = std::getenv("VIBEFLOW_BUOYANCY");
+  return (e && std::string(e) == "cell") ? BuoyancyForm::Cell : BuoyancyForm::Balanced;
 }
 
 Real temperatureSource(const Vec3& q, Real kappa) {
@@ -184,6 +195,7 @@ int main(int argc, char** argv) {
       EnergyModel em;
       em.kappa = kappa;
       em.betaG = {0.0, 0.0, -1.0};
+      em.form = gateForm();
       solver.enableEnergy(em);
       solver.setBoundaryTypes(uType);
       solver.setState(u0, p0, F0);

@@ -45,7 +45,17 @@
 //     which compares two states to 1e-6 of a 2e-2 error, keeps 1e-12 on its
 //     8^3 mesh, as steady_dt does.
 //
-// Run:  heat_transfer <fixtures> [gates, default 123] [grids, default 8 16 32]
+// ADR-041 adds two gates for the balanced buoyancy form, and every gate here
+// runs in that form (VIBEFLOW_BUOYANCY=cell selects ADR-038's cell force, the
+// baseline):
+//   4. at rest without a matched reference: gate 3 with T_ref = 0.5;
+//   5. at rest in a curved stratification: a uniformly heated layer, T = 1 -
+//      z^2 with source 2 kappa, T_ref = 0.5. u stays at zero and T
+//      horizontally uniform, to 1e-12.
+// The same resting fluid on the randomly perturbed fixture mesh, which has no
+// layers, is reported in both forms and not gated.
+//
+// Run:  heat_transfer <fixtures> [gates, default 12345] [grids, default 8 16 32]
 
 #include "mesh/HexMesh.hpp"
 #include "discretization/FaceFlux.hpp"
@@ -55,6 +65,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <algorithm>
 #include <exception>
 #include <functional>
 #include <string>
@@ -299,6 +310,12 @@ HexMesh family(Index n, Real skew) {
   return HexMesh::generate(n, skew, skew == 0.0 ? "none" : "smooth");
 }
 
+// The buoyancy form every gate here runs (ADR-041).
+BuoyancyForm gateForm() {
+  const char* e = std::getenv("VIBEFLOW_BUOYANCY");
+  return (e && std::string(e) == "cell") ? BuoyancyForm::Cell : BuoyancyForm::Balanced;
+}
+
 // ------------------------------------------ 1. temperature in an exact flow
 std::vector<Real> energyExactFlow(const HexMesh& mesh, Real dt, int nsteps, Real nu,
                                   Real kappa, int outer) {
@@ -309,6 +326,7 @@ std::vector<Real> energyExactFlow(const HexMesh& mesh, Real dt, int nsteps, Real
   PisoSolver solver(mesh, nu, dt, ctl);
   EnergyModel em;
   em.kappa = kappa;
+  em.form = gateForm();
   solver.enableEnergy(em);
 
   VectorField u0 = cellVector(mesh, [nu](const Vec3& q) { return esVelocity(q, 0.0, nu); });
@@ -402,6 +420,7 @@ Steady steadyBoussinesq(const HexMesh& mesh, Real dt, Real tol, Real nu = 0.1,
   em.kappa = kappa;
   em.betaG = {0.0, 0.0, -1.0};
   em.tRef = 0.0;
+  em.form = gateForm();
   solver.enableEnergy(em);
 
   VectorField src = cellVector(mesh, [nu](const Vec3& q) { return bMomentumSource(q, nu); });
@@ -503,9 +522,14 @@ bool gateBoussinesqMms(const std::vector<Index>& grids, const std::string& fixtu
   return ok;
 }
 
-// ------------------------------------------------- 3. stratified rest state
-std::pair<Real, Real> restState(Real skew, bool matchedReference) {
-  const HexMesh mesh = family(8, skew);
+// ------------------------------------------------- 3-5. fluids at rest
+struct Rest { Real du, dT, spread; };
+
+// 50 steps from a resting stratified fluid between a hot bottom and a cold
+// top, adiabatic sides, walls everywhere: max|u|, the largest departure of T
+// from the profile, and the largest spread of T within a horizontal layer.
+Rest restState(const HexMesh& mesh, Real tRef, Vec3 tRefGrad, const ScalarFn& profile,
+               Real source, BuoyancyForm form) {
   const Index nc = mesh.nCells(), nb = mesh.nBoundaryFaces();
   PisoControls ctl;
   ctl.outer = 3;
@@ -514,12 +538,13 @@ std::pair<Real, Real> restState(Real skew, bool matchedReference) {
   EnergyModel em;
   em.kappa = 1.0;
   em.betaG = {0.0, 0.0, -1700.0};
-  if (matchedReference) { em.tRef = 1.0; em.tRefGrad = {0.0, 0.0, -1.0}; }
-  else em.tRef = 0.5;
+  em.tRef = tRef;
+  em.tRefGrad = tRefGrad;
+  em.form = form;
   solver.enableEnergy(em);
-  solver.setTemperature(cellScalar(mesh, [](const Vec3& q) { return 1.0 - q.z; }));
+  solver.setTemperature(cellScalar(mesh, profile));
+  solver.setTemperatureSource(cellScalar(mesh, [source](const Vec3&) { return source; }));
 
-  // Hot bottom, cold top, adiabatic sides; walls everywhere.
   auto ba = host(mesh.boundaryArea());
   auto bcen = host(mesh.boundaryCentre());
   View1<int> tType("tType", nb);
@@ -530,7 +555,7 @@ std::pair<Real, Real> restState(Real skew, bool matchedReference) {
     const Real mag = std::sqrt(ba(f,0)*ba(f,0) + ba(f,1)*ba(f,1) + ba(f,2)*ba(f,2));
     const bool horizontal = std::abs(ba(f,2)) / mag > 0.5;
     ht(f) = static_cast<int>(horizontal ? TemperatureBC::FixedValue : TemperatureBC::FixedFlux);
-    hv(f) = horizontal ? 1.0 - bcen(f,2) : 0.0;
+    hv(f) = horizontal ? profile({bcen(f,0), bcen(f,1), bcen(f,2)}) : 0.0;
   }
   Kokkos::deep_copy(tType, ht);
   Kokkos::deep_copy(tValue, hv);
@@ -545,29 +570,73 @@ std::pair<Real, Real> restState(Real skew, bool matchedReference) {
   const auto u = toHost(solver.velocity(), nc);
   const auto T = toHost(solver.temperature(), nc);
   auto cc = host(mesh.cellCentre());
-  Real du = 0.0, dT = 0.0;
+  Rest r{0.0, 0.0, 0.0};
+  std::vector<std::pair<long long, Real>> layer(nc);
   for (Index c = 0; c < nc; ++c) {
-    for (int d = 0; d < 3; ++d) du = std::max(du, std::abs(u[c*3 + d]));
-    dT = std::max(dT, std::abs(T[c] - (1.0 - cc(c, 2))));
+    for (int d = 0; d < 3; ++d) r.du = std::max(r.du, std::abs(u[c*3 + d]));
+    r.dT = std::max(r.dT, std::abs(T[c] - profile(centre(cc, c))));
+    layer[c] = {std::llround(cc(c, 2) * 1e6), T[c]};
   }
-  return {du, dT};
+  std::sort(layer.begin(), layer.end());
+  for (std::size_t i = 0, j = 0; i < layer.size(); i = j) {
+    Real lo = layer[i].second, hi = layer[i].second;
+    for (j = i; j < layer.size() && layer[j].first == layer[i].first; ++j) {
+      lo = std::min(lo, layer[j].second);
+      hi = std::max(hi, layer[j].second);
+    }
+    r.spread = std::max(r.spread, hi - lo);
+  }
+  return r;
 }
+
+const ScalarFn LINEAR = [](const Vec3& q) { return 1.0 - q.z; };
+const ScalarFn CURVED = [](const Vec3& q) { return 1.0 - q.z * q.z; };
+const Vec3 MATCHED{0.0, 0.0, -1.0}, NONE{0.0, 0.0, 0.0};
 
 bool gateRestState() {
   std::printf("\n3. a fluid resting in its reference stratification stays at rest\n");
   bool ok = true;
   for (Real skew : {0.0, 0.25}) {
-    const auto r = restState(skew, true);
-    const bool passed = r.first <= 1e-12 && r.second <= 1e-12;
+    const Rest r = restState(family(8, skew), 1.0, MATCHED, LINEAR, 0.0, gateForm());
+    const bool passed = r.du <= 1e-12 && r.dT <= 1e-12;
     ok &= passed;
     std::printf("  %-10s max|u| %.1e   max|T - (1 - z)| %.1e  %s\n",
-                skew == 0.0 ? "Cartesian" : "distorted", r.first, r.second,
-                passed ? "PASS" : "FAIL");
+                skew == 0.0 ? "Cartesian" : "distorted", r.du, r.dT, passed ? "PASS" : "FAIL");
   }
+  return ok;
+}
+
+bool gateRestConstantReference(const std::string& fixtures) {
+  std::printf("\n4. at rest without a matched reference: T = 1 - z, T_ref = 0.5 (ADR-041)\n");
+  bool ok = true;
   for (Real skew : {0.0, 0.25}) {
-    const auto r = restState(skew, false);
-    std::printf("  %-10s constant reference T_ref = 0.5: max|u| %.1e  (reported, not gated)\n",
-                skew == 0.0 ? "Cartesian" : "distorted", r.first);
+    const Rest r = restState(family(8, skew), 0.5, NONE, LINEAR, 0.0, gateForm());
+    const bool passed = r.du <= 1e-12 && r.dT <= 1e-12;
+    ok &= passed;
+    std::printf("  %-10s max|u| %.1e   max|T - (1 - z)| %.1e  %s\n",
+                skew == 0.0 ? "Cartesian" : "distorted", r.du, r.dT, passed ? "PASS" : "FAIL");
+  }
+  // Reported, not gated: a randomly perturbed mesh has no layers.
+  const HexMesh perturbed = HexMesh::fromVertexFile(8, fixtures + "/vertices_n8_s25.txt");
+  for (BuoyancyForm form : {BuoyancyForm::Cell, gateForm()}) {
+    const Rest r = restState(perturbed, 0.5, NONE, LINEAR, 0.0, form);
+    std::printf("  perturbed  %-9s max|u| %.1e  (reported, not gated)\n",
+                form == BuoyancyForm::Cell ? "cell" : "balanced", r.du);
+  }
+  return ok;
+}
+
+bool gateRestCurved() {
+  std::printf("\n5. at rest in a curved stratification: T = 1 - z^2, source 2 kappa, "
+              "T_ref = 0.5 (ADR-041)\n");
+  bool ok = true;
+  for (Real skew : {0.0, 0.25}) {
+    const Rest r = restState(family(8, skew), 0.5, NONE, CURVED, 2.0, gateForm());
+    const bool passed = r.du <= 1e-12 && r.spread <= 1e-12;
+    ok &= passed;
+    std::printf("  %-10s max|u| %.1e   T spread within a layer %.1e  %s\n",
+                skew == 0.0 ? "Cartesian" : "distorted", r.du, r.spread,
+                passed ? "PASS" : "FAIL");
   }
   return ok;
 }
@@ -579,7 +648,7 @@ int main(int argc, char** argv) {
   int rc = 0;
   {
     const std::string fixtures = argc > 1 ? argv[1] : "tests/fixtures";
-    const std::string gates = argc > 2 ? argv[2] : "123";
+    const std::string gates = argc > 2 ? argv[2] : "12345";
     std::vector<Index> grids;
     for (int i = 3; i < argc; ++i) grids.push_back(std::stoi(argv[i]));
     if (grids.empty()) grids = {8, 16, 32};
@@ -589,14 +658,21 @@ int main(int argc, char** argv) {
     if (const char* e = std::getenv("VIBEFLOW_BOUSSINESQ_DT")) orderDt = std::atof(e);
 
     bool ok = true;
-    try {
-      if (gates.find('1') != std::string::npos) ok &= gateEnergyExactFlow(grids);
-      if (gates.find('2') != std::string::npos) ok &= gateBoussinesqMms(grids, fixtures, orderDt);
-      if (gates.find('3') != std::string::npos) ok &= gateRestState();
-    } catch (const std::exception& e) {
-      std::printf("  FAIL: %s\n", e.what());
-      ok = false;
-    }
+    std::printf("buoyancy form: %s\n", gateForm() == BuoyancyForm::Cell ? "cell" : "balanced");
+    auto runGate = [&](char g, const auto& fn) {
+      if (gates.find(g) == std::string::npos) return;
+      try {
+        ok &= fn();
+      } catch (const std::exception& e) {
+        std::printf("  FAIL: %s\n", e.what());
+        ok = false;
+      }
+    };
+    runGate('1', [&] { return gateEnergyExactFlow(grids); });
+    runGate('2', [&] { return gateBoussinesqMms(grids, fixtures, orderDt); });
+    runGate('3', [&] { return gateRestState(); });
+    runGate('4', [&] { return gateRestConstantReference(fixtures); });
+    runGate('5', [&] { return gateRestCurved(); });
     std::printf("\nv2a heat-transfer GATE (C++): %s\n", ok ? "PASS" : "FAIL");
     rc = ok ? 0 : 1;
   }

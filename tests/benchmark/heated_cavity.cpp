@@ -37,6 +37,9 @@
 // tolerances above. The time step is a Courant number of about one on the
 // reference velocity; the steady state does not depend on it (ADR-037).
 //
+// Runs in the balanced buoyancy form (ADR-041); VIBEFLOW_BUOYANCY=cell selects
+// ADR-038's cell force.
+//
 // Run:  heated_cavity [Ra ...] [-n N ...]    default all four, 32 64 128
 
 #include "mesh/HexMesh.hpp"
@@ -98,6 +101,13 @@ std::unique_ptr<LinearSolver> makePressureSolver(const Mesh& mesh) {
 // to start the next finer mesh from (grid sequencing).
 struct Fields { Index N = 0; std::vector<Real> u, v, p, T; };
 
+// The buoyancy form the gate runs (ADR-041); VIBEFLOW_BUOYANCY=cell selects
+// ADR-038's cell force, the recorded baseline.
+inline BuoyancyForm gateForm() {
+  const char* e = std::getenv("VIBEFLOW_BUOYANCY");
+  return (e && std::string(e) == "cell") ? BuoyancyForm::Cell : BuoyancyForm::Balanced;
+}
+
 struct Result { Real nusselt, uMax, vMax; int steps; Real resid; double seconds; Fields fields; };
 
 // Bilinear interpolation between the cell centres of a coarser field, held
@@ -145,6 +155,7 @@ Result run(Index N, const Reference& ref, bool verbose, const Fields* start) {
   em.kappa = 1.0;
   em.betaG = {0.0, -ref.ra * PR, 0.0};
   em.tRef = 0.5;
+  em.form = gateForm();
   solver.enableEnergy(em);
 
   // Sides: 0 x- (hot), 1 x+ (cold), 2 y-, 3 y+ (adiabatic), 4 z-, 5 z+ (slab).

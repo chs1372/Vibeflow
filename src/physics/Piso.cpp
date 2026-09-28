@@ -1122,6 +1122,8 @@ void PisoSolver::slipBoundaryVelocity(const VectorField& uB) {
 }
 
 void PisoSolver::enableEnergy(const EnergyModel& model) {
+  if (model.form == BuoyancyForm::Balanced)
+    throw std::runtime_error("balanced buoyancy is not implemented (ADR-041)");
   const Index nt = m_.nTotal(), nb = m_.nBoundaryFaces();
   energy_ = true;
   em_ = model;

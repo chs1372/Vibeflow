@@ -27,6 +27,9 @@
 // Rayleigh-Benard article). Pass: the finest mesh within 1%, the observed
 // order in [1.5, 2.6], the Richardson extrapolation within 0.3%.
 //
+// Runs in the balanced buoyancy form (ADR-041); VIBEFLOW_BUOYANCY=cell selects
+// ADR-038's cell force.
+//
 // Run:  rayleigh_benard [N...]      default 16 24 32
 
 #include "rb_common.hpp"

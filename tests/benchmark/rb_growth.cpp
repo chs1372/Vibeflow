@@ -21,6 +21,9 @@
 // Beside each converged rate, the onset gate's four fixed iterations give
 // theirs -- reported, not gated: it is the finding this gate keeps in view.
 //
+// Runs in the balanced buoyancy form (ADR-041); VIBEFLOW_BUOYANCY=cell selects
+// ADR-038's cell force.
+//
 // Run:  rb_growth
 
 #include "rb_common.hpp"
