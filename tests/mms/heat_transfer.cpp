@@ -34,6 +34,16 @@
 //   * "steady" is the largest change of u, p or T over a step below 1e-12, not
 //     1e-13: iterative linear solvers have a noise floor that the Python
 //     gate's direct factorisations do not. steady_dt made the same choice.
+//     REVISED after the first run (ADR-038): on the 16^3 distortion the
+//     change stalled at 1.9e-9. That is the non-orthogonal loop's tolerance,
+//     measured: the warm-started loop ends a step's sweeps as soon as one
+//     moves the correction by less than it, and the state wobbles from step
+//     to step at about 190 times it (1e-11 -> 1.9e-9, 1e-13 -> 1.9e-11,
+//     1e-14 -> 1.9e-12; 1e-14 costs 55 s a step on 32^3). So the loop
+//     converges to 1e-12, the order runs call a state steady below 1e-8 --
+//     far below the errors they compare, 1.4e-4 and up -- and the dt check,
+//     which compares two states to 1e-6 of a 2e-2 error, keeps 1e-12 on its
+//     8^3 mesh, as steady_dt does.
 //
 // Run:  heat_transfer <fixtures> [gates, default 123] [grids, default 8 16 32]
 
@@ -383,8 +393,10 @@ Steady steadyBoussinesq(const HexMesh& mesh, Real dt, Real tol, Real nu = 0.1,
   PisoControls ctl;
   ctl.outer = 3;
   ctl.correctors = 2;
-  ctl.nonOrthTol = 1e-11;         // as steady_dt: tolerance-limited convergence
-  ctl.pressureSolveTol = 1e-13;   // stays far below what the gate measures
+  ctl.nonOrthTol = 1e-12;         // see the header: the state wobbles at about
+  ctl.pressureSolveTol = 1e-13;   // 190 times this from step to step
+  // Exploration only, as in ethier_steinman.
+  if (const char* e = std::getenv("VIBEFLOW_NONORTH_TOL")) ctl.nonOrthTol = std::atof(e);
   PisoSolver solver(mesh, nu, dt, ctl);
   EnergyModel em;
   em.kappa = kappa;
@@ -404,6 +416,7 @@ Steady steadyBoussinesq(const HexMesh& mesh, Real dt, Real tol, Real nu = 0.1,
 
   NativeBiCGStab momentum(mesh);
   NativeCG pressure(mesh, Comm(), true);
+  const bool verbose = std::getenv("VIBEFLOW_VERBOSE") != nullptr;
   Steady st;
   std::vector<Real> pu, pp, pT;
   const int maxSteps = static_cast<int>(std::lround(maxTime / dt));
@@ -422,6 +435,8 @@ Steady steadyBoussinesq(const HexMesh& mesh, Real dt, Real tol, Real nu = 0.1,
       }
       st.change = ch;
       pu = u; pp = p; pT = T;
+      if (verbose && (k % 10 == 0 || ch < tol))
+        std::printf("    step %5d  change %.3e\n", k + 1, ch);
       if (ch < tol) break;
     } else {
       pu = u; pp = p; pT = T;
@@ -447,7 +462,7 @@ std::pair<Real, Real> steadyErrors(const HexMesh& mesh, const Steady& s) {
 bool gateBoussinesqMms(const std::vector<Index>& grids, const std::string& fixtures,
                        Real orderDt) {
   std::printf("\n2. steady manufactured Boussinesq flow (beta g = (0, 0, -1))\n");
-  const Real tol = 1e-12;
+  const Real tolOrder = 1e-8, tol = 1e-12;     // see the header
   bool ok = true;
   struct Fam { Real skew, lo, hi; bool approaching; const char* tag; };
   for (const Fam& fm : {Fam{0.0, 1.85, 2.15, false, "orthogonal"},
@@ -455,12 +470,12 @@ bool gateBoussinesqMms(const std::vector<Index>& grids, const std::string& fixtu
     std::vector<Real> eu, eT, hs;
     for (Index n : grids) {
       const HexMesh mesh = family(n, fm.skew);
-      const Steady s = steadyBoussinesq(mesh, orderDt, tol);
+      const Steady s = steadyBoussinesq(mesh, orderDt, tolOrder);
       const auto e = steadyErrors(mesh, s);
       eu.push_back(e.first); eT.push_back(e.second); hs.push_back(1.0 / n);
       std::printf("  %-18s n=%-3d steps %-4d L2(u) %.6e  L2(T) %.6e  last change %.0e\n",
                   fm.tag, n, s.steps, e.first, e.second, s.change);
-      ok &= s.change < tol;
+      ok &= s.change < tolOrder;
     }
     if (grids.size() > 1) {
       ok &= verdict(std::string("u, ") + fm.tag, orders(eu, hs), fm.lo, fm.hi, fm.approaching);

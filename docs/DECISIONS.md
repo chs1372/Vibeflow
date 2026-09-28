@@ -2322,6 +2322,24 @@ throws. What each fixes beyond the plan above, before any run:
   below 1e-5, and dt is a Courant number of about one on the reference
   velocity. The Nusselt number is the solver's own wall heat flux.
 
+### Revision to the C++ gate 2 harness, before its result
+
+The first C++ run of gate 2 stalled on the 16³ distortion: the change per
+step fell to 1.9e-9 and stayed there for hundreds of steps. It is the
+non-orthogonal loop's tolerance, measured by varying it — the plateau sits at
+about 190 times the tolerance (1e-11 → 1.9e-9, 1e-13 → 1.9e-11, 1e-14 →
+1.9e-12). The warm-started loop ends a step's sweeps as soon as one moves the
+correction by less than the tolerance, so the state wobbles at that level
+from step to step. Python's loop starts cold and converges to 1e-14 on every
+call, which C++ cannot afford: at 1e-14 a step on 32³ costs 55 s.
+
+So the loop converges to 1e-12. The order runs call a state steady below 1e-8,
+far below the errors they compare (1.4e-4 and up). The dt-spread check
+compares two states to 1e-6 of a 2e-2 error, so it keeps 1e-12 on its 8³ mesh,
+as steady_dt does. No criterion changed. The wobble is itself a finding about
+the solver: on a distorted mesh a steady run cannot be called steady much
+below 200 times nonOrthTol.
+
 ## ADR-039 — Slip walls, gated by the Taylor–Green vortex. Stated before the code
 **Decided.** ADR-038 adds a slip velocity boundary — zero normal velocity,
 zero tangential stress — so that a symmetry plane can bound a roll, and
