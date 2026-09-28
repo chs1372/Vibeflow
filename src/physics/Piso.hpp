@@ -33,11 +33,47 @@ class LinearSolver;
 
 // Velocity boundary condition per face.
 //   Dirichlet    - the face value is prescribed (walls, inlets, a moving lid)
-//   ZeroGradient - the face value follows the cell (slip planes, outlets)
+//   ZeroGradient - the face value follows the cell (outlets, and the two faces
+//                  of a one-cell-thick slab, where nothing drives the normal
+//                  component anyway)
+//   Slip         - zero normal velocity and zero tangential stress: a
+//                  symmetry plane, or a wall a roll may slide along (ADR-039).
+//                  Treated as a Dirichlet face whose value is the tangential
+//                  part of the adjacent cell's velocity, taken from the latest
+//                  iterate, so the implicit diagonal balances the lagged value
+//                  and at convergence the viscous flux through the face acts
+//                  on the normal component alone. The face carries no mass:
+//                  the caller passes zero boundary flux there.
 // A zero-gradient face contributes NOTHING to the diffusive matrix or source:
 // treating it as Dirichlet with the cell's own value would leave the diagonal
 // term in place and quietly over-damp the near-boundary cells.
-enum class VelocityBC : int { Dirichlet = 0, ZeroGradient = 1 };
+enum class VelocityBC : int { Dirichlet = 0, ZeroGradient = 1, Slip = 2 };
+
+// Temperature boundary condition per face (ADR-038).
+//   FixedValue - the face temperature is prescribed.
+//   FixedFlux  - the diffusive heat flux INTO the domain per unit area,
+//                kappa dT/dn with n pointing inwards, is prescribed; zero is
+//                an adiabatic wall. Outflow through such a face carries the
+//                cell's own temperature, implicitly.
+enum class TemperatureBC : int { FixedValue = 0, FixedFlux = 1 };
+
+// The energy equation and Boussinesq buoyancy (ADR-038):
+//
+//     dT/dt + div(u T) = div(kappa grad T) + S_T
+//     f = -(T - T_ref(x)) betaG,    T_ref(x) = tRef + tRefGrad . x
+//
+// betaG is the expansion coefficient times the gravity vector; f is a force
+// per unit mass added to the momentum source. T_ref is a reference
+// stratification: its buoyancy is a gradient and is absorbed into the
+// pressure analytically, so a fluid resting in exactly that stratification
+// is an exact discrete fixed point on any mesh. A constant T_ref (tRefGrad
+// zero) is the usual choice when no such state exists.
+struct EnergyModel {
+  Real kappa = 0.0;
+  Vec3 betaG{0.0, 0.0, 0.0};
+  Real tRef = 0.0;
+  Vec3 tRefGrad{0.0, 0.0, 0.0};
+};
 
 // Pressure boundary condition per face.
 //   FixedFlux  - the mass flux through the face is prescribed, so the pressure
@@ -232,7 +268,28 @@ class PisoSolver {
              Comm comm = Comm());
 
   // bcType is one VelocityBC per boundary face; empty means all Dirichlet.
-  void setBoundaryTypes(const View1<int>& bcType) { bcType_ = bcType; }
+  void setBoundaryTypes(const View1<int>& bcType);
+
+  // The energy equation (ADR-038). Off until enabled; with it off the solver
+  // is the v1 solver, operation for operation. Temperature is transported
+  // like a velocity component -- BDF2, upwind plus the deferred correction to
+  // the skew-corrected face value, diffusion with the non-orthogonal
+  // correction -- and solved inside every outer iteration after the pressure
+  // correctors, with the corrected face flux, so that a converged outer loop
+  // carries no coupling lag. The outer loop's convergence test includes T.
+  void enableEnergy(const EnergyModel& model);
+  // type is one TemperatureBC per boundary face, value the prescribed
+  // temperature or heat flux. Without a call every face is FixedValue at 0.
+  void setTemperatureBoundary(const View1<int>& type, const ScalarField& value);
+  // Volumetric source S_T per cell, in temperature per unit time.
+  void setTemperatureSource(const ScalarField& source);
+  // Sets the current and both old time levels, as setState does for u.
+  void setTemperature(const ScalarField& T);
+  ScalarField temperature() const { return T_; }
+  // Diffusive heat flux INTO the domain through each boundary face,
+  // integrated over the face, from the same discrete operator the energy
+  // equation applies there -- the Nusselt number is read from this.
+  ScalarField boundaryHeatFlux() const;
 
   // pType is one PressureBC per boundary face, pValue the prescribed pressure
   // on the FixedValue ones. Calling this switches the solver from the closed
@@ -282,6 +339,14 @@ class PisoSolver {
  private:
   void bdf(Real& aP, Real& a1, Real& a2) const;
   void assembleMomentum(const VectorField& uB, const VectorField& src);
+  // Boundary velocity with every slip face replaced by the tangential part of
+  // its cell's current velocity; the caller's value everywhere else.
+  void slipBoundaryVelocity(const VectorField& uB);
+  // src plus the buoyancy of the current temperature, into srcTotal_.
+  void addBuoyancy(const VectorField& src);
+  void solveEnergy(LinearSolver& solver);
+  // Gradient of T with the boundary values the energy equation uses.
+  void gradT(VectorField& g) const;
   void computeHbyA();
   void rhieChow();
   void solvePressure(LinearSolver& solver);
@@ -354,6 +419,20 @@ class PisoSolver {
            ctl_.rhieChowForm == RhieChowForm::Standard;
   }
   void computeOldResidual();
+
+  // Slip faces (ADR-039). hasSlip_ skips all of it when there are none, so a
+  // v1 case runs exactly the operations it ran before.
+  bool hasSlip_{false};
+  VectorField uBEff_;          // the boundary velocity the momentum equation
+                               // actually used, slip faces included
+
+  // Energy equation (ADR-038).
+  bool energy_{false};
+  EnergyModel em_;
+  ScalarField T_, TOld_, TOld2_, TSrc_;
+  View1<int> tType_;           // TemperatureBC per boundary face
+  ScalarField tValue_;         // prescribed temperature or heat flux
+  VectorField srcTotal_;       // caller's source plus buoyancy
 };
 
 }  // namespace vibeflow

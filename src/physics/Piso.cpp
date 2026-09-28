@@ -5,6 +5,7 @@
 #include "mesh/Mesh.hpp"
 #include <algorithm>
 #include <cmath>
+#include <stdexcept>
 
 namespace vibeflow {
 namespace {
@@ -1016,6 +1017,39 @@ StepReport PisoSolver::advance(const VectorField& uB, const ScalarField& fB,
     }
   }
   return rep;
+}
+
+// ------------------------------------------------------------ v2a, stubbed
+// ADR-038 and ADR-039: the entry points exist so that the C++ gates can be
+// written against them and shown to fail before the implementation does.
+// Each one refuses.
+void PisoSolver::setBoundaryTypes(const View1<int>& bcType) {
+  bcType_ = bcType;
+  Index slip = 0;
+  auto bt = bcType;
+  Kokkos::parallel_reduce("slipCount",
+    Kokkos::RangePolicy<ExecSpace>(0, static_cast<Index>(bt.extent(0))),
+    KOKKOS_LAMBDA(const Index f, Index& a) {
+      a += bt(f) == static_cast<int>(VelocityBC::Slip) ? 1 : 0;
+    }, slip);
+  if (comm_.sum(slip) > 0)
+    throw std::runtime_error("slip velocity boundaries are not implemented (ADR-039)");
+}
+
+void PisoSolver::enableEnergy(const EnergyModel&) {
+  throw std::runtime_error("the energy equation is not implemented (ADR-038)");
+}
+void PisoSolver::setTemperatureBoundary(const View1<int>&, const ScalarField&) {
+  throw std::runtime_error("the energy equation is not implemented (ADR-038)");
+}
+void PisoSolver::setTemperatureSource(const ScalarField&) {
+  throw std::runtime_error("the energy equation is not implemented (ADR-038)");
+}
+void PisoSolver::setTemperature(const ScalarField&) {
+  throw std::runtime_error("the energy equation is not implemented (ADR-038)");
+}
+ScalarField PisoSolver::boundaryHeatFlux() const {
+  throw std::runtime_error("the energy equation is not implemented (ADR-038)");
 }
 
 }  // namespace vibeflow

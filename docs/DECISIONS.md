@@ -2284,6 +2284,44 @@ recorded here because they change what the gate would have said.
   meet it. It is a change made after seeing the numbers whose verdict it
   changes, and it is recorded as that.
 
+### The C++ gates, as written before the C++ code
+
+Committed failing against a stubbed API in which every new entry point
+throws. What each fixes beyond the plan above, before any run:
+
+- *Gates 1–3* (`tests/mms/heat_transfer.cpp`) are the Python gate on
+  8³/16³/32³. Two harness settings differ. Gate 2's order runs march at
+  dt = 0.1: on 32³ a step of 0.2 would be a Courant number a third above
+  the one Python's 24³ run converged at. And "steady" means a change per
+  step below 1e-12, not 1e-13, because iterative linear solvers have a noise
+  floor that direct factorisations do not — steady_dt's choice. Gate 3 also
+  reports the spurious velocity under a constant reference, as the plan
+  said and the Python gate left out.
+- *Slip walls* (`tests/mms/taylor_green.cpp`): ADR-039's revised criteria on
+  8³/16³/32³.
+- *Two gates the plan did not list.* A cross-check
+  (`tests/mms/crosscheck_v2.py`): gate 1's L2(T) and the Taylor–Green errors
+  on 6³ and 12³ within 1e-4 relative of Python's, the NS cross-check's bound;
+  gate 2's steady L2(u) and L2(T) on 6³ within 1e-6. And an MPI gate
+  (`tests/mms/mms_parallel_heat.cpp`): gate 2's flow on a distorted mesh with
+  slip and fixed-heat-flux faces, velocity and temperature each within 1e-10
+  of the serial run on 2, 3 and 4 ranks.
+- *Rayleigh–Bénard* (`tests/benchmark/rayleigh_benard.cpp`): the box π/k_c by
+  1, one cell thick in y with slip, adiabatic faces. The growth rate is the
+  least-squares slope of ln‖u‖ over 1.5 ≤ t ≤ 3.5 (dt = 0.01, four outer
+  iterations); its two halves must agree within 1e-3 or the run fails. The
+  critical Ra is the zero of the quadratic through the three points, and the
+  observed order from the unequal ratios of 16/24/32 is solved for
+  numerically. The neutral point depends on neither dt nor the outer count:
+  a neutral mode is a steady solution of the linearised discrete equations,
+  and the solver's steady states depend on neither (ADR-037).
+- *De Vahl Davis* (`tests/benchmark/heated_cavity.cpp`): the velocity maxima
+  are judged on 128² — the plan did not say which mesh. The Richardson
+  extrapolation needs an observed order in [0.5, 4], as in ADR-033, or the
+  check fails. Steady means the change per unit time of T and of u/u_ref
+  below 1e-5, and dt is a Courant number of about one on the reference
+  velocity. The Nusselt number is the solver's own wall heat flux.
+
 ## ADR-039 — Slip walls, gated by the Taylor–Green vortex. Stated before the code
 **Decided.** ADR-038 adds a slip velocity boundary — zero normal velocity,
 zero tangential stress — so that a symmetry plane can bound a roll, and

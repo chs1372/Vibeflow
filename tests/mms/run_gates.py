@@ -76,7 +76,9 @@ def parallel_sweep(ranks=(2, 3, 4), binary_name="mms_parallel", args=()):
 
     r = subprocess.run([str(binary), *args], cwd=ROOT, env=ENV,
                        capture_output=True, text=True)
-    m = re.search(r"L2 ([\d.eE+-]+)", r.stdout)
+    # A comma-separated pair is one reference per field (mms_parallel_heat:
+    # velocity and temperature), passed back as it came.
+    m = re.search(r"L2 ([\d.eE+,-]+)", r.stdout)
     if r.returncode != 0 or not m:
         print(r.stdout or r.stderr); return False
     ref = m.group(1)
@@ -182,6 +184,22 @@ GATES = {
          lambda: run([PY, str(PROTO / "boussinesq.py")], PROTO), None),
         ("python: slip walls, Taylor-Green vortex",
          lambda: run([PY, str(PROTO / "taylor_green.py")], PROTO), None),
+        ("c++: energy equation and Boussinesq buoyancy",
+         lambda: run([str(BUILD / "heat_transfer"), str(FIX)]), BUILD / "heat_transfer"),
+        ("c++: slip walls, Taylor-Green vortex",
+         lambda: run([str(BUILD / "taylor_green")]), BUILD / "taylor_green"),
+        ("cross-check: python and c++ heat transfer and slip walls agree",
+         lambda: run([PY, str(Path(__file__).parent / "crosscheck_v2.py")]),
+         BUILD / "heat_transfer"),
+        ("mpi: heat transfer and slip walls are independent of the rank count",
+         lambda: parallel_sweep(binary_name="mms_parallel_heat"),
+         BUILD / "mms_parallel_heat"),
+        ("benchmark: Rayleigh-Benard onset against Ra_c = 1707.762",
+         lambda: run([str(BUILD / "rayleigh_benard")]), BUILD / "rayleigh_benard"),
+        # Hours on two cores: Ra = 1e6 on 128^2 needs a Courant-limited march
+        # to its steady state.
+        ("benchmark: differentially heated cavity against de Vahl Davis (1983)",
+         lambda: run([str(BUILD / "heated_cavity")]), BUILD / "heated_cavity"),
     ],
     # v3: sod_shock_tube, naca0012_transonic
     # v4: dam_break, rising_bubble

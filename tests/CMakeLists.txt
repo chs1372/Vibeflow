@@ -59,3 +59,24 @@ target_link_libraries(cylinder PRIVATE vibeflow_physics vibeflow_io)
 add_executable(mms_parallel_read mms/mms_parallel_read.cpp)
 target_link_libraries(mms_parallel_read PRIVATE vibeflow_discretization)
 add_test(NAME mms_parallel_read COMMAND mms_parallel_read ${FIXTURES} 16 read)
+
+# v2a (ADR-038, ADR-039): the energy equation, Boussinesq buoyancy, slip walls.
+add_executable(heat_transfer mms/heat_transfer.cpp)
+target_link_libraries(heat_transfer PRIVATE vibeflow_physics)
+add_test(NAME heat_transfer COMMAND heat_transfer ${FIXTURES})
+
+add_executable(taylor_green mms/taylor_green.cpp)
+target_link_libraries(taylor_green PRIVATE vibeflow_physics)
+add_test(NAME taylor_green COMMAND taylor_green)
+
+add_executable(mms_parallel_heat mms/mms_parallel_heat.cpp)
+target_link_libraries(mms_parallel_heat PRIVATE vibeflow_physics)
+add_test(NAME mms_parallel_heat COMMAND mms_parallel_heat)
+
+add_executable(rayleigh_benard benchmark/rayleigh_benard.cpp)
+target_link_libraries(rayleigh_benard PRIVATE vibeflow_physics)
+add_test(NAME rayleigh_benard COMMAND rayleigh_benard)
+
+# Hours on two cores at 128^2 and Ra = 1e6: a suite gate, not a ctest.
+add_executable(heated_cavity benchmark/heated_cavity.cpp)
+target_link_libraries(heated_cavity PRIVATE vibeflow_physics)
