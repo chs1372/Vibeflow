@@ -2910,3 +2910,93 @@ with its quadratic shear brought k to 1.74 then 1.89, from below, near the
 band's edge — the linear shear removes the boundary error of S that held
 it there. Not yet run: the distortion, SST-1994, and gate 2b. The criteria
 are unchanged.
+
+### Revision before the flat plate's result: k and ω advection, ω's destruction, and the march
+
+A first flat-plate run on TMR's coarsest grid, 35×25 — not one of the
+gate's grids — went wrong in three ways, each fixed before any gate grid
+was run:
+
+- *Central differencing of ω across the leading edge.* ω jumps by five
+  orders of magnitude between the free stream (125) and the first cell on
+  the plate (about 1e7), and at the leading edge that jump lies between two
+  neighbouring cells. The deferred correction then carries the downstream
+  value into the upstream cell's outflow, which drove that cell's ω
+  negative on the second step; 1.4 million cell-steps were bounded and Cf
+  settled at 3.1e-4, a tenth of the turbulent value. TMR's two codes use
+  first-order upwinding for the turbulence advection ("Both codes used
+  first-order upwinding for the advective terms of the turbulence model").
+  So does this solver now, by default: `TurbulenceModel.secondOrderAdvection
+  = false`, `advection="upwind"` in Python. The deferred correction stays
+  as the option the manufactured gates run — they verify the model's
+  terms, whose order a first-order advection error would hide — and the
+  cross-check and MPI gates run it too.
+- *ω's destruction linearised by Picard.* βω² as βω_old·ω makes its
+  balance with the production a period-two map, ω_new·ω_old = P/β, which
+  neither converges nor damps; on 69×49 the first cell on the plate
+  swung between 6e5 and 2.6e7 and then grew without bound. It is now
+  linearised by Newton, 2βω_old·ω − βω_old², the same fixed point.
+- *The impulsive start.* From a uniform stream the first cell above the
+  wall sees S ≈ 1e5 at once, and on 35×25 a full step there drove k and ω
+  through zero on the first steps and kept them there. The march now ramps the
+  step from dt/64, doubling every 100 steps (`PisoSolver::setTimeStep`,
+  which restarts BDF at first order); the steady state does not depend on
+  the step (ADR-037). The first few steps still bound k in the wall cells,
+  where it falls by more than the factor of four BDF2 can follow; the
+  count stops rising after them.
+
+Data seen: on 35×25, with upwinding and the ramp (still Picard), the plate
+reached a steady state at t = 40 (4,500 steps) with Cf(0.97008) =
+0.0025569, CD = 0.0027222 and a ν_t/ν peak of 208.6, where TMR's CFL3D gives
+0.0025518 and 0.0027062 on the same grid; 112 cells bounded, all in the
+first steps. On 69×49, one of the gate's grids, the runs that showed the
+Picard oscillation were stopped at steps 300, 30 and 60, blown up; nothing
+was taken from them but that. With Newton, 69×49's first 60 steps kept ω
+bounded and smooth. The criteria are unchanged, and gate 2's runs are
+repeated with the Newton linearisation, which changes their iteration but
+not their fixed point.
+
+### Revision before the flat plate's result: momentum advection
+
+The 69×49 run then reached its steady state — Cf(0.97008) = 0.0026427,
+CD = 0.0028133, a ν_t/ν peak of 214.5, after 5,800 steps (t = 53) — and the
+slowness of the march led to what was wrong with it. Ahead of the plate,
+within about 2e-3 of the symmetry plane, the velocity alternates from one
+column of cells to the next. On 35×25 at its steady state, the first row of
+cells has u = 0.82, 1.13, 0.90, 1.08, 0.93, 1.10 in the six columns between
+the inlet and the leading edge, while the pressure runs smoothly through
+them; the shear this makes holds k at up to 1.9e-3 there, four orders of
+magnitude above the free stream's, and ν_t/ν at up to 67, where the free
+stream has 0.009. It is central differencing's odd–even mode, excited at
+the leading edge, where u falls from 1 to 0.06 between two columns.
+Momentum's face value is linear interpolation plus the skewness
+correction, which does not see that mode, and nothing else here damps it:
+these cells are about 0.1 long and 8e-6 thick, a cell Péclet number in x
+above 1e4, so there is no streamwise diffusion to speak of. With
+first-order upwinding (the deferred correction switched off, as a
+diagnostic), the mode is gone: u is within 0.4% of 1 ahead of the plate,
+k and ν_t are at their free-stream values, and 35×25 reaches its steady
+state in 1,200 steps instead of 4,500 (Cf 0.0025382, first order).
+
+So momentum gets a second choice of face value,
+`PisoControls.convection = ConvectionScheme::LinearUpwind`: the upwind
+cell's value extrapolated to the face centre by its own least-squares
+gradient, u_U + ∇u_U · (x_f − x_U), still carried as the deferred
+correction to upwind. It is exact for a linear field, so second order, and
+it treats the odd–even mode as upwinding does (on a uniform grid it is
+Fromm's scheme). CFL3D's and FUN3D's schemes are upwind-biased as well. The
+default stays `Linear`, so every other case and gate is unchanged; the flat
+plate runs `LinearUpwind`, the first case with a free stream meeting a wall
+edge-on across cells this long. k and ω keep first-order upwinding.
+
+Before the flat plate runs again, the new face value is verified as the old
+one was, against the same criteria:
+
+- Ethier–Steinman, the v1 C++ gate, with `LinearUpwind`: spatial order in
+  [1.85, 2.15] on the orthogonal meshes and [1.6, 2.3] on the smooth
+  distortion.
+- The Navier–Stokes cross-check with `convection="linearUpwind"` in Python
+  too: C++ against Python within the same 1e-4.
+
+Gate 4's criteria are unchanged. The 69×49 result above is the linear
+scheme's and does not count for the gate: 69×49 is run again with the rest.
