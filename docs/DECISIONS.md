@@ -2535,3 +2535,84 @@ the outer loop converged, 0.9196 on 16 cells (40 iterations, 1e-11) and
 temporal study, and none at the gate's settings. The bands above come from
 the onset gate and from the argument just given, not from those two
 numbers — but they were written knowing them, and that is recorded here.
+
+## ADR-041 — Balanced buoyancy: the force in the face flux, its hydrostatic part in a pressure of its own. Stated before the code
+**Decided.** ADR-038's buoyancy is a cell force. A fluid at rest in a
+stratification that the reference T_ref does not match starts to move: gate
+3's box with T_ref = 0.5 reaches 0.47 κ/L within 50 steps at Ra = 1700 on 8³.
+The pressure that should hold it is quadratic, and it is carried by the
+least-squares gradient and the boundary extrapolation, neither exact for it.
+ADR-038 deferred the remedy that OpenFOAM's buoyantBoussinesqPimpleFoam
+uses: put the force in the face flux (phig) and reconstruct the cell
+velocity from face quantities, so that a hydrostatic state balances face by
+face. Done literally, that routes the solver's own pressure gradient through
+the reconstruction too — first order on a perturbed mesh, a change to the
+velocity correction every v1 gate stands on, and a bypass of ADR-037's
+Rhie–Chow form. This ADR takes the same idea with one split, so that the v1
+path stays exactly as it is.
+
+**The form** (`buoyancy = balanced`), each outer iteration, from the latest T:
+
+1. The face force B_f = f(T_f)·S_f, with T_f the skew-corrected face
+   temperature, or on a boundary face the value the energy equation's
+   gradient uses there.
+2. A hydrostatic pressure p_h solves the discrete Poisson problem that makes
+   the face residual r_f = B_f − [a_f (p_h,N − p_h,P) + k_f·∇p_h,f]
+   divergence-free in every cell. r = 0 on every boundary face (Neumann), and
+   the non-orthogonal part is iterated as the pressure's is. In the continuum
+   this is the Leray split of the force: f − ∇p_h is divergence-free and has
+   no normal component on the walls.
+3. The cell force g_P = M_P⁻¹ Σ_f S_f r_f / |S_f|, with M_P = Σ_f S_f S_fᵀ/|S_f|
+   (OpenFOAM's reconstruct), replaces the cell buoyancy in the momentum
+   source.
+4. In the predicted face flux the compact residual replaces the interpolated
+   cell force: F* += D_f (r_f − L[g]·S_f), the buoyancy's counterpart of the
+   pressure's D_f (L[∇p]·S − a_f Δp). ADR-037's old-flux term keeps it free of
+   dt at a steady state, by the same algebra.
+
+The solved pressure is then the dynamic part. p_h, plus T_ref's analytic
+hydrostatic part, completes it.
+
+**Why it is exact at rest.** Take T depending on height alone, on a mesh
+whose cells stand in horizontal layers: Cartesian, and the smooth family,
+which distorts the horizontal plane and extrudes along z. The force has no
+horizontal component, so B vanishes on side faces. The horizontal faces of
+stacked cells are orthogonal, so their differences of p_h absorb B exactly,
+and every column gives the same differences. The least-squares gradient of
+a layered field then has no horizontal component, so the non-orthogonal
+correction on side faces vanishes too. Hence r = 0 on every face, the cell
+force is exactly zero, and u = 0 is a fixed point for any T(z), matched
+reference or not. On a randomly perturbed mesh the layers are gone and it is
+not exact.
+
+**Measured before this was written.** Reconstructing a smooth field with no
+normal component on the walls from exact face values: second order on the
+smooth family (orders 1.99, 2.00 orthogonal; 1.97, 1.99 distorted; 6³–24³)
+and first order on the randomly perturbed one (1.02, 0.90). The order gates
+run on the smooth family.
+
+**Gates.** Python first, then C++. Each is committed failing (the form does
+not exist) before its code:
+
+1. *Rest, constant reference.* Gate 3's box with T_ref = 0.5 constant and
+   T = 1 − z. After 50 steps, max|u| ≤ 1e-12 and max|T − (1 − z)| ≤ 1e-12, on
+   the Cartesian and the distorted 8³ mesh.
+2. *Rest, curved stratification.* A uniformly heated layer, T = 1 − z² with
+   source 2κ, the same boundaries and T_ref = 0.5. max|u| ≤ 1e-12, and T
+   horizontally uniform to 1e-12. The discrete conduction profile is not
+   exactly 1 − z², so its shape is not judged, only its evenness.
+3. *Accuracy unchanged.* ADR-038's gates 1–3, both benchmarks and ADR-040's
+   transient gate, rerun in the balanced form against their own criteria.
+4. *Cross-check and MPI in the balanced form.* Gate 2's steady rows, Python
+   against C++, within 1e-6; two to four ranks within 1e-10 of the serial run.
+5. *v1 untouched.* With buoyancy off the operations are the same; the full
+   suite runs.
+
+**Decision rule.** If every gate passes, the balanced form becomes the
+default for buoyant runs and the cell form stays selectable as the recorded
+baseline. If gate 3 fails on the distortion, the balanced form stays an
+option and this entry says why. Reported, not gated: the rest state on the
+randomly perturbed fixture mesh, in both forms.
+
+**Cost.** One more Poisson solve per outer iteration, with a constant matrix
+and a warm start.

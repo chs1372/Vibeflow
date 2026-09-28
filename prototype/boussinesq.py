@@ -22,8 +22,18 @@ run against a solver without it they fail with the reason.
      profile T = 1 - z between a hot bottom and a cold top, adiabatic sides,
      the reference stratification equal to it: 50 steps must leave u at zero
      and T linear, to 1e-12, on a Cartesian and a distorted mesh.
+
+ADR-041 adds two gates for the balanced buoyancy form -- the force in the face
+flux, its hydrostatic part in a pressure of its own -- and runs every gate in
+that form (VIBEFLOW_BUOYANCY=cell selects the cell-force baseline):
+
+  4. At rest without a matched reference: gate 3 with T_ref = 0.5 constant.
+  5. At rest in a curved stratification: a uniformly heated layer, T = 1 - z^2
+     with source 2 kappa, T_ref = 0.5. u stays at zero and T horizontally
+     uniform, to 1e-12.
 """
 
+import os
 import sys
 
 import numpy as np
@@ -35,6 +45,8 @@ from piso import PisoSolver
 import ethier_steinman as ES
 
 PI = np.pi
+# The buoyancy form every gate runs (ADR-041). "cell" is ADR-038's cell force.
+FORM = os.environ.get("VIBEFLOW_BUOYANCY", "balanced")
 
 
 # ------------------------------------------------------------------ helpers
@@ -87,7 +99,7 @@ def t_source(q, t, nu, kappa):
 def run_energy_exact_flow(n, dt, nsteps, nu, kappa, skew, mode="smooth", nouter=6):
     m = HexMesh(n, skew=skew, seed=1, skew_mode=mode)
     solver = PisoSolver(m, nu, dt, n_correctors=2, n_outer=nouter,
-                        kappa=kappa, beta_g=np.zeros(3))
+                        kappa=kappa, beta_g=np.zeros(3), buoyancy_form=FORM)
     solver.u = ES.velocity(m.cell_centre, 0.0, nu)
     solver.u_old = solver.u.copy()
     solver.u_old2 = solver.u.copy()
@@ -177,7 +189,8 @@ def b_pressure(q):
 def steady_boussinesq(n, skew, mode, dt, nu=0.1, kappa=0.1, tol=1e-13, max_time=400.0):
     m = HexMesh(n, skew=skew, seed=1, skew_mode=mode)
     solver = PisoSolver(m, nu, dt, n_correctors=2, n_outer=3, kappa=kappa,
-                        beta_g=np.array([0.0, 0.0, -1.0]), t_ref=0.0)
+                        beta_g=np.array([0.0, 0.0, -1.0]), t_ref=0.0,
+                        buoyancy_form=FORM)
     su, sT = _boussinesq_sources(nu, kappa)
     src = su(m.cell_centre)
     T_src = sT(m.cell_centre)
@@ -236,33 +249,45 @@ def gate_boussinesq_mms():
     return ok
 
 
-# ------------------------------------------------- 3. stratified rest state
+# ------------------------------------------------- 3-5. fluids at rest
+def rest_state(skew, mode="smooth", t_ref=1.0, t_ref_grad=(0.0, 0.0, -1.0),
+               profile=lambda z: 1.0 - z, source=0.0, form=None):
+    """50 steps from a resting stratified fluid between a hot bottom and a
+    cold top, adiabatic sides, walls everywhere. Returns max|u|, the largest
+    departure of T from the profile, and the largest spread of T within a
+    horizontal layer of cells."""
+    m = HexMesh(8, skew=skew, seed=1, skew_mode=mode)
+    solver = PisoSolver(m, 1.0, 0.01, n_correctors=2, n_outer=3, kappa=1.0,
+                        beta_g=np.array([0.0, 0.0, -1700.0]),
+                        t_ref=t_ref, t_ref_grad=np.array(t_ref_grad),
+                        buoyancy_form=FORM if form is None else form)
+    solver.T = profile(m.cell_centre[:, 2])
+    solver.T_old = solver.T.copy()
+    solver.T_old2 = solver.T.copy()
+    nb = len(m.b_cell)
+    z = m.b_centre[:, 2]
+    n_hat = m.b_area / np.linalg.norm(m.b_area, axis=1)[:, None]
+    horizontal = np.abs(n_hat[:, 2]) > 0.5
+    T_bc = np.where(horizontal, 0, 1)            # 0 fixed T, 1 fixed flux
+    T_b = np.where(horizontal, profile(z), 0.0)  # value, or zero heat flux
+    T_src = np.full(m.nc, source)
+    u_b = np.zeros((nb, 3))
+    Fb = np.zeros(nb)
+    src = np.zeros((m.nc, 3))
+    for _ in range(50):
+        solver.advance(u_b, Fb, src, T_b=T_b, T_bc=T_bc, T_src=T_src)
+    du = np.abs(solver.u).max()
+    dT = np.abs(solver.T - profile(m.cell_centre[:, 2])).max()
+    layer = np.round(m.cell_centre[:, 2] * 1e6).astype(np.int64)
+    spread = max(np.ptp(solver.T[layer == k]) for k in np.unique(layer))
+    return du, dT, spread
+
+
 def gate_rest_state():
     print("\n3. a fluid resting in its reference stratification stays at rest")
     ok = True
     for skew, tag in ((0.0, "Cartesian"), (0.25, "distorted")):
-        m = HexMesh(8, skew=skew, seed=1, skew_mode="smooth")
-        profile = lambda q: 1.0 - q[:, 2]
-        solver = PisoSolver(m, 1.0, 0.01, n_correctors=2, n_outer=3, kappa=1.0,
-                            beta_g=np.array([0.0, 0.0, -1700.0]),
-                            t_ref=1.0, t_ref_grad=np.array([0.0, 0.0, -1.0]))
-        solver.T = profile(m.cell_centre)
-        solver.T_old = solver.T.copy()
-        solver.T_old2 = solver.T.copy()
-        # Hot bottom, cold top, adiabatic sides; walls everywhere.
-        nb = len(m.b_cell)
-        z = m.b_centre[:, 2]
-        n_hat = m.b_area / np.linalg.norm(m.b_area, axis=1)[:, None]
-        horizontal = np.abs(n_hat[:, 2]) > 0.5
-        T_bc = np.where(horizontal, 0, 1)            # 0 fixed T, 1 fixed flux
-        T_b = np.where(horizontal, 1.0 - z, 0.0)     # value, or zero heat flux
-        u_b = np.zeros((nb, 3))
-        Fb = np.zeros(nb)
-        src = np.zeros((m.nc, 3))
-        for _ in range(50):
-            solver.advance(u_b, Fb, src, T_b=T_b, T_bc=T_bc)
-        du = np.abs(solver.u).max()
-        dT = np.abs(solver.T - profile(m.cell_centre)).max()
+        du, dT, _ = rest_state(skew)
         passed = du <= 1e-12 and dT <= 1e-12
         ok &= passed
         print(f"  {tag:<10} max|u| {du:.1e}   max|T - (1 - z)| {dT:.1e}  "
@@ -270,13 +295,46 @@ def gate_rest_state():
     return ok
 
 
+def gate_rest_constant_reference():
+    print("\n4. at rest without a matched reference: T = 1 - z, T_ref = 0.5 (ADR-041)")
+    ok = True
+    for skew, tag in ((0.0, "Cartesian"), (0.25, "distorted")):
+        du, dT, _ = rest_state(skew, t_ref=0.5, t_ref_grad=(0.0, 0.0, 0.0))
+        passed = du <= 1e-12 and dT <= 1e-12
+        ok &= passed
+        print(f"  {tag:<10} max|u| {du:.1e}   max|T - (1 - z)| {dT:.1e}  "
+              f"{'PASS' if passed else 'FAIL'}")
+    # Reported, not gated: a randomly perturbed mesh has no layers.
+    for form in ("cell", FORM):
+        du, _, _ = rest_state(0.25, mode="warped", t_ref=0.5, t_ref_grad=(0.0, 0.0, 0.0),
+                              form=form)
+        print(f"  perturbed  {form:<9} max|u| {du:.1e}  (reported, not gated)")
+    return ok
+
+
+def gate_rest_curved():
+    print("\n5. at rest in a curved stratification: T = 1 - z^2, source 2 kappa, "
+          "T_ref = 0.5 (ADR-041)")
+    ok = True
+    for skew, tag in ((0.0, "Cartesian"), (0.25, "distorted")):
+        du, _, spread = rest_state(skew, t_ref=0.5, t_ref_grad=(0.0, 0.0, 0.0),
+                                   profile=lambda z: 1.0 - z * z, source=2.0)
+        passed = du <= 1e-12 and spread <= 1e-12
+        ok &= passed
+        print(f"  {tag:<10} max|u| {du:.1e}   T spread within a layer {spread:.1e}  "
+              f"{'PASS' if passed else 'FAIL'}")
+    return ok
+
+
 def main():
     ok = True
-    for gate in (gate_energy_exact_flow, gate_boussinesq_mms, gate_rest_state):
+    print(f"buoyancy form: {FORM}")
+    for gate in (gate_energy_exact_flow, gate_boussinesq_mms, gate_rest_state,
+                 gate_rest_constant_reference, gate_rest_curved):
         try:
             ok &= gate()
         except TypeError as e:          # the solver does not take the arguments
-            print(f"  FAIL: the solver has no energy equation ({e})")
+            print(f"  FAIL: the solver lacks what this gate needs ({e})")
             ok = False
     print("\nv2a heat-transfer GATE (Python): " + ("PASS" if ok else "FAIL"))
     return 0 if ok else 1
