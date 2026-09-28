@@ -85,6 +85,15 @@ add_test(NAME rb_growth COMMAND rb_growth)
 add_executable(sst_mms mms/sst_mms.cpp)
 target_link_libraries(sst_mms PRIVATE vibeflow_physics)
 add_test(NAME sst_mms COMMAND sst_mms ${FIXTURES})
+# The flat plate's momentum face value, where convection matters (ADR-042).
+add_executable(convection_order mms/convection_order.cpp)
+target_link_libraries(convection_order PRIVATE vibeflow_physics)
+add_executable(mms_parallel_sst mms/mms_parallel_sst.cpp)
+target_link_libraries(mms_parallel_sst PRIVATE vibeflow_physics)
+add_test(NAME mms_parallel_sst COMMAND mms_parallel_sst)
+# ADR-042 gate 4: one grid per run; flat_plate_gate.py compares the grids.
+add_executable(flat_plate benchmark/flat_plate.cpp)
+target_link_libraries(flat_plate PRIVATE vibeflow_physics)
 
 # Hours on two cores at 128^2 and Ra = 1e6: a suite gate, not a ctest.
 add_executable(heated_cavity benchmark/heated_cavity.cpp)

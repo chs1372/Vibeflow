@@ -2998,5 +2998,17 @@ one was, against the same criteria:
 - The Navier–Stokes cross-check with `convection="linearUpwind"` in Python
   too: C++ against Python within the same 1e-4.
 
+Ethier–Steinman then ran first, and passed (orders 1.985, 1.991; on the
+distortion 1.805, 2.034), but it cannot tell the two face values apart: two
+steps from the exact field, its error is mostly the projection's, and the
+linear and linear-upwind errors differ by 1.5e-4 relative. So a third
+check is added, before it runs: `convection_order`, the steady
+manufactured flow of `steady_dt` at ν = 0.02 — cell Péclet numbers of 17,
+8 and 4 on 6³, 12³ and 24³, so that convection's truncation error is a
+large part of the whole — marched from the exact field to a steady state
+(the change of u or p over a step below 1e-8) at a Courant number of 3.2;
+both face values, both mesh families; the order of u between the two
+finest meshes in the v1 bands, rising on the distortion.
+
 Gate 4's criteria are unchanged. The 69×49 result above is the linear
 scheme's and does not count for the gate: 69×49 is run again with the rest.
