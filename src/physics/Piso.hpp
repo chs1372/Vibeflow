@@ -22,6 +22,7 @@
 
 #include "core/Parallel.hpp"
 #include "core/Types.hpp"
+#include <memory>
 #include <vector>
 #include "discretization/Diffusion.hpp"
 #include "discretization/Gradient.hpp"
@@ -30,6 +31,7 @@ namespace vibeflow {
 
 class Mesh;
 class LinearSolver;
+class LinearSystem;
 
 // Velocity boundary condition per face.
 //   Dirichlet    - the face value is prescribed (walls, inlets, a moving lid)
@@ -285,6 +287,7 @@ class PisoSolver {
  public:
   PisoSolver(const Mesh& mesh, Real nu, Real dt, PisoControls controls = {},
              Comm comm = Comm());
+  ~PisoSolver();
 
   // bcType is one VelocityBC per boundary face; empty means all Dirichlet.
   void setBoundaryTypes(const View1<int>& bcType);
@@ -363,6 +366,10 @@ class PisoSolver {
   void slipBoundaryVelocity(const VectorField& uB);
   // src plus the buoyancy of the current temperature, into srcTotal_.
   void addBuoyancy(const VectorField& src);
+  // The balanced form (ADR-041): the face force, its hydrostatic pressure,
+  // the face residual and the cell force reconstructed from it; srcTotal_ =
+  // src + that cell force.
+  void balancedBuoyancy(const VectorField& src);
   void solveEnergy(LinearSolver& solver);
   // Gradient of T with the boundary values the energy equation uses.
   void gradT(VectorField& g) const;
@@ -452,6 +459,16 @@ class PisoSolver {
   View1<int> tType_;           // TemperatureBC per boundary face
   ScalarField tValue_;         // prescribed temperature or heat flux
   VectorField srcTotal_;       // caller's source plus buoyancy
+
+  // Balanced buoyancy (ADR-041).
+  bool balanced_{false};
+  ScalarField pH_;             // hydrostatic pressure of the face force
+  ScalarField rFace_;          // face residual, interior faces
+  ScalarField kgH_;            // p_h's non-orthogonal part, kept across calls
+  VectorField gCell_;          // cell force reconstructed from the residual
+  View2<Real> reconMinv_;      // per cell, (sum S S^T / |S|)^-1, row-major
+  std::unique_ptr<LinearSystem> phSys_;   // p_h's Laplacian: constant
+  std::unique_ptr<LinearSolver> phSolver_;
 };
 
 }  // namespace vibeflow

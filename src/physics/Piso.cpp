@@ -2,6 +2,7 @@
 #include <chrono>
 #include "linalg/LinearSolver.hpp"
 #include "linalg/LinearSystem.hpp"
+#include "linalg/NativeCG.hpp"
 #include "mesh/Mesh.hpp"
 #include <algorithm>
 #include <cmath>
@@ -64,6 +65,8 @@ PisoSolver::PisoSolver(const Mesh& mesh, Real nu, Real dt, PisoControls ctl, Com
     });
   Kokkos::fence();
 }
+
+PisoSolver::~PisoSolver() = default;
 
 void PisoSolver::setPressureBoundary(const View1<int>& pType,
                                      const ScalarField& pValue) {
@@ -513,6 +516,8 @@ void PisoSolver::rhieChow() {
   const bool interpolatedForm = ctl_.rhieChowForm == RhieChowForm::Interpolated;
   const bool probing = probing_;
   auto comp = rcComp_;
+  const bool balanced = energy_ && balanced_;
+  auto gC = gCell_; auto rF = rFace_;
 
   Kokkos::parallel_for("rhieChow", Kokkos::RangePolicy<ExecSpace>(0, nf),
     KOKKOS_LAMBDA(const Index f) {
@@ -543,6 +548,15 @@ void PisoSolver::rhieChow() {
       // gradient, blind to a checkerboard -- not the compact old-pressure
       // term of the interpolated form (ADR-026).
       if (exact) flux += D * gpf;
+      // Balanced buoyancy (ADR-041): the compact face residual in place of
+      // the interpolated cell force, as the pressure's compact gradient
+      // replaces its interpolated one.
+      if (balanced) {
+        Real gf = 0.0;
+        for (int i = 0; i < 3; ++i)
+          gf += (w(f) * gC(own(f), i) + (1.0 - w(f)) * gC(nei(f), i)) * fa(f, i);
+        flux += D * (rF(f) - gf);
+      }
       Real choi = 0.0;
       if (consistent) {
         // Old-flux term (Choi 1999): carrying the Rhie-Chow residual forward
@@ -960,7 +974,10 @@ StepReport PisoSolver::advance(const VectorField& uB, const ScalarField& fB,
     Kokkos::deep_copy(uPrev, u_);
     // The buoyancy of the latest temperature: from the last outer iteration's
     // energy solve, or the last step's on the first.
-    if (energy_) { Kokkos::deep_copy(TPrev, T_); addBuoyancy(src); }
+    if (energy_) {
+      Kokkos::deep_copy(TPrev, T_);
+      if (balanced_) balancedBuoyancy(src); else addBuoyancy(src);
+    }
     const VectorField& srcUse = energy_ ? srcTotal_ : src;
     const int nSweeps = ctl_.convectionSweeps > 1 ? ctl_.convectionSweeps : 1;
     for (int cs = 0; cs < nSweeps; ++cs) {
@@ -1122,9 +1139,7 @@ void PisoSolver::slipBoundaryVelocity(const VectorField& uB) {
 }
 
 void PisoSolver::enableEnergy(const EnergyModel& model) {
-  if (model.form == BuoyancyForm::Balanced)
-    throw std::runtime_error("balanced buoyancy is not implemented (ADR-041)");
-  const Index nt = m_.nTotal(), nb = m_.nBoundaryFaces();
+  const Index nt = m_.nTotal(), nb = m_.nBoundaryFaces(), nf = m_.nInternalFaces();
   energy_ = true;
   em_ = model;
   T_ = ScalarField("T", nt);
@@ -1134,6 +1149,68 @@ void PisoSolver::enableEnergy(const EnergyModel& model) {
   tType_ = View1<int>("tType", nb);          // all FixedValue ...
   tValue_ = ScalarField("tValue", nb);       // ... at zero
   srcTotal_ = VectorField("srcTotal", nt, 3);
+
+  balanced_ = model.form == BuoyancyForm::Balanced;
+  if (!balanced_) return;
+  pH_ = ScalarField("pH", nt);
+  rFace_ = ScalarField("rFace", nf);
+  kgH_ = ScalarField("kgH", nf);
+  gCell_ = VectorField("gCell", nt, 3);
+  reconMinv_ = View2<Real>("reconMinv", nt, 9);
+  {
+    // M_P = sum over the cell's faces of S S^T / |S|, inverted once, on the
+    // host. Ghost cells see only the faces this rank stores, so their M is
+    // partial: they are left at zero and their force comes by exchange.
+    const Index nc = m_.nCells();
+    auto H = [](const auto& v) {
+      return Kokkos::create_mirror_view_and_copy(HostSpace::memory_space(), v);
+    };
+    auto own = H(m_.owner()); auto nei = H(m_.neighbour()); auto fa = H(m_.faceArea());
+    auto bc = H(m_.boundaryCell()); auto ba = H(m_.boundaryArea());
+    std::vector<Real> M(static_cast<std::size_t>(nt) * 9, 0.0);
+    auto add = [&](Index c, Real s0, Real s1, Real s2) {
+      const Real s[3] = {s0, s1, s2};
+      const Real mag = std::sqrt(s0*s0 + s1*s1 + s2*s2);
+      for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j) M[c*9 + 3*i + j] += s[i] * s[j] / mag;
+    };
+    for (Index f = 0; f < nf; ++f) {
+      add(own(f), fa(f,0), fa(f,1), fa(f,2));
+      add(nei(f), fa(f,0), fa(f,1), fa(f,2));
+    }
+    for (Index f = 0; f < nb; ++f) add(bc(f), ba(f,0), ba(f,1), ba(f,2));
+    auto hm = Kokkos::create_mirror_view(reconMinv_);
+    for (Index c = 0; c < nt; ++c) {
+      for (int i = 0; i < 9; ++i) hm(c, i) = 0.0;
+      if (c >= nc) continue;
+      const Real* a = &M[c*9];
+      const Real det = a[0]*(a[4]*a[8] - a[5]*a[7]) - a[1]*(a[3]*a[8] - a[5]*a[6])
+                     + a[2]*(a[3]*a[7] - a[4]*a[6]);
+      const Real inv[9] = {
+        (a[4]*a[8] - a[5]*a[7]) / det, (a[2]*a[7] - a[1]*a[8]) / det, (a[1]*a[5] - a[2]*a[4]) / det,
+        (a[5]*a[6] - a[3]*a[8]) / det, (a[0]*a[8] - a[2]*a[6]) / det, (a[2]*a[3] - a[0]*a[5]) / det,
+        (a[3]*a[7] - a[4]*a[6]) / det, (a[1]*a[6] - a[0]*a[7]) / det, (a[0]*a[4] - a[1]*a[3]) / det};
+      for (int i = 0; i < 9; ++i) hm(c, i) = inv[i];
+    }
+    Kokkos::deep_copy(reconMinv_, hm);
+  }
+  // p_h's Laplacian: the pressure's orthogonal coefficients alone, Neumann on
+  // every boundary face. Constant, so assembled once.
+  phSys_ = std::make_unique<LinearSystem>(m_);
+  phSys_->zero();
+  {
+    auto own = m_.owner(); auto nei = m_.neighbour(); auto a = pdiff_.aInt();
+    auto diag = phSys_->diag(); auto up = phSys_->upper(); auto lo = phSys_->lower();
+    Kokkos::parallel_for("phMat", Kokkos::RangePolicy<ExecSpace>(0, nf),
+      KOKKOS_LAMBDA(const Index f) {
+        Kokkos::atomic_add(&diag(own(f)), a(f));
+        Kokkos::atomic_add(&diag(nei(f)), a(f));
+        up(f) = -a(f); lo(f) = -a(f);
+      });
+    Kokkos::fence();
+  }
+  phSolver_ = std::make_unique<NativeCG>(m_, comm_, true);
+  phSolver_->notifyMatrixChanged();
 }
 
 void PisoSolver::setTemperatureBoundary(const View1<int>& type, const ScalarField& value) {
@@ -1168,6 +1245,147 @@ void PisoSolver::addBuoyancy(const VectorField& src) {
       s(c,0) = src(c,0) - dT * b0;
       s(c,1) = src(c,1) - dT * b1;
       s(c,2) = src(c,2) - dT * b2;
+    });
+  Kokkos::fence();
+}
+
+void PisoSolver::balancedBuoyancy(const VectorField& src) {
+  // ADR-041. The face force B_f = f(T_f).S_f; the hydrostatic pressure p_h
+  // that leaves the face residual r_f = B_f - [a_f dp_h + k_f . grad p_h]
+  // divergence-free in every cell, with r = 0 on every boundary face; the cell
+  // force reconstructed from r alone. A resting fluid in any T(z) on a layered
+  // mesh has r = 0 exactly, so it feels nothing.
+  const Index nc = m_.nCells(), nt = m_.nTotal();
+  const Index nf = m_.nInternalFaces(), nb = m_.nBoundaryFaces();
+  auto own = m_.owner(); auto nei = m_.neighbour(); auto bc = m_.boundaryCell();
+  auto fa = m_.faceArea(); auto fc = m_.faceCentre();
+  auto ba = m_.boundaryArea(); auto bcen = m_.boundaryCentre();
+  auto w = w_; auto sk = skew_;
+  auto a = pdiff_.aInt(); auto k = pdiff_.kInt(); auto wo = pdiff_.wOwner();
+  auto ab = pdiff_.aBnd(); auto kb = pdiff_.kBnd();
+  auto T = T_; auto tt = tType_; auto tv = tValue_;
+  const Real b0 = em_.betaG.x, b1 = em_.betaG.y, b2 = em_.betaG.z;
+  const Real tr = em_.tRef, g0 = em_.tRefGrad.x, g1 = em_.tRefGrad.y, g2 = em_.tRefGrad.z;
+
+  VectorField gT("gTbal", nt, 3);
+  gradT(gT);
+  ScalarField B("Bface", nf), Bb("Bbnd", nb);
+  Kokkos::parallel_for("Bface", Kokkos::RangePolicy<ExecSpace>(0, nf),
+    KOKKOS_LAMBDA(const Index f) {
+      Real Tf = w(f) * T(own(f)) + (1.0 - w(f)) * T(nei(f));
+      for (int i = 0; i < 3; ++i)
+        Tf += (w(f) * gT(own(f), i) + (1.0 - w(f)) * gT(nei(f), i)) * sk(f, i);
+      const Real dT = Tf - (tr + g0 * fc(f,0) + g1 * fc(f,1) + g2 * fc(f,2));
+      B(f) = -dT * (b0 * fa(f,0) + b1 * fa(f,1) + b2 * fa(f,2));
+    });
+  Kokkos::parallel_for("Bbnd", Kokkos::RangePolicy<ExecSpace>(0, nb),
+    KOKKOS_LAMBDA(const Index f) {
+      const Real Tb = tt(f) == static_cast<int>(TemperatureBC::FixedValue) ? tv(f) : T(bc(f));
+      const Real dT = Tb - (tr + g0 * bcen(f,0) + g1 * bcen(f,1) + g2 * bcen(f,2));
+      Bb(f) = -dT * (b0 * ba(f,0) + b1 * ba(f,1) + b2 * ba(f,2));
+    });
+  Kokkos::fence();
+  Real scale = 1e-300;
+  Kokkos::parallel_reduce("Bscale", Kokkos::RangePolicy<ExecSpace>(0, nf),
+    KOKKOS_LAMBDA(const Index f, Real& m) { m = Kokkos::fmax(m, Kokkos::fabs(B(f))); },
+    Kokkos::Max<Real>(scale));
+  scale = std::max(comm_.max(scale), 1e-300);
+
+  // p_h, its non-orthogonal part deferred and kept across calls, as the
+  // pressure's is. The matrix is constant; the tolerance is absolute, a
+  // fraction of the right-hand side, so a warm start costs nothing when p_h
+  // has not moved.
+  auto ph = pH_; auto kg = kgH_;
+  auto rhs = phSys_->source();
+  VectorField g("gPh", nt, 3);
+  ScalarField vb("phBnd", nb);
+  auto gradPh = [&]() {
+    // Boundary values that leave no residual on a boundary face:
+    // a_b (p_b - p_P) + k_b . grad p_P = B_b, iterated with the gradient.
+    Kokkos::parallel_for("phB0", Kokkos::RangePolicy<ExecSpace>(0, nb),
+      KOKKOS_LAMBDA(const Index f) { vb(f) = ph(bc(f)) + Bb(f) / ab(f); });
+    Kokkos::fence();
+    for (int s = 0; s < 3; ++s) {
+      grad_(ph, vb, g);
+      Kokkos::parallel_for("phB", Kokkos::RangePolicy<ExecSpace>(0, nb),
+        KOKKOS_LAMBDA(const Index f) {
+          Real kgb = 0.0;
+          for (int i = 0; i < 3; ++i) kgb += kb(f, i) * g(bc(f), i);
+          vb(f) = ph(bc(f)) + (Bb(f) - kgb) / ab(f);
+        });
+      Kokkos::fence();
+    }
+    grad_(ph, vb, g);
+  };
+  for (int it = 0; it < ctl_.nonOrthCorrectors; ++it) {
+    Kokkos::deep_copy(rhs, 0.0);
+    Kokkos::parallel_for("phRhs", Kokkos::RangePolicy<ExecSpace>(0, nf),
+      KOKKOS_LAMBDA(const Index f) {
+        const Real q = B(f) - kg(f);
+        Kokkos::atomic_add(&rhs(own(f)), -q);
+        Kokkos::atomic_add(&rhs(nei(f)), q);
+      });
+    Kokkos::fence();
+    // Pure Neumann: the sum of the right-hand side vanishes analytically;
+    // project out what round-off leaves, as solvePressure does.
+    Real rmean = 0.0, rnorm = 0.0;
+    Kokkos::parallel_reduce("phRmean", Kokkos::RangePolicy<ExecSpace>(0, nc),
+      KOKKOS_LAMBDA(const Index c, Real& s) { s += rhs(c); }, rmean);
+    rmean = comm_.sum(rmean) / static_cast<Real>(comm_.sum(nc));
+    Kokkos::parallel_for("phRproj", Kokkos::RangePolicy<ExecSpace>(0, nc),
+      KOKKOS_LAMBDA(const Index c) { rhs(c) -= rmean; });
+    Kokkos::parallel_reduce("phRnorm", Kokkos::RangePolicy<ExecSpace>(0, nc),
+      KOKKOS_LAMBDA(const Index c, Real& s) { s += rhs(c) * rhs(c); }, rnorm);
+    rnorm = std::sqrt(comm_.sum(rnorm));
+    phSolver_->solve(*phSys_, ph, 0.0, 1e-15 * rnorm + 1e-300, 10000);
+    Real mean = 0.0;
+    Kokkos::parallel_reduce("phMean", Kokkos::RangePolicy<ExecSpace>(0, nc),
+      KOKKOS_LAMBDA(const Index c, Real& s) { s += ph(c); }, mean);
+    mean = comm_.sum(mean) / static_cast<Real>(comm_.sum(nc));
+    Kokkos::parallel_for("phShift", Kokkos::RangePolicy<ExecSpace>(0, nt),
+      KOKKOS_LAMBDA(const Index c) { ph(c) -= mean; });
+    Kokkos::fence();
+    gradPh();
+    Real delta = 0.0;
+    Kokkos::parallel_reduce("phNonorth", Kokkos::RangePolicy<ExecSpace>(0, nf),
+      KOKKOS_LAMBDA(const Index f, Real& m) {
+        Real v = 0.0;
+        for (int i = 0; i < 3; ++i)
+          v += k(f, i) * (wo(f) * g(own(f), i) + (1.0 - wo(f)) * g(nei(f), i));
+        v = kg(f) + 0.7 * (v - kg(f));      // under-relaxed, as the pressure's
+        m = Kokkos::fmax(m, Kokkos::fabs(v - kg(f)));
+        kg(f) = v;
+      }, Kokkos::Max<Real>(delta));
+    if (comm_.max(delta) < ctl_.nonOrthTol * scale) break;
+  }
+
+  // The residual, and the cell force reconstructed from it.
+  auto r = rFace_; auto gc = gCell_; auto Minv = reconMinv_;
+  VectorField acc("reconRhs", nt, 3);
+  Kokkos::parallel_for("rFace", Kokkos::RangePolicy<ExecSpace>(0, nf),
+    KOKKOS_LAMBDA(const Index f) {
+      r(f) = B(f) - a(f) * (ph(nei(f)) - ph(own(f))) - kg(f);
+      const Real mag = Kokkos::sqrt(fa(f,0)*fa(f,0) + fa(f,1)*fa(f,1) + fa(f,2)*fa(f,2));
+      for (int i = 0; i < 3; ++i) {
+        Kokkos::atomic_add(&acc(own(f), i), fa(f, i) * r(f) / mag);
+        Kokkos::atomic_add(&acc(nei(f), i), fa(f, i) * r(f) / mag);
+      }
+    });
+  Kokkos::fence();
+  Kokkos::parallel_for("recon", Kokkos::RangePolicy<ExecSpace>(0, nt),
+    KOKKOS_LAMBDA(const Index c) {
+      for (int i = 0; i < 3; ++i) {
+        Real v = 0.0;
+        for (int j = 0; j < 3; ++j) v += Minv(c, 3*i + j) * acc(c, j);
+        gc(c, i) = v;
+      }
+    });
+  Kokkos::fence();
+  sync(gCell_);                 // ghosts: their reconstruction was partial
+  auto st = srcTotal_;
+  Kokkos::parallel_for("srcBal", Kokkos::RangePolicy<ExecSpace>(0, nt),
+    KOKKOS_LAMBDA(const Index c) {
+      for (int i = 0; i < 3; ++i) st(c, i) = src(c, i) + gc(c, i);
     });
   Kokkos::fence();
 }
