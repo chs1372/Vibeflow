@@ -40,7 +40,8 @@ class PisoSolver:
     def __init__(self, mesh, nu, dt, n_correctors=2, n_nonorth=40,
                  n_outer=1, outer_tol=1e-10, consistent_rhie_chow=True,
                  gradient="linear", rhie_chow_form="standard", old_flux="exact",
-                 kappa=None, beta_g=None, t_ref=0.0, t_ref_grad=None):
+                 kappa=None, beta_g=None, t_ref=0.0, t_ref_grad=None,
+                 buoyancy_form="cell"):
         self.m = mesh
         self.nu = nu
         self.dt = dt
@@ -141,6 +142,42 @@ class PisoSolver:
         self.T = np.zeros(m.nc)
         self.T_old = np.zeros(m.nc)
         self.T_old2 = np.zeros(m.nc)
+
+        # How the buoyancy enters (ADR-041).
+        # "cell": ADR-038's cell force f = -(T - T_ref) beta_g in the momentum
+        #   source. A resting fluid in a stratification T_ref does not match
+        #   drifts: its quadratic pressure is carried by the least-squares
+        #   gradient and the boundary extrapolation, neither exact for it.
+        # "balanced": the force enters through the faces. Each outer iteration
+        #   a hydrostatic pressure p_h absorbs the gradient part of the face
+        #   force B_f = f(T_f).S_f -- the residual r_f = B_f - [a_f dp_h +
+        #   k_f . grad p_h] is made divergence-free, with r = 0 on boundary
+        #   faces -- and the cell force is reconstructed from r alone. On a
+        #   layered mesh a resting fluid in any T(z) then has r = 0 exactly.
+        if buoyancy_form not in ("cell", "balanced"):
+            raise ValueError(buoyancy_form)
+        self.buoyancy_form = buoyancy_form
+        self.p_h = np.zeros(m.nc)
+        self._r_face = np.zeros(len(m.owner))
+        self._g_cell = np.zeros((m.nc, 3))
+        if buoyancy_form == "balanced":
+            S, Sb = m.face_area, m.b_area
+            Sa, Sba = np.linalg.norm(S, axis=1), np.linalg.norm(Sb, axis=1)
+            M = np.zeros((m.nc, 3, 3))
+            outer = np.einsum("ij,ik->ijk", S, S) / Sa[:, None, None]
+            np.add.at(M, m.owner, outer)
+            np.add.at(M, m.neigh, outer)
+            np.add.at(M, m.b_cell, np.einsum("ij,ik->ijk", Sb, Sb) / Sba[:, None, None])
+            self._recon_Minv = np.linalg.inv(M)
+            self._recon_w = S / Sa[:, None]
+            a = self.pdiff.a_int
+            A = sp.coo_matrix((np.concatenate([a, -a, a, -a]),
+                               (np.concatenate([m.owner, m.owner, m.neigh, m.neigh]),
+                                np.concatenate([m.owner, m.neigh, m.neigh, m.owner]))),
+                              shape=(m.nc, m.nc)).tolil()
+            A[0, :] = 0.0                     # Neumann: pin one cell
+            A[0, 0] = 1.0
+            self._ph_lu = spla.splu(A.tocsc())
 
     # ------------------------------------------------------------ time scheme
     def bdf(self):
@@ -368,6 +405,14 @@ class PisoSolver:
                 snGrad = self.pdiff.a_int * (self.p[m.neigh] - self.p[m.owner])
                 F += Df * (np.einsum("ij,ij->i", gpf, m.face_area) - snGrad)
 
+        if self.energy and self.buoyancy_form == "balanced":
+            # The compact face residual in place of the interpolated cell
+            # force, as the pressure's compact gradient replaces its
+            # interpolated one (ADR-041).
+            gf = (self.w[:, None] * self._g_cell[m.owner]
+                  + (1 - self.w)[:, None] * self._g_cell[m.neigh])
+            F += Df * (self._r_face - np.einsum("ij,ij->i", gf, m.face_area))
+
         if self.consistent:
             # Old-flux term (Choi 1999). R = F - u_f . S is the Rhie-Chow
             # residual; carrying it forward with the coefficient Df * aP_t
@@ -458,6 +503,57 @@ class PisoSolver:
         t_ref = self.t_ref + self.m.cell_centre @ self.t_ref_grad
         return -(self.T - t_ref)[:, None] * self.beta_g[None, :]
 
+    def balanced_buoyancy(self, tb):
+        """Cell force and face residual of the balanced form (ADR-041).
+
+        tb: the boundary temperatures the energy equation's gradient uses.
+        """
+        m = self.m
+        pd = self.pdiff
+        gT = self.grad(self.T, tb)
+        Tf = self.face_interp(self.T[:, None], gT[:, None, :])[:, 0]
+        B = np.einsum("ij,ij->i",
+                      -(Tf - (self.t_ref + m.face_centre @ self.t_ref_grad))[:, None]
+                      * self.beta_g[None, :], m.face_area)
+        Bb = np.einsum("ij,ij->i",
+                       -(tb - (self.t_ref + m.b_centre @ self.t_ref_grad))[:, None]
+                       * self.beta_g[None, :], m.b_area)
+
+        def grad_ph(ph):
+            # Boundary values that leave no residual on a boundary face:
+            # a_b (p_b - p_P) + k_b . grad p_P = B_b, iterated with the gradient.
+            v = ph[m.b_cell] + Bb / pd.a_bnd
+            for _ in range(3):
+                g = self.grad(ph, v)
+                v = ph[m.b_cell] + (Bb - np.einsum("ij,ij->i", pd.k_bnd, g[m.b_cell])) / pd.a_bnd
+            return self.grad(ph, v)
+
+        ph = self.p_h
+        kg = np.zeros(len(m.owner))
+        scale = max(np.abs(B).max(), np.abs(Bb).max(), 1e-300)
+        for _ in range(self.nNonOrth):
+            c = B - kg
+            div = np.zeros(m.nc)
+            np.add.at(div, m.owner, c)
+            np.add.at(div, m.neigh, -c)
+            div[0] = 0.0
+            ph = self._ph_lu.solve(-div)
+            g = grad_ph(ph)
+            gfo = (pd.w_owner[:, None] * g[m.owner]
+                   + (1.0 - pd.w_owner)[:, None] * g[m.neigh])
+            kg_new = np.einsum("ij,ij->i", pd.k_int, gfo)
+            delta = np.abs(kg_new - kg).max() / scale
+            kg = kg_new
+            if delta < 1e-14:
+                break
+        self.p_h = ph - ph.mean()
+        r = B - pd.a_int * (ph[m.neigh] - ph[m.owner]) - kg
+        rhs = np.zeros((m.nc, 3))
+        np.add.at(rhs, m.owner, self._recon_w * r[:, None])
+        np.add.at(rhs, m.neigh, self._recon_w * r[:, None])
+        g_cell = np.einsum("ijk,ik->ij", self._recon_Minv, rhs)
+        return g_cell, r
+
     def solve_energy(self, T_b, T_src, T_bc):
         """One implicit solve for T with the current face flux (ADR-038).
 
@@ -542,7 +638,12 @@ class PisoSolver:
             u_prev = self.u.copy()
             if self.energy:
                 T_prev = self.T.copy()
-                src_total = src + self.buoyancy()
+                if self.buoyancy_form == "balanced":
+                    tb = np.where(T_bc == 0, T_b, self.T[m.b_cell])
+                    self._g_cell, self._r_face = self.balanced_buoyancy(tb)
+                    src_total = src + self._g_cell
+                else:
+                    src_total = src + self.buoyancy()
             else:
                 src_total = src
 
