@@ -1,2 +1,2 @@
-add_library(vibeflow_physics Piso.cpp)
+add_library(vibeflow_physics Piso.cpp Sst.cpp)
 target_link_libraries(vibeflow_physics PUBLIC vibeflow_discretization vibeflow_linalg)

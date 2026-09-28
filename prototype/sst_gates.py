@@ -23,7 +23,11 @@ they fail with the reason.
      The properties each solution needs are checked on the exact fields at
      every mesh's cell centres first.
 
-Run:  python3 sst_gates.py [gates]    gates: any of 1, a, b (default all)
+  c. The C++ gate's inputs: tests/mms/sst_ms.hpp is what sst_ms.py
+     generates, and the solutions' properties hold at the cell centres of the
+     C++ meshes (8, 16, 32) too.
+
+Run:  python3 sst_gates.py [gates]    gates: any of 1, a, b, c (default all)
 """
 
 import sys
@@ -212,9 +216,35 @@ def gate_coupled():
     return ok
 
 
+def gate_cpp_inputs():
+    """What the C++ gate takes from here: the generated header must be what
+    the formulas give now, and each solution's properties must hold at the
+    cell centres of the C++ meshes (8, 16, 32) as they do at these."""
+    import os
+    print("\nc. the C++ gate's inputs", flush=True)
+    header = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tests", "mms",
+                          "sst_ms.hpp")
+    same = open(header).read() == MS.c_source()
+    print(f"  tests/mms/sst_ms.hpp {'is' if same else 'is NOT'} what sst_ms.py generates: "
+          f"{'PASS' if same else 'FAIL'}", flush=True)
+    ok = same
+    for name in ("A", "B"):
+        for variant in VARIANTS:
+            for skew, *_, tag in FAMILIES:
+                for n in (8, 16, 32):
+                    m = HexMesh(n, skew=skew, seed=1, skew_mode="smooth")
+                    good, line = MS.check(name, variant, m.cell_centre)
+                    ok &= good
+                    if not good or n == 32:
+                        print(f"  MS-{name} SST-{variant} {tag:<18} n={n:<3} "
+                              f"{'holds' if good else 'VIOLATED'}: {line}", flush=True)
+    return ok
+
+
 def main():
-    which = sys.argv[1] if len(sys.argv) > 1 else "1ab"
-    gates = {"1": gate_wall_distance, "a": gate_frozen, "b": gate_coupled}
+    which = sys.argv[1] if len(sys.argv) > 1 else "1abc"
+    gates = {"1": gate_wall_distance, "a": gate_frozen, "b": gate_coupled,
+             "c": gate_cpp_inputs}
     ok = True
     for key in which:
         try:

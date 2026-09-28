@@ -81,6 +81,10 @@ add_test(NAME rayleigh_benard COMMAND rayleigh_benard)
 add_executable(rb_growth benchmark/rb_growth.cpp)
 target_link_libraries(rb_growth PRIVATE vibeflow_physics)
 add_test(NAME rb_growth COMMAND rb_growth)
+# v2b: the k-omega SST model (ADR-042).
+add_executable(sst_mms mms/sst_mms.cpp)
+target_link_libraries(sst_mms PRIVATE vibeflow_physics)
+add_test(NAME sst_mms COMMAND sst_mms ${FIXTURES})
 
 # Hours on two cores at 128^2 and Ra = 1e6: a suite gate, not a ctest.
 add_executable(heated_cavity benchmark/heated_cavity.cpp)

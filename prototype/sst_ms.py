@@ -243,7 +243,8 @@ def c_source(names=("A", "B"), variants=("2003", "1994")):
                "inline double Heaviside(double v) { return v > 0 ? 1.0 : (v < 0 ? 0.0 : 0.5); }",
                ""]
     lines += helpers
-    printer = sp.printing.cxx.CXX11CodePrinter()
+    from sympy.printing.cxx import CXX11CodePrinter
+    printer = CXX11CodePrinter()
 
     def emit(fname, expr):
         reps, red = sp.cse(expr)
@@ -275,6 +276,16 @@ def c_source(names=("A", "B"), variants=("2003", "1994")):
 
 
 if __name__ == "__main__":
+    import sys
+    if len(sys.argv) == 3 and sys.argv[1] == "--header":
+        with open(sys.argv[2], "w") as fh:
+            fh.write(c_source())
+        sys.exit(0)
+    if len(sys.argv) == 3 and sys.argv[1] == "--check-header":
+        # The committed header must be what these formulas generate now.
+        same = open(sys.argv[2]).read() == c_source()
+        print("generated header up to date" if same else "generated header STALE: regenerate it")
+        sys.exit(0 if same else 1)
     g = np.linspace(1 / 82, 1 - 1 / 82, 41)
     q = np.stack(np.meshgrid(g, g, g, indexing="ij"), axis=-1).reshape(-1, 3)
     for name in ("A", "B"):

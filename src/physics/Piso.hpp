@@ -96,6 +96,42 @@ struct EnergyModel {
   BuoyancyForm form = BuoyancyForm::Cell;
 };
 
+// The k-omega SST model, integrated to the wall (ADR-042):
+//
+//     dk/dt + div(u k) = P~ - beta* w k + div[(nu + sigma_k nu_t) grad k]
+//     dw/dt + div(u w) = gamma P~(or P)/nu_t - beta w^2 + div[(nu + sigma_w nu_t) grad w]
+//                        + 2 (1 - F1) sigma_w2 grad k . grad w / w
+//
+// with P = nu_t S^2 (the flow is incompressible, so that is exact) and the
+// isotropic (2/3)k carried by the pressure. Two variants:
+//   Menter2003 - nu_t = a1 k / max(a1 w, S F2); P~ = min(P, 10 beta* w k) in
+//                both equations; CD_kw floor 1e-10; gamma_1, gamma_2 = 5/9,
+//                0.44. The default.
+//   Menter1994 - nu_t = a1 k / max(a1 w, Omega F2); P~ = min(P, 20 beta* w k)
+//                in the k equation only; CD_kw floor 1e-20; gamma_i =
+//                beta_i/beta* - sigma_wi kappa^2/sqrt(beta*). The variant the
+//                NASA TMR benchmarks were run in.
+enum class SstVariant : int { Menter2003 = 0, Menter1994 = 1 };
+
+// k and omega boundary condition per face.
+//   Dirichlet    - both prescribed (an inlet, a manufactured value)
+//   ZeroGradient - an outlet, a slip face, a symmetry plane
+//   Wall         - k = 0, omega = 10 * 6 nu / (beta_1 d_1^2), d_1 the wall
+//                  distance of the adjacent cell centre (Menter 1994)
+// The wall distance is measured from the faces flagged as walls when the
+// model is enabled, which need not be the Wall faces: a manufactured solution
+// measures d from y = 0 and prescribes the exact values there.
+enum class TurbulenceBC : int { Dirichlet = 0, ZeroGradient = 1, Wall = 2 };
+
+struct TurbulenceModel {
+  SstVariant variant = SstVariant::Menter2003;
+  // After each solve k and omega are bounded below by these; the solver
+  // counts the cells it touched (boundedCells), which the manufactured gates
+  // require to stay zero.
+  Real kFloor = 1e-20;
+  Real wFloor = 1e-20;
+};
+
 // Pressure boundary condition per face.
 //   FixedFlux  - the mass flux through the face is prescribed, so the pressure
 //                takes whatever normal gradient satisfies it. Walls, inlets,
@@ -313,6 +349,37 @@ class PisoSolver {
   // equation applies there -- the Nusselt number is read from this.
   ScalarField boundaryHeatFlux() const;
 
+  // The k-omega SST model (ADR-042). Off until enabled; with it off every
+  // operation is the v2a one. k and omega are transported like the
+  // temperature and solved in every outer iteration after the pressure
+  // correctors and the energy equation, then nu_t is updated; the momentum
+  // equation takes nu + nu_t on every face and the explicit part
+  // div(nu_t grad(u)^T) of the stress. wallMask flags, per boundary face, the
+  // faces the wall distance is measured from.
+  void enableTurbulence(const TurbulenceModel& model, const View1<int>& wallMask);
+  // kind is one TurbulenceBC per boundary face; kValue and wValue the
+  // prescribed values on the Dirichlet ones. Without a call every face is
+  // ZeroGradient.
+  void setTurbulenceBoundary(const View1<int>& kind, const ScalarField& kValue,
+                             const ScalarField& wValue);
+  // Imposed volumetric sources, per unit time (a manufactured solution's).
+  // Their negative parts enter by Patankar's rule, on the diagonal.
+  void setTurbulenceSource(const ScalarField& kSource, const ScalarField& wSource);
+  // Sets the current and both old time levels, and nu_t from them.
+  void setTurbulence(const ScalarField& k, const ScalarField& w);
+  ScalarField turbulentKineticEnergy() const { return k_; }
+  ScalarField specificDissipation() const { return w_t_; }
+  ScalarField eddyViscosity() const { return nut_; }
+  ScalarField wallDistance() const { return dWall_; }
+  ScalarField boundaryWallDistance() const { return dWallB_; }
+  // Cells bounded below since the model was enabled.
+  long long boundedCells() const { return bounded_; }
+  // One BDF step of k and omega alone, in the velocity and face flux the
+  // solver holds (setState) and the given boundary values: Eca's "frozen
+  // velocity" exercise, gate 2a.
+  void advanceTurbulenceFrozen(const VectorField& uBoundary, const ScalarField& fBoundary,
+                               LinearSolver& solver);
+
   // pType is one PressureBC per boundary face, pValue the prescribed pressure
   // on the FixedValue ones. Calling this switches the solver from the closed
   // -domain path to the open one.
@@ -459,6 +526,19 @@ class PisoSolver {
   View1<int> tType_;           // TemperatureBC per boundary face
   ScalarField tValue_;         // prescribed temperature or heat flux
   VectorField srcTotal_;       // caller's source plus buoyancy
+
+  // The SST model (ADR-042).
+  bool turb_{false};
+  TurbulenceModel tm_;
+  ScalarField k_, kOld_, kOld2_, w_t_, wOld_, wOld2_;   // w_t_: omega (w_ is taken)
+  ScalarField nut_, nutB_;     // cells, boundary faces
+  ScalarField dWall_, dWallB_; // wall distance: cells, boundary face centres
+  View1<int> kwType_;          // TurbulenceBC per boundary face
+  ScalarField kValue_, wValue_, kSrc_, wSrc_;
+  long long bounded_{0};
+  Index turbSteps_{0};         // advanceTurbulenceFrozen's own BDF counter
+  void solveTurbulence(LinearSolver& solver, const VectorField& uB);
+  void updateEddyViscosity(const VectorField& uB);
 
   // Balanced buoyancy (ADR-041).
   bool balanced_{false};
