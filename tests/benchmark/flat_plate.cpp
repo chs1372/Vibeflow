@@ -276,7 +276,22 @@ int main(int argc, char** argv) {
       solver.setTurbulence(k0, w0);
     }
 
-    NativeBiCGStab momentum(mesh);
+    // Momentum, k and omega share one solver: the native Jacobi BiCGStab, or
+    // a PETSc configuration (VIBEFLOW_MOMENTUM=bicgstab+ilu). The steady
+    // state does not depend on which (ADR-042).
+    std::unique_ptr<LinearSolver> momentumPtr;
+    {
+      const char* e = std::getenv("VIBEFLOW_MOMENTUM");
+      const std::string cfg = e ? e : "native";
+      if (cfg == "native") momentumPtr = std::make_unique<NativeBiCGStab>(mesh);
+#ifdef VIBEFLOW_HAVE_PETSC
+      else momentumPtr = std::make_unique<PetscSolver>(mesh, Comm(), cfg);
+#else
+      else { std::fprintf(stderr, "built without PETSc\n"); std::exit(2); }
+#endif
+      std::printf("  momentum, k and omega solver: %s\n", cfg.c_str());
+    }
+    LinearSolver& momentum = *momentumPtr;
     auto pressure = makePressureSolver(mesh);
     const Columns col = columnsAt(mesh);
     const Real tcol = (X_CF - col.xl) / (col.xr - col.xl);
@@ -430,6 +445,10 @@ int main(int argc, char** argv) {
                   "assembly %.0f  gradients %.0f  other (k, omega) %.0f\n",
                   ts.total, ts.pressureSolve, ts.momentumSolve, ts.assemble + ts.pressureAssembly,
                   ts.gradient + ts.boundaryP, ts.total - known);
+      std::printf("linear solves: momentum, k and omega %.0f s (%d solves, %d iterations); "
+                  "pressure %.0f s (%d solves, %d iterations)\n",
+                  momentum.totalSeconds(), momentum.solveCount(), momentum.totalIterations(),
+                  pressure->totalSeconds(), pressure->solveCount(), pressure->totalIterations());
       std::printf("FINAL Cf %.10e CD %.10e tau %.10e nutPeak %.6f steps %d steady %s "
                   "bounded %lld seconds %.0f\n",
                   cf, cd, 0.5 * cf, peakHist.empty() ? 0.0 : peakHist.back(), step,

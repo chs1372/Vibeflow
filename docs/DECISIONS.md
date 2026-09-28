@@ -3115,3 +3115,14 @@ on 273×193, so 545×385 is a matter of many hours a run. So its step is
 0.01, as on every other grid, not the 0.005 the gate script first set as a
 precaution; and SST-2003, reported and not gated, is run on 273×193, a
 grid short of the finest, instead of a second 545×385 march.
+
+And then, with 545×385 at step 250 and SST-2003 at step 1050, both stopped
+and restarted: at the full step, a step's cost was mostly the momentum, k
+and ω solves — native BiCGStab with Jacobi, 79 iterations a solve on
+137×97, where the cells' aspect ratio reaches 1e4 — and 545×385 was going
+at 12 s a step. Those systems are now solved by PETSc's BiCGStab with
+ILU(0) (`VIBEFLOW_MOMENTUM=bicgstab+ilu`) on both runs. On 137×97, 800
+steps with either solver, and with BoomerAMG, give Cf, CD and the ν_t
+peak equal to ten digits; the linear solves take 8 s instead of 189, the
+whole march 112 s instead of 289. 69×49, 137×97 and 273×193 in SST-1994
+stand as run, with the native solver.
