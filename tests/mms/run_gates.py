@@ -206,6 +206,11 @@ GATES = {
         ("benchmark: differentially heated cavity against de Vahl Davis (1983)",
          lambda: run([str(BUILD / "heated_cavity")]), BUILD / "heated_cavity"),
     ],
+    # v2b: the k-omega SST model (ADR-042), gates written before the code.
+    "v2b": [
+        ("python: SST wall distance and manufactured solutions",
+         lambda: run([PY, str(PROTO / "sst_gates.py")], PROTO), None),
+    ],
     # v3: sod_shock_tube, naca0012_transonic
     # v4: dam_break, rising_bubble
 }

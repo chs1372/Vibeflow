@@ -2675,3 +2675,184 @@ randomly perturbed fixture mesh, in both forms.
 
 **Cost.** One more Poisson solve per outer iteration, with a constant matrix
 and a warm start.
+
+## ADR-042 — v2b: Menter's k-ω SST model, integrated to the wall; its gates, stated before the code
+**Decided.** v2b adds the k-ω SST model with low-Reynolds wall treatment:
+the equations are integrated to the wall, which the mesh resolves to y⁺ ≈ 1,
+and ω takes Menter's wall value. Wall functions are v2c's. This entry fixes
+the model, the numerics, and the gates up to the flat plate. The
+backward-facing step gets an entry of its own, written after the flat plate
+passes and before any step is run: its grids, inflow and upper wall need
+decisions this entry cannot yet make well.
+
+### The model
+
+Two variants, selectable, one code path:
+
+| | SST-2003 (default) | SST-1994 |
+| --- | --- | --- |
+| eddy viscosity | ν_t = a₁k / max(a₁ω, S F₂) | ν_t = a₁k / max(a₁ω, Ω F₂) |
+| production in the k equation | P̃ = min(P, 10 β*ωk) | P̃ = min(P, 20 β*ωk) |
+| production in the ω equation | γ P̃ / ν_t | γ P / ν_t |
+| floor of CD_kω | 1e-10 | 1e-20 |
+| γ₁, γ₂ | 5/9, 0.44 | β_i/β* − σ_ωi κ²/√β* |
+
+as the NASA Turbulence Modeling Resource (TMR) gives SST-2003 (Menter,
+Kuntz & Langtry 2003) and SST (Menter 1994). Common to both:
+
+    ∂k/∂t + ∇·(uk) = P̃ − β*ωk + ∇·[(ν + σ_k ν_t)∇k]
+    ∂ω/∂t + ∇·(uω) = γ P̃(or P)/ν_t − βω² + ∇·[(ν + σ_ω ν_t)∇ω]
+                     + 2(1 − F₁) σ_ω2 ∇k·∇ω / ω
+
+with P = ν_t S², S = √(2 S_ij S_ij), Ω = √(2 W_ij W_ij); each of σ_k, σ_ω,
+β, γ blended as φ = F₁φ₁ + (1 − F₁)φ₂; F₁ = tanh(arg₁⁴),
+arg₁ = min[max(√k/(β*ωd), 500ν/(d²ω)), 4σ_ω2 k/(CD_kω d²)],
+CD_kω = max(2σ_ω2 ∇k·∇ω/ω, floor); F₂ = tanh(arg₂²),
+arg₂ = max(2√k/(β*ωd), 500ν/(d²ω)); σ_k1 0.85, σ_ω1 0.5, β₁ 0.075,
+σ_k2 1.0, σ_ω2 0.856, β₂ 0.0828, β* 0.09, κ 0.41, a₁ 0.31. The flow is
+incompressible, so P = τ_ij ∂u_i/∂x_j is exactly ν_t S², and the isotropic
+part of the Reynolds stress, (2/3)k, is carried by the pressure: the forms
+TMR marks "m" are here the exact ones. The TMR benchmarks were run in the
+1994 variant, which is why it is kept.
+
+SST-V, TMR's flat-plate variant, produces with Ω² instead of S². In a thin
+shear layer the two agree to order (δ/L)², and TMR reports the two
+variants' flat-plate results as nearly identical. It is not implemented,
+and the flat-plate comparison below is made knowing that.
+
+### The numerics
+
+- **k and ω** are transported as the temperature is (ADR-038): BDF2, upwind
+  in the matrix plus the deferred correction to the skew-corrected face
+  value, diffusion with the non-orthogonal correction, the face diffusivity
+  ν + σν_t interpolated linearly. Both are solved in every outer iteration
+  after the pressure correctors (and the energy equation), then ν_t is
+  updated, so a converged outer loop carries no lag. Destruction is
+  implicit (β*ω and βω on the diagonal), production explicit, the cross
+  diffusion explicit where positive and on the diagonal where negative.
+  After each solve, k and ω are bounded below by positive floors far below
+  anything the gates' solutions reach; the step report counts the cells
+  bounded, and in the manufactured gates that count must be zero.
+- **Momentum** gets a variable viscosity: ν + ν_t,f on every face, in the
+  matrix and in the non-orthogonal correction, and the part of
+  ∇·[ν_t(∇u + ∇uᵀ)] that a constant viscosity does not have, ∇·(ν_t ∇uᵀ),
+  explicit from the latest velocity gradient. With the model off every
+  operation is v2a's.
+- **Wall distance** d: the exact distance to the nearest wall face, each face
+  split into triangles, by brute force over all wall faces, which every
+  rank gathers. Once per mesh.
+- **Boundaries.** A wall is a no-slip face flagged as one: k = 0 and
+  ω = 10 · 6ν/(β₁ d₁²) there, d₁ the wall distance of the adjacent cell
+  centre — Menter's value, TMR's "distance to the next point away from the
+  wall" read for a cell-centred scheme. An inlet prescribes k and ω; an
+  outlet, a slip face and a symmetry plane take zero gradient.
+
+### Gates
+
+Python first, then C++, each committed failing before its code.
+
+**1. Wall distance.** On all three box families with walls at y = 0 and
+y = 1 (their boundaries stay planar), d = min(y, 1 − y) at every cell centre
+to 1e-13. On the flat-plate grids below (C++), d = y above the plate and
+√(x² + y²) ahead of it, to 1e-13. The same d on two to four ranks.
+
+**2. Manufactured solutions for the model equations.** The unit cube, one
+wall at y = 0, so d = y exactly; exact Dirichlet values of every field on
+the other five faces; sources from sympy applied to the same formulas the
+solver evaluates; both variants. Two solutions, because the SST limiter
+cannot switch on and off inside the domain without a kink in ν_t that no
+scheme converges through at second order (Eça et al., IST report D72-34):
+
+- *MS-A — blending on, limiter off.* u = U₀ (sin πx (cos πy − cos πz),
+  sin πy (cos πz − cos πx), sin πz (cos πx − cos πy)) with U₀ = 0.1,
+  p = 0.01 cos πx cos πy cos πz, k = 0.1 (0.5 + y)(1 + 0.3 sin πx cos πz),
+  ω = 5 (1 + 0.05/(y + 0.2)²)(1 + 0.2 cos πx sin πz), ν = 5e-5. Sampled on
+  41³ points: F₁ spans [0.23, 1]; wherever F₁ is not saturated (arg₁ < 2) the
+  first branch of arg₁ is the one active, at least 17 times the second and
+  8 times the third; a₁ω ≥ 1.23 S F₂ and 1.52 Ω F₂; P ≤ 0.07 of its limit.
+- *MS-B — limiter on.* u = (y + y², 0, 0) plus 0.05 times the same
+  solenoidal field, so that S and Ω stay away from zero;
+  k = 0.1 (1 − 0.5y)(1 + 0.3 sin πx cos πz),
+  ω = (1 + 2y)(1 + 0.2 cos πx sin πz), ν = 5e-5. F₁ spans [0.25, 1] and F₂
+  [0.96, 1], each on its first branch wherever not saturated;
+  S F₂ ≥ 2.61 a₁ω and Ω F₂ ≥ 2.56 a₁ω; P ≤ 0.45 of its limit.
+
+Where arg₁ ≥ 2, F₁ = 1 to 1e-14, so a switch there does not show; the same
+for F₂ at arg₂ ≥ 4. The harness checks the properties on the exact fields
+at the cell centres of each mesh before it runs — the first branches active
+wherever unsaturated, by at least 5 times the others; the limiter off (or
+on) by at least 1.1; P below 0.9 of its limit — and prints the margins.
+`prototype/sst_ms.py` holds the formulas once and gives Python its sources
+and C++ a generated header, so the two sides add the same terms.
+
+  2a. *Frozen velocity*, Eça's first exercise: u and the face flux are
+      exact, k and ω are solved. MS-A and MS-B, both variants.
+  2b. *Coupled*: u, p, k and ω solved together, the momentum source
+      including the variable-viscosity stress. MS-A, both variants.
+
+  Orders of k and ω (and u in 2b) in the v1 and v2a bands: [1.85, 2.15] on
+  the orthogonal meshes, [1.6, 2.3] and approaching 2 on the smooth
+  distortion; 8³/16³/32³ in C++, 6³/12³/24³ in Python. Steady as ADR-038's
+  gate 2 is: marched until the largest change per step of u, k and ω,
+  each relative to its largest value, is below 1e-8 in C++ (the floor the
+  non-orthogonal pressure loop leaves on the distortion) and 1e-12 in
+  Python.
+
+  *Not reached by these solutions:* the production limiter, arg₁'s third
+  branch and the floor of CD_kω, and ω's wall value. The flat plate is where
+  they act.
+
+**3. Cross-check and MPI.** Gate 2's rows on the meshes both sides run,
+Python against C++, within 1e-6, both converged to 1e-12 for it. Gate 2b on
+two to four ranks within 1e-10 of the serial run.
+
+**4. Zero-pressure-gradient flat plate**, TMR's 2DZP verification case, in
+C++. Its grid family extruded one cell in z with slip faces: 69×49, 137×97
+and 273×193 points, and 545×385 if the cost allows. Re = 5e6 per unit
+length, U∞ = 1; an inlet at x = −1/3 with u = (1, 0, 0), k∞ = 2.25e-7 and
+ω∞ = 125 (TMR's values, ν_t∞/ν = 0.009); symmetry on y = 0 ahead of the
+plate and the wall on 0 ≤ x ≤ 2; a pressure outlet p = 0 at x = 2 and on the
+top, y = 1, so that the displacement flow leaves (a slip top would speed the
+free stream up by the displacement thickness over the height, about 0.25%,
+and Cf with it). SST-1994, marched to a steady state: Cf at x = 0.97008 and
+the peak of ν_t there changing by less than 1e-6 relative over the last
+tenth of the march, and every field's change per step below 1e-6 of its
+size. Against TMR's SST-V results:
+
+  4a. Cf at x = 0.97008, interpolated along the wall faces: monotone over
+      the three finest grids run, observed order in [0.8, 3.0], and the
+      Richardson extrapolation within 1% of 0.0026964 — the mean of TMR's
+      own extrapolations, 0.00269681 (CFL3D) and 0.00269607 (FUN3D), from
+      137×97 to 545×385 at orders 1.21 and 1.39.
+  4b. u⁺ against y⁺ at x = 0.97008 on the finest grid run, within 2% of
+      TMR's CFL3D profile (545×385) for 1 ≤ y⁺ ≤ 500.
+  4c. The log law u⁺ = ln(y⁺)/0.41 + 5.0 within 3% for 60 ≤ y⁺ ≤ 250.
+  4d. The peak of ν_t/ν across the layer at x = 0.97008 within 2% of 221.7
+      (CFL3D 221.4, FUN3D 221.9, on 545×385).
+
+  SST-2003 is run on the finest grid too, reported and not gated.
+
+**Why these bands.** The references are compressible, at M = 0.2. An
+incompressible solution of the same model should lie higher in Cf by 0.2 to
+0.3% on a van Driest II estimate (adiabatic wall, recovery factor 0.89) — an
+estimate, not a measurement. TMR's two codes agree to 0.03% extrapolated, so
+1% leaves this solver about 0.7% for its own extrapolation error. u⁺ at
+fixed y⁺ carries about half of a Cf error through u_τ, and the reference
+profile its own finest-grid error; 2% is twice 4a's band. TMR's SST profile
+itself departs from the log law by −1.5% to +1.3% over 60 ≤ y⁺ ≤ 250, so 3%
+passes it with room and fails a profile whose log layer is wrong. The ν_t
+peak: ten times the two codes' spread, for this solver's discretisation
+error on grids up to 273×193.
+
+**5. v1 and v2a untouched.** With the model off the operations are the
+same; the full suite runs.
+
+**Data seen before this was written:** TMR's published SST files — the Cf
+convergence tables, the u⁺ profiles at x = 0.97008 and 1.90334, the ν_t
+profile at 0.97 and the Cf distributions — from which the numbers above
+come; its grid files; and an exploration of candidate manufactured fields
+by their exact values alone, no solver run, from which MS-A and MS-B were
+chosen. No run of this solver with a turbulence model exists.
+
+**Cost.** Two scalar solves per outer iteration and, on the flat plate, a
+steady march on up to 52k cells, or 209k with 545×385.
