@@ -56,6 +56,11 @@ def runs():
     # Test (b) of a cause (ADR-043's rules): D_f without the vertical
     # diffusion, at n = 2 and 1e-2 on 545x385.
     r["545x385:n2:1e-2:rcaxis"] = ("545x385", 2, "1e-2", {"VIBEFLOW_RC_AXIS_OFF": "1"})
+    # The third test's runs besides the hybrids (ADR-043, second revision).
+    r["545x385:n3:5e-3"] = ("545x385", 3, "5e-3", {})
+    r["545x385:n2:3e-4"] = ("545x385", 2, "3e-4", {})
+    r["545x385:n4:3e-2"] = ("545x385", 4, "3e-2", {})
+    r["273x193:n2:3e-2"] = ("273x193", 2, "3e-2", {})
     return r
 
 
