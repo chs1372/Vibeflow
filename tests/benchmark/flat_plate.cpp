@@ -272,8 +272,22 @@ int main(int argc, char** argv) {
 
     PisoControls ctl;
     ctl.outer = 1;
-    ctl.correctors = 2;
+    // Four PISO correctors: with two, 545x385 grew a streamwise odd-even mode
+    // of pressure and velocity across the boundary layer and blew up at every
+    // step from 3e-4 up (ADR-042). The steady state does not depend on the
+    // count; 69x49 to 273x193 were marched with two.
+    ctl.correctors = 4;
     if (const char* e = std::getenv("VIBEFLOW_OUTER")) ctl.outer = std::atoi(e);
+    // Exploration: PISO correctors, the old-flux (Choi) term off.
+    if (const char* e = std::getenv("VIBEFLOW_CORRECTORS")) ctl.correctors = std::atoi(e);
+    if (std::getenv("VIBEFLOW_NO_CHOI")) ctl.consistentRhieChow = false;
+    if (const char* e = std::getenv("VIBEFLOW_PRESSURE_TOL")) ctl.pressureSolveTol = std::atof(e);
+    // Exploration: the boundary-pressure extrapolation's sweeps; 0 turns it
+    // off (zero normal gradient).
+    if (const char* e = std::getenv("VIBEFLOW_PEXTRAP")) {
+      ctl.pressureExtrapSweeps = std::atoi(e);
+      if (ctl.pressureExtrapSweeps == 0) ctl.pressureExtrapolation = false;
+    }
     // Momentum's face value: linear upwind, because central differencing let
     // the leading edge set the odd-even mode going upstream along the
     // symmetry plane (ADR-042). VIBEFLOW_CONVECTION=linear, or =upwind for
@@ -289,7 +303,10 @@ int main(int argc, char** argv) {
                 static_cast<int>(nc), dt,
                 !ctl.deferredCorrection ? "upwind"
                 : ctl.convection == ConvectionScheme::LinearUpwind ? "linear upwind" : "linear");
+    // The ramp starts at dt/64; VIBEFLOW_FP_RAMP=<divisor> changes that (1: no
+    // ramp).
     Real dtNow = dt / 64.0;
+    if (const char* e = std::getenv("VIBEFLOW_FP_RAMP")) dtNow = dt / std::max(1.0, std::atof(e));
     PisoSolver solver(mesh, NU, dtNow, ctl);
     solver.setBoundaryTypes(uType);
     solver.setPressureBoundary(pType, pval);
@@ -340,6 +357,9 @@ int main(int argc, char** argv) {
     }
     TurbulenceModel tm;
     tm.variant = variant;
+    // Exploration: the model's diagnostic switches.
+    if (std::getenv("VIBEFLOW_FP_FROZEN")) tm.frozen = true;
+    if (std::getenv("VIBEFLOW_FP_NO_TRANSPOSE")) tm.transposeStress = false;
     solver.enableTurbulence(tm, wallMask);
     bool wallDistOk = true;
     {
@@ -467,6 +487,20 @@ int main(int argc, char** argv) {
                     step, k(ik), cc(ik,0), cc(ik,1), w(iw), cc(iw,0), cc(iw,1),
                     w(iwx), cc(iwx,0), cc(iwx,1), nut(in) / NU, cc(in,0), cc(in,1),
                     solver.boundedCells());
+      }
+      if (const char* e = std::getenv("VIBEFLOW_FP_DUMP_AT")) {
+        // Exploration only: every cell's state at the listed steps.
+        const std::string list = std::string(",") + e + ",";
+        if (list.find("," + std::to_string(step) + ",") != std::string::npos) {
+          auto u = host(solver.velocity()); auto k = host(solver.turbulentKineticEnergy());
+          auto w = host(solver.specificDissipation()); auto nut = host(solver.eddyViscosity());
+          auto pp = host(solver.pressure()); auto cc = host(mesh.cellCentre());
+          std::FILE* fd = std::fopen((out + ".cells." + std::to_string(step)).c_str(), "w");
+          for (Index c = 0; c < nc; ++c)
+            std::fprintf(fd, "%.10e %.10e %.10e %.10e %.10e %.10e %.10e %.10e\n", cc(c,0), cc(c,1),
+                         u(c,0), u(c,1), k(c), w(c), nut(c) / NU, pp(c));
+          std::fclose(fd);
+        }
       }
       if (!std::isfinite(cf)) { std::printf("  step %d: not finite\n", step); break; }
       if (step % 50 == 0 || step == maxSteps) {

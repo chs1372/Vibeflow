@@ -3146,3 +3146,25 @@ sequencing, as the heated cavity does. Checked on the grids below it:
 1,300. 273×193 is marched again with the ILU solver to provide the state;
 its result is reported beside the native run's. Gate 4's criteria are
 unchanged.
+
+*Four PISO correctors.* Started so, 545×385 blew up again, by step 250,
+and it was not the start. Between two dumps a few steps apart the growing
+part is a streamwise odd–even mode of the pressure and the velocity, the
+same in every row across the boundary layer (0 < y < 3e-4) and wrapped in
+an envelope some fifty cells long at 0.05 < x < 0.11; the pressure's
+share reaches 0.2 of the dynamic head before k and ω follow it. It grows
+at every step tried from 3e-4 up, and at dt = 0.01 from the sequenced
+start within 50 steps. Two outer iterations a step make it grow sooner,
+not later. Tried at dt = 0.01, 50 steps each: without the old-flux term,
+with the pressure solved to 1e-14, with first-order momentum advection,
+and with k, ω and ν_t frozen, it still blows up — the turbulence model is
+not part of it; with four PISO correctors instead of two, it does not
+(Cf 0.0027175, ν_t/ν peak 222.0 at step 50). So the flat plate now runs
+four correctors (`VIBEFLOW_CORRECTORS`), and 545×385 is marched with them
+from 273×193's state, with the ramp. The steady state does not depend on
+the count: 137×97 with four reaches Cf, CD and the ν_t peak equal to ten
+digits to its run with two, in the same 1,300 steps. What in the
+two-corrector splitting feeds the mode, on this grid and not on the next
+coarser one, is not found; it goes to the known limits. The solver's two
+new diagnostic switches, `TurbulenceModel.frozen` and `transposeStress`,
+stay in the tree for that.

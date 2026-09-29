@@ -253,6 +253,7 @@ void PisoSolver::assembleMomentum(const VectorField& uB, const VectorField& src)
   // The eddy viscosity (ADR-042): nu + nu_t on every face. Off, the face
   // viscosity is exactly nu, as it always was.
   const bool turb = turb_;
+  const bool transpose = turb_ && tm_.transposeStress;
   auto nut = nut_; auto nutB = nutB_;
 
   Kokkos::deep_copy(diag, 0.0);
@@ -360,7 +361,7 @@ void PisoSolver::assembleMomentum(const VectorField& uB, const VectorField& src)
           // div(nu_t grad(u)^T), component d: nu_t,f sum_j (du_j/dx_d)_f S_j.
           const Real ntf = w(f) * nut(own(f)) + (1.0 - w(f)) * nut(nei(f));
           nuf = nu + ntf;
-          for (int j = 0; j < 3; ++j) {
+          for (int j = 0; j < 3 && transpose; ++j) {
             const Real go = j == 0 ? G0(own(f), d) : j == 1 ? G1(own(f), d) : G2(own(f), d);
             const Real gn = j == 0 ? G0(nei(f), d) : j == 1 ? G1(nei(f), d) : G2(nei(f), d);
             tflux += (w(f) * go + (1.0 - w(f)) * gn) * fa(f, j);
@@ -400,7 +401,7 @@ void PisoSolver::assembleMomentum(const VectorField& uB, const VectorField& src)
           }
           const Real nub = turb ? nu + nutB(f) : nu;
           Real tflux = 0.0;
-          if (turb && !slip) {
+          if (transpose && !slip) {
             // The transpose part on a Dirichlet face, from the cell gradient;
             // a slip face carries no tangential stress, so none there.
             for (int j = 0; j < 3; ++j) {
@@ -1098,7 +1099,7 @@ StepReport PisoSolver::advance(const VectorField& uB, const ScalarField& fB,
     // converged outer loop carries no coupling lag (ADR-038).
     if (energy_) solveEnergy(momentumSolver);
     // k and omega likewise, then nu_t for the next outer iteration (ADR-042).
-    if (turb_) {
+    if (turb_ && !tm_.frozen) {
       Kokkos::deep_copy(kPrev, k_);
       Kokkos::deep_copy(wPrev, w_t_);
       if (hasSlip_) slipBoundaryVelocity(uB);

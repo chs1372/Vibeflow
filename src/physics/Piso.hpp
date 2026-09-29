@@ -138,6 +138,11 @@ struct TurbulenceModel {
   // require to stay zero.
   Real kFloor = 1e-20;
   Real wFloor = 1e-20;
+  // Diagnostics, as PisoControls' switches are: hold k, omega and nu_t where
+  // they are (no turbulence solve), or leave out the explicit transpose part
+  // of the eddy-viscosity stress. Both change the answer; neither is a model.
+  bool frozen = false;
+  bool transposeStress = true;
 };
 
 // Pressure boundary condition per face.
