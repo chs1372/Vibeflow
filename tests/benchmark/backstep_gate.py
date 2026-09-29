@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """ADR-045: the backward-facing step against TMR's SST results from CFL3D.
 
-Builds the meshes (gate 1), marches level 2 from the uniform stream twice --
-first with the inlet at U, then from that state with the inlet speed that
-gives CFL3D's centre velocity at x = -4 -- and level 1 from level 2's state,
-then judges level 1 against CFL3D's results on the same grid (TMR's level 1):
+Builds the meshes (gate 1); marches level 2 first order from the uniform
+stream (L2_up, only a start: ADR-045's fourth revision), then in linear
+upwind twice -- first with the inlet at U, then from that state with the
+inlet speed that gives CFL3D's centre velocity at x = -4 -- and level 1 from
+level 2's state; then judges level 1 against CFL3D's results on the same
+grid (TMR's level 1):
 
   2. at x = -4: Cf within 2% of CFL3D's, u within 0.01 of its profile at
      each of its points in 1 <= y <= 2.5;
@@ -20,7 +22,9 @@ level's. Reported: level 2 beside level 1, the corner bubble, the
 experiment (backstep_report.py).
 
 Run:  backstep_gate.py [build dir, default build] [out dir, default
-      build/backstep]      VIBEFLOW_BS_REUSE=1 reuses the logs already there.
+      build/backstep]      VIBEFLOW_BS_REUSE=1 reuses the logs already there;
+      VIBEFLOW_BS_UP_INIT=<state> starts L2_up from a state instead of the
+      uniform stream (the fourth revision's continued exploration run).
 """
 
 import os
@@ -39,7 +43,7 @@ XR_CFL3D = None           # from its Cf file, below
 DT = {2: 0.16, 1: 0.08}
 
 
-def run(build, out, name, level, u_in, init=None):
+def run(build, out, name, level, u_in, init=None, extra=None):
     log = Path(out) / f"{name}.log"
     if os.environ.get("VIBEFLOW_BS_REUSE") and log.exists() and "FINAL" in log.read_text():
         return log
@@ -53,6 +57,7 @@ def run(build, out, name, level, u_in, init=None):
     print(f"  {name}: {threads} thread(s)", flush=True)
     if init:
         env["VIBEFLOW_BS_INIT"] = str(init)
+    env.update(extra or {})
     with open(log, "w") as fh:
         subprocess.run([str(Path(build) / "tests" / "backstep"), str(CASE / f"L{level}.hex"),
                         str(Path(out) / name), str(DT[level]), "5000", f"{u_in:.12g}"],
@@ -143,7 +148,14 @@ def main(argv):
     ok &= r.returncode == 0
 
     print("\nmarches")
-    cal = final(run(build, out, "L2_cal", 2, 1.0))
+    # The start: first order from the uniform stream (fourth revision).
+    up = final(run(build, out, "L2_up", 2, 1.0, os.environ.get("VIBEFLOW_BS_UP_INIT"),
+                   {"VIBEFLOW_CONVECTION": "upwind"}))
+    if up is None:
+        print("  level 2, first order: no FINAL line"); return 1
+    print(f"  level 2, first order (the start): {up['steps']} steps, {up['full']} at dt {up['dt']:g}, "
+          f"{up['settled']}, {up['seconds']:.0f} s")
+    cal = final(run(build, out, "L2_cal", 2, 1.0, Path(out) / "L2_up.state"))
     if cal is None:
         print("  level 2, U_in = 1: no FINAL line"); return 1
     u_in = UC_CFL3D / cal["uc4"]

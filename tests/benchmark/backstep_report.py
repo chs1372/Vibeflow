@@ -94,7 +94,7 @@ def main(argv):
     xr_ref, bub_ref = separation(cf_ref[:, 0], cf_ref[:, 1])
 
     print("the marches (U_in, the core velocity at (-4, 5), steps, cost)")
-    ms = [march(out, n) for n in ("L2_cal", "L2", "L1")]
+    ms = [march(out, n) for n in ("L2_up", "L2_cal", "L2", "L1")]
     for m in ms:
         if m:
             print(f"  {m['name']:7s} U_in {m['u_in']:.6f}  u_c(-4) {m['uc4']:.6f}  {m['steps']} steps "
