@@ -3777,3 +3777,27 @@ number that matters here. So the ramp follows the flow's own C:
   march not settled within 20,000 steps in all fails;
 - a steady state does not depend on dt (ADR-037), so neither do the
   gates. No solver code changes; the gates stand.
+
+*Fourth revision, before the results.* Under the third revision's ramp,
+level 2's march from the uniform stream kept knocking its own step back.
+At t ≈ 8, and again at t ≈ 14, the Courant number in the first cells
+behind the corner jumped within a few steps — from 11 to 15 at
+dt = 0.04, from 7 to 22 at 0.02 — and the ramp halved dt twice each time;
+by step 1,200 it had reached t = 15 at dt = 0.005, a pace at which
+settling would take some 20,000 steps. A first-order march over the same
+window, identical but for momentum's deferred correction (off,
+`VIBEFLOW_CONVECTION=upwind`), stayed below C = 5 at dt = 0.04 and never
+jumped. The jumps are the linear-upwind correction's, which the solver
+carries explicitly — PisoControls keeps the switch for exactly this
+question — fed by the start's shear layer rolling up. So level 2 starts
+first order:
+
+- L2_up: first-order upwind momentum from the uniform stream, U_in = U,
+  the third revision's ramp, to the same steady or quasi-steady criteria
+  (or 20,000 steps). It is that exploration run's first 1,500 steps,
+  continued from its state at step 1,500. It is only a start: nothing is
+  judged from it, and it is reported for its cost;
+- L2_cal, L2 and L1 as before, in linear upwind, L2_cal now from
+  L2_up's state.
+
+The gates stand; no solver code changes.
