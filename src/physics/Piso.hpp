@@ -93,7 +93,9 @@ struct EnergyModel {
   Vec3 betaG{0.0, 0.0, 0.0};
   Real tRef = 0.0;
   Vec3 tRefGrad{0.0, 0.0, 0.0};
-  BuoyancyForm form = BuoyancyForm::Cell;
+  // Balanced by default since ADR-041's gates passed; Cell stays selectable
+  // as the recorded baseline.
+  BuoyancyForm form = BuoyancyForm::Balanced;
 };
 
 // The k-omega SST model, integrated to the wall (ADR-042):

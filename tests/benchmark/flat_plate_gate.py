@@ -85,10 +85,16 @@ def run(level, variant, out_dir, reuse):
         mesh = CASE / f"{level}.hex"
         if not mesh.exists():
             subprocess.run([sys.executable, str(CASE / "make_mesh.py"), level], check=True)
+        # Every run leaves its steady state behind; 545x385 starts from
+        # 273x193's (grid sequencing: from a uniform stream it did not get
+        # through the layer's transition, ADR-042).
+        env = {**os.environ, "OMP_PROC_BIND": "false", "VIBEFLOW_FP_SAVE": "1"}
+        coarse = out_dir / "273x193_1994.state"
+        if level == "545x385" and coarse.exists():
+            env["VIBEFLOW_FP_INIT"] = str(coarse)
         with open(log, "w") as fh:
             subprocess.run([str(BIN), str(mesh), str(prefix), variant, str(DT[level]), "40000"],
-                           cwd=ROOT, stdout=fh, stderr=subprocess.STDOUT,
-                           env={**os.environ, "OMP_PROC_BIND": "false"})
+                           cwd=ROOT, stdout=fh, stderr=subprocess.STDOUT, env=env)
     m = None
     for line in open(log):
         m = FINAL.match(line) or m

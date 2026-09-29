@@ -234,8 +234,14 @@ GATES = {
 def main():
     stages = sys.argv[1:] or ["v0"]
     failures, skipped = [], []
+    # VIBEFLOW_SUITE_SKIP: comma-separated pieces of gate names to leave out,
+    # reported as skipped -- for a suite rerun beside a benchmark already run.
+    skip = [t.strip() for t in os.environ.get("VIBEFLOW_SUITE_SKIP", "").split(",") if t.strip()]
     for stage in stages:
         for name, fn, needs in GATES.get(stage, []):
+            if any(t in name for t in skip):
+                skipped.append(f"[{stage}] {name}  (VIBEFLOW_SUITE_SKIP)")
+                continue
             if needs is not None and not needs.exists():
                 skipped.append(f"[{stage}] {name}  (not built)")
                 continue

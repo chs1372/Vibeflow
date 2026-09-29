@@ -41,7 +41,7 @@ class PisoSolver:
                  n_outer=1, outer_tol=1e-10, consistent_rhie_chow=True,
                  gradient="linear", rhie_chow_form="standard", old_flux="exact",
                  kappa=None, beta_g=None, t_ref=0.0, t_ref_grad=None,
-                 buoyancy_form="cell", turbulence=None, convection="linear"):
+                 buoyancy_form="balanced", turbulence=None, convection="linear"):
         self.m = mesh
         self.nu = nu
         self.dt = dt
@@ -160,7 +160,8 @@ class PisoSolver:
         self.turb = turbulence
         self._turb_ready = False
 
-        # How the buoyancy enters (ADR-041).
+        # How the buoyancy enters (ADR-041); "balanced" by default since its
+        # gates passed, "cell" the recorded baseline.
         # "cell": ADR-038's cell force f = -(T - T_ref) beta_g in the momentum
         #   source. A resting fluid in a stratification T_ref does not match
         #   drifts: its quadratic pressure is carried by the least-squares

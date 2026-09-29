@@ -2595,7 +2595,7 @@ loop's, not the gate's: the pressure correction sees only the momentum
 diagonal. Faster transients at large diffusion numbers need a better outer
 iteration, not fewer of them.
 
-## ADR-041 — Balanced buoyancy: the force in the face flux, its hydrostatic part in a pressure of its own. Stated before the code
+## ADR-041 — Balanced buoyancy: the force in the face flux, its hydrostatic part in a pressure of its own. Stated before the code, answered after
 **Decided.** ADR-038's buoyancy is a cell force. A fluid at rest in a
 stratification that the reference T_ref does not match starts to move: gate
 3's box with T_ref = 0.5 reaches 0.47 κ/L within 50 steps at Ra = 1700 on 8³.
@@ -2713,7 +2713,12 @@ and a warm start.
    (bound 1e-6). Two to four ranks within 4.8e-15 (u) and 2.5e-15 (T) of the
    serial run (bound 1e-10). The serial answer is the balanced one:
    5.95961341332706e-03 where the cell form gave 5.96211681754360e-03.
-5. *v1 untouched:* SUITE_TBD
+5. *v1 untouched.* The full suite, `run_gates.py v0 v1 v2 v2b`, run with
+   the balanced form the default: all 37 gates it ran pass, in 5 h 48 min
+   on one core; the cavity above and ADR-042's flat plate ran on their own.
+   It ran on the tree of 648c7ad with this default switched; what was
+   committed after it changes no arithmetic outside the flat plate's
+   harness (ADR-042's two diagnostic switches are off by default).
 
 Reported, not gated: on the randomly perturbed fixture mesh, where the
 layers are gone, the resting fluid with T_ref = 0.5 reaches 0.037 in the
@@ -2734,7 +2739,7 @@ cavity gate took 243 minutes balanced, on one shared core, where ADR-038's
 cell-form run took 71 on two. Giving p_h the pressure's backend is left as
 a follow-up; it changes no answer.
 
-## ADR-042 — v2b: Menter's k-ω SST model, integrated to the wall; its gates, stated before the code
+## ADR-042 — v2b: Menter's k-ω SST model, integrated to the wall; its gates, stated before the code, answered after
 **Decided.** v2b adds the k-ω SST model with low-Reynolds wall treatment:
 the equations are integrated to the wall, which the mesh resolves to y⁺ ≈ 1,
 and ω takes Menter's wall value. Wall functions are v2c's. This entry fixes
@@ -3168,3 +3173,86 @@ two-corrector splitting feeds the mode, on this grid and not on the next
 coarser one, is not found; it goes to the known limits. The solver's two
 new diagnostic switches, `TurbulenceModel.frozen` and `transposeStress`,
 stay in the tree for that.
+
+### Results
+
+**Every gate passes.** The flat plate converges towards TMR's extrapolated
+skin friction from above, within 0.9% of it, and its profile in wall units
+is TMR's to 0.1%.
+
+1. *Wall distance.* Exact to round-off: 0 at every cell in C++ and at most
+   1.1e-16 on a boundary face in Python, on all three box families; on the
+   four flat-plate grids, at most 4.3e-19. The MPI gate below carries the
+   gathered wall faces too: every blending function reads d.
+2. *Manufactured solutions*, with the numerics as revised above (Newton for
+   ω's destruction; the deferred correction the gates run for k and ω).
+   Every one of the 28 order checks passes on each side. The orders between
+   the two finest meshes:
+
+   | | C++, 8³–32³ | Python, 6³–24³ |
+   | --- | --- | --- |
+   | k | 1.966 – 2.019 | 1.950 – 2.034 |
+   | ω | 1.954 – 2.027 | 1.935 – 2.045 |
+   | u (2b) | 1.971 – 1.978 | 1.954 – 1.965 |
+
+   No cell was bounded in any run; the distortion's orders approach 2
+   throughout. The two variants' errors differ by 0.01–0.2% on MS-A, where
+   the limiter is off and they nearly coincide, and by 40–120% on MS-B,
+   where it is on: each variant's own terms are exercised.
+3. *Cross-check and MPI.* Python against C++, 44 rows: worst 4.0e-11
+   (bound 1e-6). Two to four ranks within 2.8e-14 of the serial run (bound
+   1e-10).
+
+   *The momentum face value* (the revision above), at ν = 0.1: orders
+   2.200, 2.044 (linear) and 2.089, 1.929 (linear upwind) on the
+   orthogonal family, 2.160, 2.031 and 2.046, 1.937 on the distortion,
+   approaching 2; the linear-upwind error 0.55 to 0.65 of the linear one
+   on every mesh. Ethier–Steinman with linear upwind: 1.985, 1.991 and
+   1.805, 2.034, as with the linear value. The NS cross-check agrees to
+   5.4e-10 with linear upwind on both sides (5.1e-10 linear).
+4. *Flat plate*, SST-1994, every run steady (the change of u,
+   k and ω per 50 steps below 1e-6 of their size):
+
+   | grid | Cf(0.97008) | against CFL3D, same grid | CD | ν_t/ν peak | steps |
+   | --- | --- | --- | --- | --- | --- |
+   | 69×49 (reported) | 0.0026440 | +0.68% | 0.0027995 | 212.8 | 1,100 |
+   | 137×97 | 0.0026855 | +0.78% | 0.0028456 | 218.3 | 1,300 |
+   | 273×193 | 0.0027051 | +0.83% | 0.0028679 | 221.7 | 1,950 |
+   | 545×385 | 0.0027137 | +0.85% | 0.0028775 | 222.6 | 950, from 273×193 |
+
+   - 4a: monotone, observed order 1.203, Richardson extrapolation
+     0.0027203, +0.885% from 0.0026964 (within 1%). TMR's own orders are
+     1.21 and 1.39.
+   - 4b: u⁺ within 0.10% of TMR's CFL3D profile for 1 ≤ y⁺ ≤ 500, 180
+     points (within 2%).
+   - 4c: the log law within 1.48% for 60 ≤ y⁺ ≤ 250, 47 cells (within 3%).
+   - 4d: the ν_t/ν peak 222.56, +0.39% from 221.7 (within 2%).
+   - Gate 1 on these grids: |d − d_exact| at most 4.3e-19.
+   - Reported: SST-2003 on 273×193, Cf 0.0026931 (−0.45% from SST-1994),
+     CD 0.0028552, ν_t/ν peak 219.4. 273×193 marched again with the ILU
+     solver gives the native run's Cf, CD and peak to ten digits.
+
+   The margin in 4a is thin, and where it goes is visible. On every grid
+   Cf stands 0.68–0.85% above CFL3D's on the same grid, approaching the
+   0.87% between the two codes' extrapolations: the two converge alike
+   (orders 1.20 and 1.21), so the offset is not discretisation error. Nor
+   is it the layer: in wall units the profile is TMR's to 0.1% out to
+   y⁺ = 500. It is outside it. Here the velocity at x = 0.97 is 1.0019 U∞
+   just outside the layer and falls to 1.0006 at y = 0.65, the
+   displacement flow speeding up under the top's p = 0, and the outer u⁺
+   is 27.20, where TMR's is 27.12 and flat to 0.02% over the same heights.
+   A faster edge flow than TMR's inflow and far-field conditions give, and
+   the 0.2–0.3% of incompressibility, could account for most of the
+   offset; neither is measured here, and the gate's 1% was set with only
+   the second in view.
+5. *v1 and v2a untouched.* The same full suite (ADR-041's gate 5): every
+   v0, v1 and v2a gate passes with the model in the tree, and v2b's own
+   with them, 37 gates; the flat plate above and the heated cavity ran on
+   their own.
+
+**Cost.** Each flat-plate grid on one core shared with another run:
+69×49 72 s, 137×97 559 s, 273×193 2.6 h (the native solver), 545×385
+56 minutes with ILU and four correctors from 273×193's state; the
+momentum, k and ω solves were most of a step until the ILU solver, the
+assembly most of it after. The manufactured gates: 44 minutes in C++,
+38 in Python.

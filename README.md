@@ -21,14 +21,14 @@ gate suite is the only thing that tells the two apart.
 | --- | --- | --- |
 | v0 | mesh geometry, FVM diffusion, CGNS input, ParaView output, MPI decomposition, linear-solver backends | **complete** — 8 gates |
 | v1 | incompressible laminar flow: PISO/PIMPLE, Rhie–Chow, BDF2, inlet/outlet boundaries, MPI | **complete** — 15 gates |
-| v2a | energy equation, Boussinesq buoyancy, slip walls | **complete** — 8 gates |
-| v2b | RANS turbulence: k-ω SST, low-Reynolds wall treatment | not started |
+| v2a | energy equation, Boussinesq buoyancy (balanced form), slip walls | **complete** — 10 gates |
+| v2b | RANS turbulence: k-ω SST, low-Reynolds wall treatment | **in progress** — 6 gates; the backward-facing step next |
 | v2c | wall functions, conjugate heat transfer | not started |
 | v2.5 | GPU build | not started |
 | v3 | compressible flow | not started |
 | v4 | multiphase (VOF) | not started |
 
-All 31 gates pass on the current code, on Ubuntu 24.04 with two cores. CI
+All 39 gates pass on the current code, on Ubuntu 24.04 with two cores. CI
 runs the v0 gates on every push.
 
 ## What the gates show
@@ -118,7 +118,10 @@ the cylinder is 1.36.
 
 **Heat transfer and buoyancy (v2a).** The temperature is transported like a
 velocity component and solved inside every outer iteration; the Boussinesq
-force −β(T − T_ref)g joins the momentum equation. Orders, C++ (Python):
+force −β(T − T_ref)g joins the momentum equation through the face flux, its
+hydrostatic part absorbed by a pressure of its own (ADR-041), so that a
+fluid at rest in any stratification stays at rest on a mesh whose cells
+stand in layers. Orders, C++ (Python):
 
 | Gate | Orthogonal | Distorted |
 | --- | --- | --- |
@@ -129,19 +132,24 @@ force −β(T − T_ref)g joins the momentum equation. Orders, C++ (Python):
 | BDF2 in time for T | 2.153 (2.153) | |
 
 The steady Boussinesq state is the same at dt = 0.2 and 2.0 to 1e-10 of its
-discretisation error, and a fluid resting in its reference stratification
-stays at rest to within 3e-14. Python and C++ agree to 1e-10 on every v2a
-quantity; two to four ranks give the serial answer to 2.3e-15.
+discretisation error. A fluid resting in a stratification that the
+reference temperature does not match stays at rest to 1e-14, where ADR-038's
+cell force let it reach 0.47 κ/L in 50 steps. Python and C++ agree to 1e-10
+on every v2a quantity; two to four ranks give the serial answer to 4.8e-15.
 
 The onset of Rayleigh–Bénard convection between rigid plates, from linear
 growth rates on 16, 24 and 32 cells across the layer:
 
 | | 16 | 24 | 32 | extrapolated | reference |
 | --- | --- | --- | --- | --- | --- |
-| critical Rayleigh number | 1678.630 | 1694.884 | 1700.563 | 1707.842 | 1707.762 |
+| critical Rayleigh number | 1696.327 | 1702.737 | 1704.959 | 1707.768 | 1707.762 |
+| growth rate at Ra = 1800, error | +12.4% | +5.5% | +3.0% | −0.007% | 0.69397 |
 
-The observed order is 2.005, and the extrapolation is 0.005% from
-Chandrasekhar's value.
+The observed orders are 2.026 and 2.026; the growth rate's temporal order
+is 1.99 then 2.01. The rate is right only when each step's outer loop
+converges: at a diffusion number of 10 that takes 648 iterations, and four
+fixed ones give rates that fall away from linear theory as the mesh is
+refined (ADR-040).
 
 The differentially heated square cavity of de Vahl Davis (1983), air, run
 to a steady state on 32², 64² and 128²:
@@ -149,12 +157,41 @@ to a steady state on 32², 64² and 128²:
 | Ra | Nu, 128² | Nu, extrapolated | reference Nu | u_max / v_max, 128², vs de Vahl Davis |
 | --- | --- | --- | --- | --- |
 | 10³ | 1.11787 | 1.11779 | 1.1178 | +0.01% / +0.01% |
-| 10⁴ | 2.24603 | 2.24482 | 2.2448 | +0.02% / +0.05% |
-| 10⁵ | 4.53101 | 4.52161 | 4.5216 | +0.06% / +0.10% |
-| 10⁶ | 8.88498 | 8.81945 | 8.8252 | +0.49% / +0.84% |
+| 10⁴ | 2.24605 | 2.24481 | 2.2448 | +0.02% / +0.05% |
+| 10⁵ | 4.53102 | 4.52149 | 4.5216 | +0.08% / +0.10% |
+| 10⁶ | 8.88489 | 8.81858 | 8.8252 | +0.53% / +0.84% |
 
-Observed orders are 1.90 to 2.01, and every extrapolation is within 0.07% of
+Observed orders are 1.87 to 2.00, and every extrapolation is within 0.08% of
 the reference.
+
+**Turbulence (v2b): the k-ω SST model.** Menter's model in its 2003 and
+1994 forms, integrated to the wall (ADR-042). The wall distance is exact to
+round-off. Manufactured solutions for the model equations — one with the
+blending functions active, one with the production limiter on — converge at
+second order in both codes, with the flow frozen and coupled; orders
+between the two finest meshes, C++ (Python), over 28 checks:
+
+| k | ω | u |
+| --- | --- | --- |
+| 1.966–2.019 (1.950–2.034) | 1.954–2.027 (1.935–2.045) | 1.971–1.978 (1.954–1.965) |
+
+Python and C++ agree to 4.0e-11 on 44 quantities; two to four ranks give the
+serial answer to 2.8e-14.
+
+The zero-pressure-gradient flat plate at Re = 5e6 per unit length, on NASA
+TMR's grids, against TMR's SST results (CFL3D, FUN3D), SST-1994:
+
+| grid | Cf at x = 0.97 | CD | ν_t/ν peak |
+| --- | --- | --- | --- |
+| 137×97 | 0.0026855 | 0.0028456 | 218.3 |
+| 273×193 | 0.0027051 | 0.0028679 | 221.7 |
+| 545×385 | 0.0027137 | 0.0028775 | 222.6 |
+| extrapolated (order 1.20) | 0.0027203 | | |
+| TMR | 0.0026964 (extrapolated) | 0.0028533 (CFL3D, 545×385) | 221.4 / 221.9 |
+
+The extrapolated Cf is 0.89% above TMR's, inside the gate's 1%; u⁺ against
+y⁺ is TMR's profile to 0.10% up to y⁺ = 500, the log law holds to 1.5%, and
+the ν_t peak is 0.4% high. SST-2003 gives a Cf 0.45% lower on 273×193.
 
 ## Known limits
 
@@ -175,20 +212,34 @@ the reference.
   0.63 s per step on two cores). Restarting the boundary-pressure
   extrapolation cold is part of that price: a warm-started one saves its
   sweeps and doubles the non-orthogonal loop's (ADR-034).
-- **Transient accuracy needs a converged outer loop.** The pressure
-  correction sees only the momentum diagonal, so at a diffusion number
-  dt·ν/h² near ten the PIMPLE loop contracts slowly, and a fixed handful of
-  outer iterations advances the slow modes by a fraction of dt.
-  Rayleigh–Bénard growth rates came out up to four times too small with four
-  iterations and right with a hundred; the critical Rayleigh numbers did not
-  move at all, since steady answers do not depend on it (ADR-038). No gate
-  yet measures a transient coupling against an exact rate.
-- **Hydrostatic balance is exact only for a matching reference.** Buoyancy
-  enters as a cell force, not through the face flux as in a p_rgh
-  formulation. A fluid resting in the reference stratification T_ref stays at
-  rest to round-off; with a constant T_ref instead, the same resting fluid
-  develops currents of 0.5 in units of κ/L within 50 steps on an 8³ mesh at a
-  Rayleigh-level forcing of 1700.
+- **Transient accuracy needs a converged outer loop, and it is expensive.**
+  The pressure correction sees only the momentum diagonal, so at a diffusion
+  number dt·ν/h² near ten a converged step costs 648 outer iterations, and
+  a fixed handful gives Rayleigh–Bénard growth rates up to four times too
+  small (ADR-040). Steady answers do not depend on it.
+- **Hydrostatic balance is exact on layered meshes only.** On a randomly
+  perturbed mesh the resting fluid of the balanced form still reaches
+  0.037 κ/L (0.50 with the cell force). Its hydrostatic pressure is solved by
+  Jacobi-preconditioned CG whatever the pressure's backend, which makes the
+  balanced cavity 71% dearer than the cell force (ADR-041).
+- **On the finest flat-plate grid two PISO correctors are not enough.**
+  545×385, whose wall cells are 2,000 to 20,000 times longer than thick, grew
+  a streamwise odd–even mode of pressure and velocity across the boundary
+  layer and blew up at every time step tried; four correctors hold it, and
+  the steady state does not depend on the count. Why two let it grow on
+  that grid and not on the next coarser one is not known (ADR-042).
+- **Momentum's default face value is central.** Where a free stream meets a
+  wall edge-on across cells long in the stream direction, it lets the
+  leading edge set an odd–even mode going upstream; the flat plate runs the
+  linear-upwind face value instead (ADR-042).
+- **The flat plate's inflow and top are not TMR's.** A velocity inlet and a
+  pressure outlet at y = 1 speed the flow outside the layer up by 0.2% at
+  x = 0.97; with incompressibility that is a likely part of the 0.9% by
+  which Cf stands above TMR's extrapolation.
+- The native Jacobi BiCGStab needs ten times the iterations of ILU on cells
+  of aspect ratio 1e3 and more; cases like the flat plate use PETSc's.
+- Wall functions are v2c's; the backward-facing step, v2b's second benchmark,
+  is not run yet.
 - A fixed-heat-flux wall hands the gradient the cell's own temperature: exact
   for the adiabatic walls the gates use, first order in that boundary value
   where a non-zero flux is prescribed.
@@ -233,7 +284,9 @@ describes a fuller dependency set but has not been exercised yet.
 python3 tests/mms/run_gates.py v0     # about a minute
 sh cases/cylinder/make_meshes.sh      # the two cylinder meshes, about 15 s
 python3 tests/mms/run_gates.py v1     # about an hour on two cores
-python3 tests/mms/run_gates.py v2     # about two and a half hours
+python3 tests/mms/run_gates.py v2     # hours: the cavity alone took four on one core
+python3 cases/flatplate/make_mesh.py  # TMR's flat-plate grids as .hex, a few seconds
+python3 tests/mms/run_gates.py v2b    # the flat plate alone is many hours
 ```
 
 The cylinder meshes are generated rather than stored. With gmsh 4.15.2 the
@@ -265,6 +318,7 @@ src/io/              VTK XML output (.vtu / .pvtu) for ParaView
 prototype/           Python reference implementation of every scheme
 tests/               unit tests, MMS gates, benchmarks, the gate runner
 cases/cylinder/      gmsh mesh generator for the wake benchmark
+cases/flatplate/     NASA TMR's flat-plate grids and SST results
 tools/               fixture writers and a mesh-quality report
 docs/                decision log, licensing
 ```
@@ -278,7 +332,7 @@ The architecture, the stage plan and a record of each round of work, in
 Korean, are in [`ROADMAP.md`](ROADMAP.md), a copy of the living roadmap
 document kept in step with it.
 
-[`docs/DECISIONS.md`](docs/DECISIONS.md) is append-only: 39 entries, each
+[`docs/DECISIONS.md`](docs/DECISIONS.md) is append-only: 42 entries, each
 saying what was decided, why, and what would reverse it. It keeps the wrong
 turns too, marked where later entries corrected them. Three runs of entries
 are worth reading as a story:
