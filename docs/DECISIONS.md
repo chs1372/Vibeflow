@@ -3256,3 +3256,157 @@ is TMR's to 0.1%.
 momentum, k and ω solves were most of a step until the ILU solver, the
 assembly most of it after. The manufactured gates: 44 minutes in C++,
 38 in Python.
+
+## ADR-043 — Two PISO correctors and 545×385's odd–even mode: the cause, sought with a model. Stated before the model and the runs, answered after
+
+**Context.** ADR-042 marches the flat plate with four PISO correctors,
+because with two, 545×385 grew a streamwise odd–even mode of the pressure
+and the velocity: the same in every row across the boundary layer
+(0 < y < 3e-4, 118 rows), wrapped in an envelope some fifty cells long at
+0.05 < x < 0.11. What is known of it:
+
+- it grew at every step tried from 3.1e-4 up, and at 1e-2 from the
+  sequenced start within 50 steps; two or three outer iterations a step
+  made it grow sooner, not later;
+- at 1e-2 it still blew up within 50 steps without the old-flux term,
+  with the pressure solved to 1e-14, with first-order momentum advection,
+  with k, ω and ν_t frozen, and with the wall pressure extrapolated by 0, 3
+  or 10 sweeps (this last not recorded in ADR-042: the three runs gave one
+  history);
+- four correctors stopped it, and the count does not move the steady state
+  (137×97, ten digits);
+- 273×193 with two correctors marched to its steady state through the same
+  ramp to 1e-2.
+
+The last fact is the one to explain. 545×385 is 273×193 with every
+spacing halved, so the two have the same aspect ratios (Δx/Δy₁ = 2,400 at
+x = 0.08) and differ by two in the cell Reynolds numbers and in the
+x-stretching per cell (0.32% against 0.64% there). Neither of the numbers
+a step usually answers to orders them: at dt = 3.1e-4, where 545×385 grew,
+its wall cells' ν dt/Δy₁² is 250 and the free stream's u dt/Δx at
+x = 0.08 is 0.26; 273×193 at 1e-2, where nothing grew, has 2,000 and 4.2.
+
+**Decision.** Seek the cause in three steps, each judged by a rule written
+here.
+
+*1. Measure, in C++.* From 545×385's steady state, marched with four
+correctors to ADR-042's criteria (`VIBEFLOW_FP_SAVE`), restart at a fixed
+step (`VIBEFLOW_FP_RAMP=1`) with n correctors and one outer iteration, and
+record at every step the odd–even part of the change the step made,
+
+    A(φ) = max over interior cells of |δφ(i−1) − 2 δφ(i) + δφ(i+1)| / 4,
+
+δφ the change of φ over the step and i the cell's column, for φ = p and u.
+A pure odd–even change gives its amplitude, a smooth one next to nothing.
+The growth factor per step, λ, is the geometric mean of A(p)'s ratio over a
+run's last 20 steps; a run ends after 200 steps, or when A(p) passes 1e-2.
+The runs:
+
+- 545×385: n = 2 and 3 at dt = 1e-3, 3e-3 and 1e-2; n = 4 at 1e-2;
+- 273×193 and 137×97, each from its own steady state: n = 1 and 2 at the
+  same three steps;
+- at n = 2 and 1e-2 on 545×385, four ablations, each a switch off by
+  default: without the ν_t(∇u)ᵀ term, BDF1 throughout, ADR-031's V1
+  old-flux form, and the momentum solved to 1e-15 instead of 1e-13;
+- two hybrid grids from TMR's 545×385 points — 545×193 (545's x-lines,
+  273's y-lines) and 273×385 (the reverse) — each marched to its steady
+  state with four correctors from 545×385's, then n = 2 at 1e-2: which of
+  the two refinements carries the mode.
+
+*2. Model, in Python* (`tests/benchmark/piso_mode.py`). A linear model of
+the C++ step for the odd–even mode at one station x₀, the envelope's
+middle (0.08; 0.05 and 0.11 reported):
+
+- the C++ steady state's column at x₀ — its rows and faces, its Δx, u(y)
+  and ν_t(y) — made periodic in x over two cells, so that the mean and the
+  odd–even mode are all it holds;
+- about the parallel flow U(y), V = 0, p = 0, held steady to round-off by
+  a body force equal to its discrete residual, and upwinded from below on
+  the horizontal faces, as a vanishing V > 0 would be;
+- otherwise the C++ step on a Cartesian mesh, term for term: BDF2; upwind
+  convection and diffusion (ν + ν_t on the faces) implicit; the
+  linear-upwind correction and ν_t(∇u)ᵀ explicit; least-squares gradients
+  with 1/d² weights and the boundary values the C++ gives each field, the
+  wall pressure extrapolated by three sweeps; the predictor solved exactly;
+  n correctors, each with H/aP, the exact Rhie–Chow flux and its old-flux
+  term, the pressure solved exactly, the flux and the velocity corrected;
+  the step's last flux in the next step's matrix and correction, the top at
+  p = 0; k, ω and ν_t frozen, as the frozen C++ run says they may be;
+- the growth factor, the largest |eigenvalue| of the step's Jacobian over
+  odd–even eigenvectors; central differences give that Jacobian exactly,
+  the step being quadratic in the state once upwinding is fixed;
+- any term of the step can be switched off or replaced; which were, and
+  what each did, is recorded with the results.
+
+*3. The rules.*
+
+- The model *reproduces* the C++ if, at every run of step 1 — grid, n and
+  dt, the hybrids included, the ablations not — its λ is on the same side
+  of 1 as the measured one, and where both grow, ln λ is within a factor
+  two of the measured one.
+- The *cause is found* if the model reproduces and a named term, or pair
+  of terms, passes three tests: (a) removed in the model, 545×385 with two
+  correctors is stable at all three steps; (b) removed in C++, by a
+  diagnostic switch off by default, the 545×385 run with two correctors at
+  1e-2 stops growing (λ < 1 in the protocol above); (c) the model says why
+  545×385 and not 273×193: the property of the grid, or of the flow it
+  carries, that sets that term's strength, taken continuously from one
+  grid's value to the other's, carries λ across 1.
+- A *fix* is adopted only if, with it, 545×385 marches with two correctors
+  from 273×193's state to ADR-042's steady criteria; 69×49 to 545×385 give
+  the four-corrector runs' Cf, CD and ν_t/ν peak within 1e-8 relative; and
+  the full suite passes. Otherwise the flat plate keeps its four
+  correctors, and the cause, with the count the model says a grid needs,
+  goes into the known limits.
+- If the model does not reproduce, the cause is not found: step 1's
+  measurements are recorded, with whatever the ablations and the hybrids
+  narrow, and the limit stays.
+
+## ADR-044 — p_h on the pressure's backend. Stated before the code, answered after
+
+**Context.** ADR-041 solves the hydrostatic pressure p_h with the native
+Jacobi CG, whatever backend the pressure uses. Its Laplacian is constant —
+the pressure's orthogonal coefficients, Neumann on every face — assembled
+once, and solved to 1e-15 of its right-hand side's norm, absolute, inside
+a non-orthogonal loop. Beside the heated cavity's BoomerAMG pressure it is
+the dearer of the two solves: the cavity at Ra = 10⁴ on 32² and 64² took
+144 s against the cell form's 84, the whole cavity gate 243 minutes on a
+shared core. ADR-041 left giving p_h the pressure's backend as a follow-up
+that changes no answer. This is it.
+
+**Decision.**
+
+- `PisoSolver::setHydrostaticSolver(std::unique_ptr<LinearSolver>)` gives
+  p_h a solver of the caller's choosing, before or after `enableEnergy`;
+  without it p_h keeps the native CG. The solve's tolerances do not change.
+- So that the tolerance means for PETSc what it means for the native CG —
+  the residual's 2-norm below 1e-15 of the right-hand side's — a PETSc
+  solver for p_h measures the unpreconditioned residual (`KSPSetNormType`)
+  and carries the constants as the operator's null space
+  (`MatSetNullSpace`), as the native CG projects them out at every
+  iteration. Both are options of `PetscSolver`, off unless asked for; the
+  pressure's own solves do not change.
+- The heated cavity gives p_h the pressure's configuration
+  (`VIBEFLOW_PRESSURE`, BoomerAMG CG by default where PETSc is built): the
+  same backend. Every other buoyant harness solves its pressure with the
+  native CG, so its p_h has the pressure's backend already, and keeps it.
+- The C++ heat-transfer gates take `VIBEFLOW_PH=<PETSc configuration>` for
+  this ADR's check; the suite runs them as before.
+
+**Gates**, stated before the code:
+
+1. *The balanced gates with a PETSc p_h.* `heat_transfer`, gates 2 to 5 on
+   8³ and 16³ with its dt check, with `VIBEFLOW_PH=cg+hypre` and without:
+   every gate passes both ways, the resting fluids within their own
+   1e-12, and gate 2's L2 errors agree within 1e-6 relative.
+2. *The cavity.* The whole heated-cavity gate with p_h on BoomerAMG passes,
+   and on all twelve meshes and Rayleigh numbers its step counts, and Nu,
+   u_max and v_max to the digits printed, are those of ADR-041's run (its
+   log kept). Where a count or a last digit differs, that mesh is run again
+   with the native p_h, both printed to ten digits, and the two must agree
+   within 1e-6 relative.
+3. *Nothing else moves.* The full suite passes.
+
+Adopted if the three pass and the cavity at Ra = 10⁴ on 32² and 64², one
+thread, timed back to back with the native p_h, is not slower; the cost of
+the whole gate is reported.
