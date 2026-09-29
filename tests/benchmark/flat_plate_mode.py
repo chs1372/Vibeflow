@@ -114,6 +114,32 @@ def growth(log):
             "stopped": ap[-1] > STOP}
 
 
+def growth_phase(log, width=10, short=3, floor=1e-10):
+    """ADR-043's third measure, stated after the first two and judged on runs
+    made after it: the steepest sustained growth of A(p), the largest
+    (A(k+w)/A(k))^(1/w) over k >= 3 with A(k) above the solvers' noise
+    (floor), w = 10 steps; a run that ends before step 13, w = 3; one that
+    ends before step 6, its largest single-step ratio after step 2."""
+    ap = []
+    for line in open(log):
+        m = MODE.match(line)
+        if m:
+            ap.append(float(m.group(2)))
+    ap = [a if math.isfinite(a) else float("inf") for a in ap]
+    w = width if len(ap) >= 3 + width else short
+    best = None
+    for k in range(2, len(ap) - w):                 # index k is step k + 1
+        if ap[k] >= floor:
+            g = (ap[k + w] / ap[k]) ** (1.0 / w)
+            best = g if best is None else max(best, g)
+    if best is None:
+        for k in range(2, len(ap)):
+            if ap[k - 1] > 0:
+                g = ap[k] / ap[k - 1]
+                best = g if best is None else max(best, g)
+    return best
+
+
 def table(out):
     print(f"{'run':34s} {'steps':>5s} {'lambda':>9s} {'A(p) last':>10s}  where")
     for name in runs():
@@ -124,8 +150,11 @@ def table(out):
         if g is None:
             print(f"{name:34s}  (no growth factor: too few steps or not finite)")
             continue
+        gp = growth_phase(log)
         print(f"{name:34s} {g['steps']:5d} {g['lambda']:9.4f} {g['A_p']:10.2e}  "
-              f"x = {g['at'][0]:.4f}, y = {g['at'][1]:.2e}{'  (stopped at the bound)' if g['stopped'] else ''}")
+              f"x = {g['at'][0]:.4f}, y = {g['at'][1]:.2e}"
+              f"{'  (stopped at the bound)' if g['stopped'] else ''}"
+              f"   steepest growth {gp if gp is None else round(gp, 4)}")
 
 
 def main(argv):

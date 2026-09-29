@@ -3417,6 +3417,61 @@ old-flux form and exact solves. And test (b): with D_f's aP leaving out
 the vertical diffusion, the model's largest λ at n = 2 and 1e-2 is 0.999,
 between 0.985 and 0.999 at every station, with no sign flip.
 
+*Second revision, after the runs the first one judged, stated before the
+runs it judges.* The second test fails too. At n = 3 and 3e-3 on 545×385
+the C++ grows by 1.033 a step over its last 20 steps, the model by 1.081:
+2.4 apart in ln λ. At n = 2 and 1e-3, 1.421 from step 3 against 3.237:
+3.3 apart. At n = 3 and 1e-3 both decay — 0.979 over the last 20 of the
+109 steps the run made before the machine restarted, against 0.942. The
+hybrids did not run.
+
+Both failures are in the measured λ, not in the model. A run that grows
+slowly ends with its packet leaving the band where the step amplifies: at
+n = 3 and 3e-3, A(p) grew by 1.08 a step over steps 70–150 while its
+maximum moved upstream from x = 0.19 to 0.14, and by 1.03 as it reached
+0.12, where the model's λ is 0.99. A run that blows up fast spends its
+first steps on the restart's own disturbance: at n = 2 and 1e-3, A(p) fell
+for six steps and then grew by 3.0 a step for eight, which the window from
+step 3 reads as 1.42. Where a run grows cleanly the two agree: 1.506
+measured and 1.512 in the model at n = 3 and 1e-2; 1.08 and 1.081 at 3e-3;
+3.0 and 3.23 at n = 2 and 1e-3. And one run already looked at says more
+than the first rule allowed for: 273×193 with two correctors at 1e-2 is
+unstable in a band too. Its A(p) grew by 1.08 a step over steps 30–100 as
+its maximum ran upstream from x = 0.19 to 0.11 — the model gives 1.10 at
+0.15 — and then fell back near the leading edge, where the model's λ is
+below 1; later packets did the same. That is why 273×193 marched to its
+steady state: its packets are amplified a thousandfold and die, where
+545×385's grow sevenfold a step.
+
+A third test, then, on runs made after it:
+
+- measured: the steepest sustained growth — the largest
+  (A_{k+10}/A_k)^(1/10) over k ≥ 3 with A_k ≥ 1e-10, above the solvers'
+  noise; over three steps for a run that ends before step 13; the largest
+  single-step ratio after step 2 for one that ends before step 6
+  (`growth_phase` in `flat_plate_mode.py`);
+- model: the largest λ over its 23 stations, as in the second test;
+- a run grows when its number is above 1.01, on either side; the model
+  reproduces if at every run below the two agree on whether it grows and,
+  where both grow, agree within a factor two in ln λ;
+- the runs, with the model's numbers computed before them:
+
+  | run | model: largest λ (station) |
+  | --- | --- |
+  | 545×193, n = 2, dt = 1e-2 | 1.711 (x = 0.15) |
+  | 273×385, n = 2, dt = 1e-2 | to follow, before its run |
+  | 545×385, n = 3, dt = 5e-3 | 1.294 (0.20) |
+  | 545×385, n = 2, dt = 3e-4 | 1.315 (0.08) |
+  | 545×385, n = 4, dt = 3e-2 | 0.581 (0.25) |
+  | 273×193, n = 2, dt = 3e-2 | 1.334 (0.20) |
+
+- the cause rules as written, with "the model reproduces" read as this
+  test, and (b)'s run judged by this measure: no growth above 1.01.
+
+Test (c) needs no C++ run, and its premise stands at the station it was
+written for: at x₀ = 0.08, 273×193's λ with two correctors is −0.971 and
+545×385's −6.84.
+
 ## ADR-044 — p_h on the pressure's backend. Stated before the code, answered after
 
 **Context.** ADR-041 solves the hydrostatic pressure p_h with the native
