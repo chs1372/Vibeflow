@@ -3459,7 +3459,7 @@ A third test, then, on runs made after it:
   | run | model: largest λ (station) |
   | --- | --- |
   | 545×193, n = 2, dt = 1e-2 | 1.711 (x = 0.15) |
-  | 273×385, n = 2, dt = 1e-2 | to follow, before its run |
+  | 273×385, n = 2, dt = 1e-2 | 4.584 (0.15), added before its run |
   | 545×385, n = 3, dt = 5e-3 | 1.294 (0.20) |
   | 545×385, n = 2, dt = 3e-4 | 1.315 (0.08) |
   | 545×385, n = 4, dt = 3e-2 | 0.581 (0.25) |

@@ -317,13 +317,18 @@ class Model:
             aRC = aP
         elif self.o["aP_rc"] == "time":
             aRC = aPt * vol
-        elif self.o["aP_rc"] == "noy":
+        elif self.o["aP_rc"] in ("noy", "noy_x"):
             # aP without the diffusion through the horizontal faces and the
-            # wall: what a mode uniform in y does not feel.
+            # wall: what a mode uniform in y does not feel. "noy_x": on the
+            # vertical faces' D only.
             aRC = aP - self.vertical_diffusion()
         else:
             raise ValueError(self.o["aP_rc"])
         D = self.o["d_scale"] * (w * vol[own] + (1 - w) * vol[nei]) / (w * aRC[own] + (1 - w) * aRC[nei])
+        if self.o["aP_rc"] == "noy_x":
+            Dfull = self.o["d_scale"] * (w * vol[own] + (1 - w) * vol[nei]) / (w * aP[own] + (1 - w) * aP[nei])
+            D = np.where(self.kind == 0, D, Dfull)
+            aRC = aP                      # the boundary faces are horizontal
         Dfb = self.o["d_scale"] * vol[self.bc] / aRC[self.bc]
         n = self.nc
         ap = self.a * D

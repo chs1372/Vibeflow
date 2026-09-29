@@ -116,8 +116,10 @@ Columns columnsAt(const PolyMesh& mesh) {
   }
   Columns col; col.xl = xl; col.xr = xr;
   for (Index c = 0; c < mesh.nCells(); ++c) {
-    if (std::abs(cc(c,0) - xl) < 1e-12) col.left.push_back(c);
-    if (std::abs(cc(c,0) - xr) < 1e-12) col.right.push_back(c);
+    // 1e-9, not 1e-12: a cell centre's round-off reaches 1.2e-12 on 273x385
+    // (ADR-043), and the columns are 1e-3 apart at least.
+    if (std::abs(cc(c,0) - xl) < 1e-9) col.left.push_back(c);
+    if (std::abs(cc(c,0) - xr) < 1e-9) col.right.push_back(c);
   }
   auto byY = [&](Index a, Index b) { return cc(a,1) < cc(b,1); };
   std::sort(col.left.begin(), col.left.end(), byY);
@@ -156,7 +158,11 @@ CoarseState readState(const std::string& path) {
   std::sort(order.begin(), order.end(), [&](Index a, Index b) { return xy[a].first < xy[b].first; });
   for (Index c : order) {
     const Real x = xy[c].first;
-    if (cs.xcol.empty() || std::abs(x - cs.xcol.back()) > 1e-12 * std::max(1.0, std::abs(x))) {
+    // 1e-9, not 1e-12: the centres of one column differ by up to 1.2e-12 on
+    // 273x385, which split two of its columns and sent 690 cells to the wrong
+    // coarse cell on a restart (found in ADR-043; every other grid's spread
+    // is below 6e-13).
+    if (cs.xcol.empty() || std::abs(x - cs.xcol.back()) > 1e-9 * std::max(1.0, std::abs(x))) {
       cs.xcol.push_back(x);
       cs.col.emplace_back();
     }
@@ -492,7 +498,7 @@ int main(int argc, char** argv) {
       bool rows = nx > 2 && nc % nx == 0;
       for (Index c = 0; rows && c < nc; ++c) {
         const Index i = c % nx, j = c / nx;
-        rows = std::abs(cc(c,0) - cc(i,0)) <= 1e-12 &&
+        rows = std::abs(cc(c,0) - cc(i,0)) <= 1e-9 &&
                std::abs(cc(c,1) - cc(j*nx,1)) <= 1e-9 * std::abs(cc(j*nx,1));
       }
       if (rows) std::printf("  mode diagnostic: %ld rows of %ld cells\n",
