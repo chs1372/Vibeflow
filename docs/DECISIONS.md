@@ -3750,3 +3750,30 @@ faces. On CFL3D's own data the largest difference is then 0.0015, at
 x = 8, where the file itself has two values 0.0015 apart (its zones' shared
 edge; at x = −4, the other one, 0.0003). The gates' statements are
 unchanged. `backstep_report.py` prints the quantities reported beside them.
+
+*Third revision, before the results.* Level 2's first march from the
+uniform stream diverged at step 550 (t = 11.75), ten steps after its step
+doubled to 0.08 — not at the outlet but in the shear layer behind the
+step's corner, 0.1 < x < 2 at y ≈ 1. Run again with each step's extremes
+printed and its state kept from step 400 on: the start's vortex drives the
+flow across the shear layer's cells, 0.0006 to 0.003 H thick, at up to
+0.8 U, so the largest cell Courant number, C = dt Σ_f |F_f| / 2V, was
+about 10 over the hundred steps at dt = 0.04 that went through and 21 at
+0.08, where k fell to its floor in the layer and the velocity grew
+tenfold in eight steps. The registered dt — a Courant number of about 4 —
+was reckoned on the streamwise spacing at U, which is not the Courant
+number that matters here. So the ramp follows the flow's own C:
+
+- from the level's dt/64, as before, every 100 steps dt doubles, never
+  past the level's dt, if C at the doubled dt is at most 8, and holds
+  otherwise; whenever C exceeds 12 it halves, and holds for 100 steps.
+  The two thresholds bracket the 10 that level 2 went through; the 21 at
+  which it diverged is above both;
+- the level's dt (0.16, 0.08) stays the largest a march takes. The steady
+  and quasi-steady tests are taken once a march has held its dt for 1,000
+  steps and is either at the level's dt or was refused its last doubling,
+  so a march the cap keeps below its dt settles at the dt it can take,
+  which is reported; the 5,000-step limit counts steps at that dt, and a
+  march not settled within 20,000 steps in all fails;
+- a steady state does not depend on dt (ADR-037), so neither do the
+  gates. No solver code changes; the gates stand.
