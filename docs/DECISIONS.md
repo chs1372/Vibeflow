@@ -3472,6 +3472,126 @@ Test (c) needs no C++ run, and its premise stands at the station it was
 written for: at x₀ = 0.08, 273×193's λ with two correctors is −0.971 and
 545×385's −6.84.
 
+### Results
+
+**By its rules ADR-043 does not find the cause.** The model fails all
+three reproduction tests, each on the measured side: every measure of the
+C++ growth the tests used catches, in some run, something other than the
+mode's own growth. And removing the term the model names does not stop
+the growth in C++: the scheme blows up at the leading edge instead. What
+the model and the runs do show is recorded below. The flat plate keeps
+four correctors.
+
+1. *The measurements.* Every run, restarted from its grid's steady state:
+   λ over the last 20 steps (or by the first revision's window), the
+   third test's steepest sustained growth, and the model's λ at x₀ = 0.08
+   and at its most unstable station.
+
+   | run | steps | last 20 (window) | steepest | model x₀ = 0.08 | model, largest (x) |
+   | --- | --- | --- | --- | --- | --- |
+   | 545×385, n = 2, 1e-2 | 8 | 2.849 | 3.046 | 6.836 | 7.229 (0.15) |
+   | 545×385, n = 2, 3e-3 | 12 | 1.896 | 4.711 | 5.306 | 5.454 (0.11) |
+   | 545×385, n = 2, 1e-3 | 17 | 1.421 | 2.225 | 3.228 | 3.237 (0.11) |
+   | 545×385, n = 2, 3e-4 | 73 | 1.284 | 1.286 | — | 1.315 (0.08) |
+   | 545×385, n = 3, 1e-2 | 45 | 1.506 | 1.510 | 1.055 | 1.512 (0.20) |
+   | 545×385, n = 3, 5e-3 | 74 | 1.289 | 1.289 | — | 1.294 (0.20) |
+   | 545×385, n = 3, 3e-3 | 200 | 1.033 | 1.084 | 0.820 | 1.081 (0.15) |
+   | 545×385, n = 3, 1e-3 | 109 | 0.979 | 0.989 | 0.644 | 0.942 (1.2) |
+   | 545×385, n = 4, 1e-2 | 200 | 0.989 | 0.988 | 0.237 | 0.616 (1.99) |
+   | 545×385, n = 4, 3e-2 | 200 | 0.990 | 1.087 | — | 0.581 (0.25) |
+   | 273×193, n = 2, 3e-2 | 69 | 1.294 | 1.316 | — | 1.334 (0.20) |
+   | 273×193, n = 2, 1e-2 | 200 | 0.995 | 1.090 | 0.971 | 1.098 (0.15) |
+   | 273×193, n = 2, 3e-3 | 200 | 0.986 | 1.011 | 0.647 | 0.915 (1.4) |
+   | 273×193, n = 2, 1e-3 | 200 | 0.988 | 0.992 | 0.783 | 0.970 (1.2) |
+   | 273×193, n = 1, all three | 3–4 | 34–153 | | 73–172 | |
+   | 137×97, n = 2, 1e-2 | 200 | 0.969 | 1.094 | 0.420 | 0.866 (1.98) |
+   | 137×97, n = 2, 3e-3 / 1e-3 | 200 | 0.975 / 0.972 | 0.992 / 0.984 | 0.707 / 0.879 | 0.956 / 0.985 |
+   | 137×97, n = 1, all three | 4–5 | 21–68 | | 19–51 | |
+   | 545×193, n = 2, 1e-2 | 36 | 1.619 | 1.655 | — | 1.711 (0.15) |
+   | 273×385, n = 2, 1e-2 | 14 | 1.722 | 1.809 | — | 4.584 (0.15) |
+
+   545×385 at n = 3 and 1e-3 ran 109 of its 200 steps before the machine
+   restarted; its queue's other runs were made again after it. The four
+   ablations, n = 2 at 1e-2 on 545×385, all still blow up, within three to
+   eight steps: without ν_t(∇u)ᵀ (3.71), with BDF1 (3.65), with the V1
+   old-flux form (2.92), with the momentum solved to 1e-15 (2.85, the
+   run without it to four digits). The model has the first two: 7.23 and
+   7.60, against 7.23 as run.
+
+2. *The three tests.* The first, at x₀ = 0.08: at n = 3 and 1e-2 the
+   C++ grows by 1.506 and the model by 1.055, 7.6 apart in ln λ. The
+   second, the model's largest λ against the last 20 steps: 1.033 against
+   1.081 at n = 3 and 3e-3 (2.4 apart), 1.421 against 3.237 at n = 2 and
+   1e-3 (3.3 apart). The third, the steepest sustained growth, on runs
+   made after it: five of its seven agree within 1.02–1.09 in ln λ
+   (545×193 1.655 and 1.711; 545×385 at n = 3 and 5e-3 1.289 and 1.294,
+   at n = 2 and 3e-4 1.286 and 1.315; 273×193 at n = 2 and 3e-2 1.316 and
+   1.334), and two do not. 545×385 with four correctors at 3e-2 decays
+   from its restart to A(p) ≈ 1e-10 and then flickers at the outlet,
+   x = 1.98, between 5e-11 and 3e-10, which the measure reads as growth,
+   1.087, where the model gives 0.58. 273×385 grows at the outlet by 1.68
+   a step for ten steps — the model's λ there is 1.68 — and reaches the
+   bound at step 14, the step its fastest mode, 4.58 at x = 0.15 in the
+   model, first shows: the measure reads 1.81.
+
+   The failures have one thing in common: a single number per run cannot
+   separate two modes growing at different rates in different places, nor
+   a mode from the restart's own disturbance or from the solvers' noise.
+   Where one mode grows alone the two agree to 0.2–7%.
+
+3. *The term.* (a) In the model, D_f's aP without the vertical diffusion
+   takes 545×385's largest λ at n = 2 and 1e-2 from 7.23 to 0.999. (b) In
+   C++ (`VIBEFLOW_RC_AXIS_OFF=1`) the same run blows up in four steps, ten
+   times a step, in the first wall cell behind the leading edge — a place
+   the model, a parallel flow, does not have. (c) Its premise holds at the
+   station it was written for, −0.971 on 273×193 and −6.84 on 545×385; the
+   width of 273×193's column alone, taken to 545×385's, carries λ across
+   −1 at 10% below 273×193's own (λ(2) −0.971, −1.066, −1.625 at Δx =
+   2.41e-3, 2.17e-3, 1.20e-3).
+
+4. *What the model shows*, reported and not judged. The mode is the
+   pressure's odd–even mode in x, uniform across the inner layer to
+   y ≈ 1e-4 and fading by the layer's middle; the velocity carries
+   1e-3 of it. Its λ is negative: it changes sign every step. In one step
+   the first corrector overshoots its pressure — by 41 times on 273×193
+   and 101 times on 545×385 at x₀ — because D_f = V_f/aP_f counts the
+   diffusion between rows, which a mode uniform across the rows does not
+   feel, while the predictor's velocity answers the pressure through the
+   whole operator. Each further corrector takes most of the overshoot
+   out, 98% of it per corrector on 273×193 but only 77–93% on 545×385.
+   Two correctors leave |λ| ≈ 1: 0.97 and 6.8. Three leave 0.28 and 1.05,
+   four 0.28 and 0.24. Refining in y does most of it: at n = 2 and 1e-2,
+   273×193's largest λ is 1.10, 545×193's (x refined) 1.71, 273×385's
+   (y refined) 4.58, 545×385's 7.23.
+
+   And 273×193 with two correctors is unstable too, in a band
+   0.1 < x < 0.3 where its λ is up to 1.10. Its packets run upstream,
+   growing some five-hundredfold, and die near the leading edge, where λ
+   is below 1; that is how it marched to its steady state, and why
+   545×385, at 7 a step, did not.
+
+5. *A bug the hybrids found.* The flat plate's restart matched a cell to
+   its coarse column by x within 1e-12; on 273×385 two columns' centres
+   spread by 1.2e-12 of round-off, so a restart from its own state put
+   690 cells in the wrong place (Cf after one step 5.19e-3 against the
+   state's 2.71e-3). Every other grid's spread is below 6e-13, so their
+   restarts, ADR-042's sequencing and the hybrids' own starts were exact.
+   The match is 1e-9 now; 273×385's dump, its model number and its run
+   came after the fix.
+
+**Decision.** No fix is adopted — none was tried: the one change the
+model points to breaks the scheme at the leading edge. The flat plate
+keeps its four correctors: on 545×385 the smallest count whose largest λ
+in the model is below 1, at 1e-2 (0.62) and at 3e-2 (0.58), and whose C++
+runs decay at both. The known limits say what ADR-043 found, and that the
+rules did not let it call that the cause. The diagnostic switches
+(`bdf1`, `momentumSolveTol`, `rhieChowAxisOff`) stay, off.
+
+**Cost.** Step 1's 30 C++ runs: about 4 hours on one core, shared; the
+four-corrector marches to the base states (545×385, 137×97, the two
+hybrids) 2.7 hours. The model: 1–6 s a station by Arnoldi, a minute where
+it falls back to power iteration, 1–4 minutes a scan of 23 stations.
+
 ## ADR-044 — p_h on the pressure's backend. Stated before the code, answered after
 
 **Context.** ADR-041 solves the hydrostatic pressure p_h with the native

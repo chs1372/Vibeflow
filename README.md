@@ -223,11 +223,18 @@ the ν_t peak is 0.4% high. SST-2003 gives a Cf 0.45% lower on 273×193.
   Jacobi-preconditioned CG whatever the pressure's backend, which makes the
   balanced cavity 71% dearer than the cell force (ADR-041).
 - **On the finest flat-plate grid two PISO correctors are not enough.**
-  545×385, whose wall cells are 2,000 to 20,000 times longer than thick, grew
-  a streamwise odd–even mode of pressure and velocity across the boundary
-  layer and blew up at every time step tried; four correctors hold it, and
-  the steady state does not depend on the count. Why two let it grow on
-  that grid and not on the next coarser one is not known (ADR-042).
+  545×385, whose wall cells are 2,000 to 20,000 times longer than thick, grows
+  a streamwise odd–even pressure mode across the boundary layer with two or
+  three correctors; four hold it, and the steady state does not depend on the
+  count. A linear model of the step says why, and matches the C++ growth to
+  0.2–7% wherever one mode grows alone: the first corrector overshoots the
+  mode's pressure a hundredfold, because Rhie–Chow's D = V/aP counts the
+  diffusion between rows that a mode uniform across them does not feel, and
+  two correctors leave it growing sevenfold a step (273×193: 0.97 at
+  x = 0.08, up to 1.10 in a band whose packets die at the leading edge).
+  Removing that diffusion from D blows the scheme up at the leading edge
+  instead, and the pre-registered tests failed on how to measure a growth
+  rate, so ADR-043 does not call it the cause by its own rules.
 - **Momentum's default face value is central.** Where a free stream meets a
   wall edge-on across cells long in the stream direction, it lets the
   leading edge set an odd–even mode going upstream; the flat plate runs the
