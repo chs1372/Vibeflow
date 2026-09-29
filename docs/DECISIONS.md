@@ -3735,3 +3735,18 @@ steps of its ramp without it. So:
   comparison reported beside gate 3 is levels 2 and 1;
 - the divergence goes into the known limits. No solver code changes; the
   gates stand.
+
+*Second revision, before the results* (level 2's first march under way,
+nothing judged). The gate script was tried on CFL3D's own results in place
+of ours — they must pass every gate with nothing to spare — and two faults
+showed. Its reading of the harness's last line broke on the bubble's two
+values, so the gate process already running will stop after its first
+march; it is run again on that march's log, which it reuses. And gate 4
+failed by 0.023 at x = 0: the script interpolated our Cp across the step,
+between the upstream floor's last face and the lower floor's first, where
+CFL3D's file gives each floor's corner value. Each floor is now compared on
+its own, ours carried to the corner linearly from the floor's two nearest
+faces. On CFL3D's own data the largest difference is then 0.0015, at
+x = 8, where the file itself has two values 0.0015 apart (its zones' shared
+edge; at x = −4, the other one, 0.0003). The gates' statements are
+unchanged. `backstep_report.py` prints the quantities reported beside them.

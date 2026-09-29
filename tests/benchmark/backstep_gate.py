@@ -41,7 +41,14 @@ def run(build, out, name, level, u_in, init=None):
     log = Path(out) / f"{name}.log"
     if os.environ.get("VIBEFLOW_BS_REUSE") and log.exists() and "FINAL" in log.read_text():
         return log
-    env = dict(os.environ, OMP_NUM_THREADS="1", OMP_PROC_BIND="false", VIBEFLOW_BS_SAVE="1")
+    # Threads: VIBEFLOW_BS_THREADS, or a file `threads` in the output
+    # directory read as each march starts -- the cost only.
+    threads = os.environ.get("VIBEFLOW_BS_THREADS", "1")
+    tf = Path(out) / "threads"
+    if tf.exists():
+        threads = tf.read_text().strip() or threads
+    env = dict(os.environ, OMP_NUM_THREADS=threads, OMP_PROC_BIND="false", VIBEFLOW_BS_SAVE="1")
+    print(f"  {name}: {threads} thread(s)", flush=True)
     if init:
         env["VIBEFLOW_BS_INIT"] = str(init)
     with open(log, "w") as fh:
@@ -51,14 +58,25 @@ def run(build, out, name, level, u_in, init=None):
     return log
 
 
+def parse_final(line):
+    """backstep's FINAL line: name-value pairs, the bubble's two values after
+    its name."""
+    t, d, i = line.split()[1:], {}, 0
+    while i < len(t):
+        if t[i] == "bubble":
+            d["bubble"] = (float(t[i + 1]), float(t[i + 2])); i += 3
+        else:
+            d[t[i]] = t[i + 1]; i += 2
+    return d
+
+
 def final(log):
     for line in open(log):
         if line.startswith("FINAL"):
-            t = line.split()
-            d = dict(zip(t[1::2], t[2::2]))
+            d = parse_final(line)
             return {"xr": float(d["xr"]), "cf4": float(d["cf4"]), "uc4": float(d["uc4"]),
-                    "settled": d["settled"], "steps": int(d["steps"]), "seconds": float(d["seconds"]),
-                    "bubble": (float(t[t.index("bubble") + 1]), float(t[t.index("bubble") + 2]))}
+                    "settled": d["settled"], "steps": int(d["steps"]), "full": int(d["full"]),
+                    "seconds": float(d["seconds"]), "bubble": d["bubble"]}
     return None
 
 
@@ -76,6 +94,30 @@ def cfl3d_zones(path):
 def two_col(path):
     rows = [ln.split() for ln in open(path) if ln.strip() and not ln.lstrip().startswith(("#", "v", "V"))]
     return np.array(rows, dtype=float)
+
+
+def floor_values(xq, upstream, x, v):
+    """Ours at the points xq on one floor -- upstream of the step (y = 1,
+    x < 0) or behind it (y = 0, x > 0) -- never across the step: linear
+    between faces and, towards the corner past the floor's last face, linear
+    from its two nearest faces."""
+    m = x < 0.0 if upstream else x > 0.0
+    xs, vs = x[m], v[m]
+    xq = np.asarray(xq, dtype=float)
+    out = np.interp(xq, xs, vs)
+    lo, hi = xq < xs[0], xq > xs[-1]
+    out[lo] = vs[0] + (xq[lo] - xs[0]) * (vs[1] - vs[0]) / (xs[1] - xs[0])
+    out[hi] = vs[-1] + (xq[hi] - xs[-1]) * (vs[-1] - vs[-2]) / (xs[-1] - xs[-2])
+    return out
+
+
+def split_floors(ref):
+    """CFL3D's wall points in the file's order along the wall: the step's
+    corner x = 0 appears twice, first as the upstream floor's end, then as
+    the lower floor's start."""
+    zero = np.flatnonzero(ref[:, 0] == 0.0)
+    assert len(zero) == 2, "expected the step corner twice"
+    return ref[:zero[0] + 1], ref[zero[1]:]
 
 
 def reattachment(x, cf):
@@ -147,11 +189,16 @@ def main(argv):
     ok &= g3
 
     print("\n4. the pressure recovery (level 1)")
-    m = (cp_ref[:, 0] >= -4.0) & (cp_ref[:, 0] <= 30.0)
-    dcp = np.abs(np.interp(cp_ref[m, 0], cp1[:, 0], cp1[:, 1]) - cp_ref[m, 1])
+    # Each floor on its own: CFL3D's file has the corner x = 0 on both.
+    xs, dcp = [], []
+    for upstream, part in zip((True, False), split_floors(cp_ref)):
+        part = part[(part[:, 0] >= -4.0) & (part[:, 0] <= 30.0)]
+        xs.append(part[:, 0])
+        dcp.append(np.abs(floor_values(part[:, 0], upstream, cp1[:, 0], cp1[:, 1]) - part[:, 1]))
+    xs, dcp = np.concatenate(xs), np.concatenate(dcp)
     g4 = dcp.max() <= 0.015
-    print(f"  largest |Cp - CFL3D| {dcp.max():.4f} at x = {cp_ref[m, 0][dcp.argmax()]:.3f} over "
-          f"{m.sum()} points (within 0.015): {'PASS' if g4 else 'FAIL'}")
+    print(f"  largest |Cp - CFL3D| {dcp.max():.4f} at x = {xs[dcp.argmax()]:.3f} over "
+          f"{len(dcp)} points (within 0.015): {'PASS' if g4 else 'FAIL'}")
     ok &= g4
 
     print("\n5. the profiles (level 1)")
