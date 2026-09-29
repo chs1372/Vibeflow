@@ -3640,3 +3640,81 @@ that changes no answer. This is it.
 Adopted if the three pass and the cavity at Ra = 10⁴ on 32² and 64², one
 thread, timed back to back with the native p_h, is not slower; the cost of
 the whole gate is reported.
+
+## ADR-045 — v2b's second benchmark: the backward-facing step against TMR's SST results. Stated before the code and the runs, answered after
+
+**Context.** v2b's second case is the one ADR-042 named: the flow over a
+backward-facing step of Driver & Seegmiller, as NASA's Turbulence Modeling
+Resource (TMR) sets it up for validation (tmbwg.github.io/turbmodels,
+"2D Backward Facing Step"). Its reference for a solver is TMR's own SST
+results — CFL3D and FUN3D, SST in the form TMR marks "SSTm", which is this
+code's SST-1994 — on the second-finest of its five nested grids. TMR puts
+their reattachment "near x/H = 6.50"; CFL3D's skin friction, as TMR
+publishes it, crosses zero at 6.54. The experiment reattaches at
+6.26 ± 0.10. TMR adds that SST does not converge readily to a steady state
+on these grids, and that run in time it settles to a quasi-steady one.
+
+**The case**, TMR's, in units of the step height H and a reference
+velocity U:
+
+- TMR's four-zone grids, levels 3, 2 and 1 (19,968, 79,872 and 319,488
+  cells; level 1 is TMR's result grid; level 4, 4,992 cells, reported),
+  their zone interfaces merged point by point into one mesh
+  (`cases/backstep/make_mesh.py`), extruded one cell in z;
+- the channel: 8H high upstream of the step at x = 0 (1 ≤ y ≤ 9), 9H
+  behind it (0 ≤ y ≤ 9), from x = −130 to 50; both walls slip for
+  −130 < x < −110 and no-slip after, as TMR's grids mark them, and the
+  step's face x = 0, 0 ≤ y ≤ 1, no-slip;
+- Re_H = 36,000 on U (ν = H U / 36,000); TMR's free stream for SST,
+  k = 9e-9 a² and ω = 1e-6 a²/ν at M = 0.128 — k = 5.49e-7 U²,
+  ω = 2.197 U/H, ν_t/ν = 0.009;
+- the inlet at x = −130: uniform velocity U_in, and those k and ω; the
+  outlet at x = 50: p = 0. TMR's inflow is a far-field condition that lets
+  the mass flow settle; a fixed inlet velocity does not, and the layers'
+  displacement then speeds the core up. So U_in is chosen once, on
+  level 3, to give CFL3D's velocity at the channel's centre at x = −4
+  (0.998 U): one level-3 march with U_in = U, then U_in = 0.998 U / u_c,
+  u_c that march's centre velocity there, kept on every level;
+- SST-1994 (ADR-042), linear-upwind momentum, first-order k and ω, BDF2,
+  four PISO correctors (ADR-043: two were not enough on the flat plate's
+  finest grid, and nothing here says the step's grids are safe from it);
+- marched from the uniform stream on level 3, each finer level from the
+  last one's state (grid sequencing, each cell taking the state of the
+  nearest coarse cell), with ADR-042's ramp: dt/64, doubled every 100
+  steps, to dt = 0.32, 0.16 and 0.08 H/U on levels 3, 2 and 1 — a Courant
+  number of about 4 on the step's smallest streamwise spacing;
+- steady by ADR-042's criteria, or quasi-steady: the march ends when, over
+  its last 20%, neither the reattachment point nor Cf at x = −4 has moved
+  by more than 0.2%, and the results are the last state's; a march that
+  is neither within 5,000 steps at its full dt fails.
+
+Cf and Cp are on ½ρU², Cp shifted to zero at x = 40 as TMR shifts its
+own; profiles are u/U, as CFL3D's u/U_ref, whose core is 0.998 at the
+same place. The reattachment point x_r is where the bottom wall's Cf last
+changes sign, interpolated linearly between faces.
+
+**Gates**, stated before the code:
+
+1. *The mesh.* Every one of TMR's cells on each level, and nothing else:
+   the cell count, every interface face shared once, and the volume
+   (1,490 H² times the thickness) to 1e-12 relative.
+2. *The upstream layer*, on level 1, at x = −4: Cf within 2% of CFL3D's
+   0.002933, and u within 0.01 U of CFL3D's profile at each of its points
+   in 1 ≤ y ≤ 2.5.
+3. *Reattachment*, on level 1: x_r within 2% of CFL3D's 6.54, i.e. in
+   [6.41, 6.67].
+4. *The pressure recovery*, on level 1: Cp within 0.015 of CFL3D's on
+   the bottom wall for −4 ≤ x ≤ 30 — the recovery climbs 0.06 per H at
+   reattachment, so gate 3's 2% in x_r is worth 0.008 of Cp there.
+5. *The profiles*, on level 1: u within 0.03 U of CFL3D's at x = 1, 4, 6
+   and 10, at each of its points in 0 ≤ y ≤ 3.
+6. *Settled*: every level steady or quasi-steady as above.
+
+No solver code is to change for this case; if something must, the ADR
+says so before the change, and the full suite runs after it.
+
+Reported, not gated: levels 3 and 2 against level 1, and the observed
+order of x_r if the three are monotone; the corner bubble under the step
+(CFL3D's from x = 0.06 to 1.34); the experiment's reattachment, skin
+friction, pressure and velocity; U_in and the core velocity on every
+level; the cost.
