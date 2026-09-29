@@ -3362,6 +3362,61 @@ middle (0.08; 0.05 and 0.11 reported):
   measurements are recorded, with whatever the ablations and the hybrids
   narrow, and the limit stays.
 
+*Revision after the first runs, stated before the rest.* Looked at by
+then: on 545×385, n = 2 at 1e-2 and 3e-3, n = 3 and 4 at 1e-2; all twelve
+runs on 273×193 and 137×97; and the model at x₀ = 0.08 for every grid, n
+and dt of step 1. 545×385 with n = 3 at 3e-3 had run and had not been
+looked at; nothing else had run.
+
+By the first rule the model does not reproduce. At n = 3 and 1e-2 on
+545×385 the C++ grows by 1.506 a step and the model at x₀ = 0.08 by
+1.055: both grow, 7.6 apart in ln λ, where two is allowed. The results
+report it so.
+
+What the runs showed that the rule did not foresee is where the mode
+grows. From the steady state it grows where the step amplifies most, not
+where ADR-042 saw it: at n = 3 in the wall row at x ≈ 0.22, moving
+upstream about half a cell a step; at n = 2 first near the outlet,
+x ≈ 1.95, where the run reached its bound at step 8. The model's λ varies
+along the plate as much — at n = 3 and 1e-2 it is 0.19 at x = 0.005, 1.05
+at 0.08, 1.51 at 0.20 and 1.09 at 0.50 — and ADR-042's envelope at
+0.05–0.11 was where the sequenced start's disturbance was, not where the
+step amplifies most. Nor did the protocol foresee runs that reach the
+bound before they have 21 steps, as every n = 2 run on 545×385 so far and
+every n = 1 run did.
+
+A second test, then, judged on the runs not yet looked at:
+
+- the model's λ is the largest over its 23 stations from x = 0.005 to 1.99
+  (`STATIONS` in `piso_mode.py`, each by Arnoldi iteration, falling back
+  to 200 steps of power iteration where Arnoldi stalls), and it
+  reproduces if, at each of those runs, it is on the same side of 1 as the
+  measured λ and, where both grow, within a factor two of it in ln λ;
+- a run that reaches its bound before its 23rd step has λ from its steps
+  3 on, (A_N / A_3)^(1/(N − 3)) — the first two steps carry the restart's
+  own disturbance — or its last ratio if it ends by step 4;
+- the cause rules are unchanged, with "the model reproduces" read as
+  passing this second test, and test (b)'s λ by the same window; the first
+  test's failure is reported beside it.
+
+The model's numbers for those runs, computed before any of them was
+looked at:
+
+| run | model: largest λ (station) |
+| --- | --- |
+| 545×385, n = 3, dt = 3e-3 | 1.081 (x = 0.15) |
+| 545×385, n = 2, dt = 1e-3 | 3.237 (0.11) |
+| 545×385, n = 3, dt = 1e-3 | 0.942 (1.2) |
+| 545×193, n = 2, dt = 1e-2 | 1.711 (0.15) |
+| 273×385, n = 2, dt = 1e-2 | to follow, before its run |
+
+Reported, not judged: the ablations, where the model has the term —
+BDF1 7.60 and no ν_t(∇u)ᵀ 7.23, against 7.23 as run (x = 0.15); the V1
+form and the momentum tolerance are not in the model, which has one
+old-flux form and exact solves. And test (b): with D_f's aP leaving out
+the vertical diffusion, the model's largest λ at n = 2 and 1e-2 is 0.999,
+between 0.985 and 0.999 at every station, with no sign flip.
+
 ## ADR-044 — p_h on the pressure's backend. Stated before the code, answered after
 
 **Context.** ADR-041 solves the hydrostatic pressure p_h with the native
