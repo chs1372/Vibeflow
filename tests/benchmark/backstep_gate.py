@@ -14,8 +14,10 @@ then judges level 1 against CFL3D's results on the same grid (TMR's level 1):
   6. every march steady or quasi-steady.
 
 Levels 3 and 4 are not run (ADR-045's revision: their outlet columns
-diverge). Reported: level 2 beside level 1, the corner bubble, the
-experiment.
+diverge). Each march's ramp follows its Courant number (the third
+revision), and a march settles at the dt it can take, never past its
+level's. Reported: level 2 beside level 1, the corner bubble, the
+experiment (backstep_report.py).
 
 Run:  backstep_gate.py [build dir, default build] [out dir, default
       build/backstep]      VIBEFLOW_BS_REUSE=1 reuses the logs already there.
@@ -76,7 +78,8 @@ def final(log):
             d = parse_final(line)
             return {"xr": float(d["xr"]), "cf4": float(d["cf4"]), "uc4": float(d["uc4"]),
                     "settled": d["settled"], "steps": int(d["steps"]), "full": int(d["full"]),
-                    "seconds": float(d["seconds"]), "bubble": d["bubble"]}
+                    "dt": float(d.get("dt", "nan")), "seconds": float(d["seconds"]),
+                    "bubble": d["bubble"]}
     return None
 
 
@@ -145,7 +148,10 @@ def main(argv):
         print("  level 2, U_in = 1: no FINAL line"); return 1
     u_in = UC_CFL3D / cal["uc4"]
     print(f"  level 2, U_in = 1: u_c(-4) {cal['uc4']:.6f} -> U_in = {u_in:.6f}  "
-          f"({cal['steps']} steps, {cal['settled']}, {cal['seconds']:.0f} s)")
+          f"({cal['steps']} steps, {cal['full']} at dt {cal['dt']:g}, {cal['settled']}, "
+          f"{cal['seconds']:.0f} s)")
+    if not np.isfinite(u_in):
+        print("  level 2, U_in = 1: no velocity to set U_in from"); return 1
     marches = {}
     marches[2] = final(run(build, out, "L2", 2, u_in, Path(out) / "L2_cal.state"))
     marches[1] = final(run(build, out, "L1", 1, u_in, Path(out) / "L2.state"))
@@ -154,8 +160,8 @@ def main(argv):
         if m is None:
             print(f"  level {lv}: no FINAL line"); return 1
         print(f"  level {lv}: x_r {m['xr']:.4f}  Cf(-4) {m['cf4']:.6e}  u_c(-4) {m['uc4']:.6f}  "
-              f"bubble {m['bubble'][0]:.3f}-{m['bubble'][1]:.3f}  {m['steps']} steps, {m['settled']}, "
-              f"{m['seconds']:.0f} s")
+              f"bubble {m['bubble'][0]:.3f}-{m['bubble'][1]:.3f}  {m['steps']} steps, {m['full']} at "
+              f"dt {m['dt']:g}, {m['settled']}, {m['seconds']:.0f} s")
 
     cf_ref = two_col(TMR / "backstep_cfl3d_cf_sst.dat")
     xr_ref = reattachment(cf_ref[:, 0], cf_ref[:, 1])

@@ -78,7 +78,8 @@ def march(out, name):
         if ln.startswith("FINAL"):
             d = parse_final(ln)
             m.update(xr=float(d["xr"]), uc4=float(d["uc4"]), steps=int(d["steps"]),
-                     full=int(d["full"]), settled=d["settled"], seconds=float(d["seconds"]))
+                     full=int(d["full"]), dt=float(d.get("dt", "nan")), settled=d["settled"],
+                     seconds=float(d["seconds"]))
     return m if "xr" in m else None
 
 
@@ -97,7 +98,7 @@ def main(argv):
     for m in ms:
         if m:
             print(f"  {m['name']:7s} U_in {m['u_in']:.6f}  u_c(-4) {m['uc4']:.6f}  {m['steps']} steps "
-                  f"({m['full']} at the full dt), {m['settled']}, {m['seconds']:.0f} s")
+                  f"({m['full']} at its last dt, {m['dt']:g}), {m['settled']}, {m['seconds']:.0f} s")
     print("  CFL3D's u_c(-4): 0.998")
 
     levels = [(lv, f"L{lv}") for lv in (2, 1) if (out / f"L{lv}.cf").exists()]

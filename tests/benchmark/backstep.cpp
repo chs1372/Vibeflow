@@ -17,12 +17,16 @@
 // on level 3, so that the channel's centre velocity at x = -4 is CFL3D's.
 //
 // From the uniform stream, or from a coarser grid's state (VIBEFLOW_BS_INIT,
-// each cell taking the state of the nearest coarse cell), marched with
-// ADR-042's ramp -- dt/64, doubled every 100 steps -- to the steady criteria of
-// the flat plate (u, k and omega changing by less than 1e-6 of their size over
-// 50 steps) or to ADR-045's quasi-steady one: after at least 1,000 steps at the
-// full dt, the reattachment point and Cf at x = -4 moving by no more than 0.2%
-// over the march's last 20%.
+// each cell taking the state of the nearest coarse cell), marched from dt/64
+// with a ramp that follows the largest cell Courant number C (ADR-045's third
+// revision): every 100 steps dt doubles, never past the level's dt, if C at
+// the doubled dt is at most 8; whenever C exceeds 12 it halves and holds for
+// 100 steps. Once the march has held its dt for 1,000 steps -- the level's, or
+// the one the cap refused to double -- it ends at the steady criteria of the
+// flat plate (u, k and omega changing by less than 1e-6 of their size over 50
+// steps) or ADR-045's quasi-steady one: the reattachment point and Cf at
+// x = -4 moving by no more than 0.2% over the march's last 20%. Otherwise it
+// ends after the given number of steps at that dt, or 20,000 in all.
 //
 // Written out, for the gate:
 //   <out>.cf        x, Cf on the bottom wall (y = 1 upstream, y = 0 behind),
@@ -36,6 +40,12 @@
 //
 // Run:  backstep <mesh.hex> <out prefix> [dt, default 0.08] [max steps at the
 //       full dt, default 5000] [U_in, default 1]
+//
+// Exploration only, not used by the gate: VIBEFLOW_BS_DEBUG (each step's
+// extremes and where they are), VIBEFLOW_BS_SAVE_AT=<step>[,...] (the state
+// after those steps too), VIBEFLOW_BS_STOP=<step>, VIBEFLOW_BS_RAMP=<n> (start
+// at dt/n), VIBEFLOW_BS_FROZEN, VIBEFLOW_CONVECTION, VIBEFLOW_NO_NONORTH,
+// VIBEFLOW_CORRECTORS.
 
 #include "mesh/PolyMesh.hpp"
 #include "physics/Piso.hpp"
@@ -457,10 +467,64 @@ int main(int argc, char** argv) {
     };
     snapshot(uPrev, kPrev, wPrev);
 
+    // The state for a finer grid's start: x y u v w p k omega per cell.
+    auto saveState = [&](const std::string& path) {
+      auto u = host(solver.velocity()); auto p = host(solver.pressure());
+      auto k = host(solver.turbulentKineticEnergy()); auto w = host(solver.specificDissipation());
+      std::FILE* fs = std::fopen(path.c_str(), "w");
+      std::fprintf(fs, "%ld\n", static_cast<long>(nc));
+      for (Index c = 0; c < nc; ++c)
+        std::fprintf(fs, "%.17g %.17g %.17g %.17g %.17g %.17g %.17g %.17g\n", ccH(c,0), ccH(c,1),
+                     u(c,0), u(c,1), u(c,2), p(c), k(c), w(c));
+      std::fclose(fs);
+    };
+    // Exploration only: VIBEFLOW_BS_SAVE_AT=<step>[,<step>...] also saves
+    // the state after those steps, to <out>.state.<step>; VIBEFLOW_BS_STOP
+    // ends the march after the step it names.
+    std::vector<int> saveAt;
+    if (const char* e = std::getenv("VIBEFLOW_BS_SAVE_AT")) {
+      std::string list(e);
+      for (std::size_t a = 0; a < list.size();) {
+        const std::size_t b = std::min(list.find(',', a), list.size());
+        saveAt.push_back(std::atoi(list.substr(a, b - a).c_str()));
+        a = b + 1;
+      }
+    }
+    const int stopAt = std::getenv("VIBEFLOW_BS_STOP") ? std::atoi(std::getenv("VIBEFLOW_BS_STOP")) : -1;
+
+    // The ramp follows the flow's largest cell Courant number (ADR-045's
+    // third revision): C = dt sum_f |F_f| / 2V. Every 100 steps dt doubles,
+    // never past the level's dt, if C at the doubled dt is at most C_UP;
+    // whenever C exceeds C_DOWN it halves and holds for 100 steps.
+    const Real C_UP = 8.0, C_DOWN = 12.0;
+    const int MAX_STEPS = 20000;
+    auto ownH = host(mesh.owner()); auto neiH = host(mesh.neighbour());
+    auto bclH = host(mesh.boundaryCell()); auto volH = host(mesh.cellVolume());
+    const Index nif = mesh.nInternalFaces();
+    std::vector<Real> fsum(nt);
+    struct Cfl { Real c = 0.0; Index cell = 0; };
+    auto courant = [&](Real dtTest) {
+      auto F = host(solver.faceFlux()); auto Fb = host(solver.boundaryFlux());
+      std::fill(fsum.begin(), fsum.end(), 0.0);
+      for (Index f = 0; f < nif; ++f) {
+        const Real a = std::abs(F(f));
+        fsum[ownH(f)] += a; fsum[neiH(f)] += a;
+      }
+      for (Index f = 0; f < nb; ++f) fsum[bclH(f)] += std::abs(Fb(f));
+      Cfl r;
+      for (Index c = 0; c < nc; ++c) {
+        const Real v = fsum[c] / (2.0 * volH(c));
+        if (v > r.c) { r.c = v; r.cell = c; }
+      }
+      r.c *= dtTest;
+      return r;
+    };
+
     VectorField src("src", nt, 3);
     Real time = 0.0;
-    int step = 0, fullSteps = 0;
-    bool steady = false, quasi = false;
+    int step = 0, sinceChange = 0, holdUntil = 0;
+    bool refused = false, steady = false, quasi = false;
+    Cfl cNow;
     // Every 50 steps: the reattachment point and Cf at x = -4, with the step
     // they were taken at, for the quasi-steady test.
     std::vector<int> histStep;
@@ -468,13 +532,30 @@ int main(int argc, char** argv) {
     Separation sep;
     Real cf4 = 0.0, uc = 0.0;
     for (step = 1; ; ++step) {
-      if (step > 1 && (step - 1) % 100 == 0 && dtNow < dt) {
-        dtNow = std::min(2.0 * dtNow, dt);
-        solver.setTimeStep(dtNow);
+      if (step > 1 && (step - 1) % 100 == 0 && dtNow < dt && step > holdUntil) {
+        const Real d2 = std::min(2.0 * dtNow, dt);
+        const Cfl c2 = courant(d2);
+        refused = c2.c > C_UP;
+        if (!refused) { dtNow = d2; solver.setTimeStep(dtNow); sinceChange = 0; }
+        std::printf("  step %6d  ramp: C %.2f at dt %.3e, at (%.4f, %.3e): %s\n", step, c2.c, d2,
+                    ccH(c2.cell,0), ccH(c2.cell,1), refused ? "holds" : "doubles");
       }
       solver.advance(ub, fb, src, momentum, *pressure);
       time += dtNow;
-      if (dtNow == dt) ++fullSteps;
+      ++sinceChange;
+      cNow = courant(dtNow);
+      if (std::isfinite(cNow.c) && cNow.c > C_DOWN) {
+        std::printf("  step %6d  ramp: C %.2f at dt %.3e, at (%.4f, %.3e): halves\n", step, cNow.c,
+                    dtNow, ccH(cNow.cell,0), ccH(cNow.cell,1));
+        dtNow *= 0.5; solver.setTimeStep(dtNow);
+        sinceChange = 0; holdUntil = step + 100; refused = false;
+      }
+      // Steps at the dt the march settles at: the level's, or the one the
+      // cap last kept it at.
+      const bool atFinal = dtNow == dt || refused;
+      const int atDt = atFinal ? sinceChange : 0;
+      if (std::find(saveAt.begin(), saveAt.end(), step) != saveAt.end())
+        saveState(out + ".state." + std::to_string(step));
       if (std::getenv("VIBEFLOW_BS_DEBUG")) {
         // Exploration only: where the fields go, step by step.
         auto u = host(solver.velocity()); auto k = host(solver.turbulentKineticEnergy());
@@ -493,7 +574,7 @@ int main(int argc, char** argv) {
                     ccH(in,1), solver.boundedCells());
         std::fflush(stdout);
       }
-      if (step % 50 == 0 || fullSteps >= maxFull) {
+      if (step % 50 == 0 || atDt >= maxFull || step >= MAX_STEPS) {
         const auto tau = wallStress(mesh, solver, bottom);
         std::vector<Real> cf(tau.size());
         for (std::size_t i = 0; i < tau.size(); ++i) cf[i] = 2.0 * tau[i];
@@ -516,19 +597,20 @@ int main(int argc, char** argv) {
           dcf = std::max(dcf, std::abs(histCf4[i] - cf4) / std::abs(cf4));
         }
         const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-        std::printf("  step %6d  t %9.3f  dt %.2e  xr %.5f  Cf(-4) %.6e  uc(-4) %.6f  "
+        std::printf("  step %6d  t %9.3f  dt %.2e  C %.2f  xr %.5f  Cf(-4) %.6e  uc(-4) %.6f  "
                     "bubble %.3f %.3f  drift %.1e %.1e  change/50 steps %.1e  bounded %lld  (%.0f s)\n",
-                    step, time, dtNow, sep.xr, cf4, uc, sep.c0, sep.c1, dxr, dcf, change,
+                    step, time, dtNow, cNow.c, sep.xr, cf4, uc, sep.c0, sep.c1, dxr, dcf, change,
                     solver.boundedCells(), secs);
         std::printf("      change: u %.1e at (%.4f, %.3e)  k %.1e at (%.4f, %.3e)  "
                     "omega %.1e at (%.4f, %.3e)\n",
                     cu.rel, ccH(cu.cell,0), ccH(cu.cell,1), ck.rel, ccH(ck.cell,0), ccH(ck.cell,1),
                     cw.rel, ccH(cw.cell,0), ccH(cw.cell,1));
         std::fflush(stdout);
-        if (dtNow == dt && change < 1e-6) { steady = true; break; }
-        if (fullSteps >= 1000 && sep.xr > 0.0 && dxr <= 2e-3 && dcf <= 2e-3) { quasi = true; break; }
-        if (fullSteps >= maxFull) break;
+        if (atDt >= 1000 && change < 1e-6) { steady = true; break; }
+        if (atDt >= 1000 && sep.xr > 0.0 && dxr <= 2e-3 && dcf <= 2e-3) { quasi = true; break; }
+        if (atDt >= maxFull || step >= MAX_STEPS) break;
       }
+      if (step == stopAt) break;
     }
 
     {
@@ -563,22 +645,15 @@ int main(int argc, char** argv) {
         }
       }
       std::fclose(fq);
-      if (std::getenv("VIBEFLOW_BS_SAVE")) {
-        auto k = host(solver.turbulentKineticEnergy()); auto w = host(solver.specificDissipation());
-        std::FILE* fs = std::fopen((out + ".state").c_str(), "w");
-        std::fprintf(fs, "%ld\n", static_cast<long>(nc));
-        for (Index c = 0; c < nc; ++c)
-          std::fprintf(fs, "%.17g %.17g %.17g %.17g %.17g %.17g %.17g %.17g\n", ccH(c,0), ccH(c,1),
-                       u(c,0), u(c,1), u(c,2), p(c), k(c), w(c));
-        std::fclose(fs);
-      }
+      if (std::getenv("VIBEFLOW_BS_SAVE")) saveState(out + ".state");
       const PisoTimings& ts = solver.timings();
       const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
       std::printf("timings: total %.0f s  pressure solve %.0f  momentum solve %.0f  assembly %.0f\n",
                   ts.total, ts.pressureSolve, ts.momentumSolve, ts.assemble + ts.pressureAssembly);
-      std::printf("FINAL xr %.6f cf4 %.8e uc4 %.8f bubble %.5f %.5f steps %d full %d time %.3f "
+      std::printf("FINAL xr %.6f cf4 %.8e uc4 %.8f bubble %.5f %.5f steps %d full %d dt %.6g time %.3f "
                   "settled %s bounded %lld seconds %.0f\n",
-                  sep.xr, cf4, uc, sep.c0, sep.c1, step, fullSteps, time,
+                  sep.xr, cf4, uc, sep.c0, sep.c1, step, (dtNow == dt || refused) ? sinceChange : 0,
+                  dtNow, time,
                   steady ? "steady" : quasi ? "quasi" : "no", solver.boundedCells(), secs);
     }
     rc = (steady || quasi) ? 0 : 1;
