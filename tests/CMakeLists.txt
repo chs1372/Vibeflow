@@ -94,6 +94,9 @@ add_test(NAME mms_parallel_sst COMMAND mms_parallel_sst)
 # ADR-042 gate 4: one grid per run; flat_plate_gate.py compares the grids.
 add_executable(flat_plate benchmark/flat_plate.cpp)
 target_link_libraries(flat_plate PRIVATE vibeflow_physics)
+# ADR-045: the backward-facing step, one grid per run; backstep_gate.py compares.
+add_executable(backstep benchmark/backstep.cpp)
+target_link_libraries(backstep PRIVATE vibeflow_physics)
 
 # Hours on two cores at 128^2 and Ra = 1e6: a suite gate, not a ctest.
 add_executable(heated_cavity benchmark/heated_cavity.cpp)

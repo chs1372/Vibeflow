@@ -10,3 +10,4 @@ cases/cylinder/*.hex
 *.log
 .venv/
 cases/flatplate/*.hex
+cases/backstep/*.hex

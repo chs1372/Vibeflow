@@ -3718,3 +3718,20 @@ order of x_r if the three are monotone; the corner bubble under the step
 (CFL3D's from x = 0.06 to 1.34); the experiment's reattachment, skin
 friction, pressure and velocity; U_in and the core velocity on every
 level; the cost.
+
+*Revision before the runs.* The harness was tried first on levels 4 and 3
+(smoke runs, not results). Both blow up within ten steps, in the wall cells
+of the last column before the outlet — 11.4 and 5.7 H long and about 1e-3 H
+thick — at every step tried, down to dt/16,384, and the growth per step is
+μⁿ for n correctors with μ ≈ 1.8 (level 4: 2.0, 3.65, 10.5 and 78 a step
+for 1, 2, 4 and 8): the corrector iteration itself diverges there, whatever
+the time step. Level 2, whose last column is 2.9 H long, ran the first 112
+steps of its ramp without it. So:
+
+- level 2 starts from the uniform stream and sets U_in — its first march
+  with U_in = U, the second from the first's state with U_in = 0.998 U / u_c;
+  level 1 follows from level 2's state, as planned;
+- levels 3 and 4 are reported as the failure they are, and the grid
+  comparison reported beside gate 3 is levels 2 and 1;
+- the divergence goes into the known limits. No solver code changes; the
+  gates stand.
