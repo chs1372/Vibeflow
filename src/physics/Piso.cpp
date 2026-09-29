@@ -125,7 +125,7 @@ void PisoSolver::setState(const VectorField& u, const ScalarField& p,
 }
 
 void PisoSolver::bdf(Real& aP, Real& a1, Real& a2) const {
-  if (step_ == 0) { aP = 1.0 / dt_; a1 = -1.0 / dt_; a2 = 0.0; return; }
+  if (step_ == 0 || ctl_.bdf1) { aP = 1.0 / dt_; a1 = -1.0 / dt_; a2 = 0.0; return; }
   aP = 1.5 / dt_; a1 = -2.0 / dt_; a2 = 0.5 / dt_;
 }
 
@@ -295,6 +295,35 @@ void PisoSolver::assembleMomentum(const VectorField& uB, const VectorField& src)
   // a partial sum. Df_ interpolates aP to the face and Rhie-Chow reads it on
   // both sides, so the partial value would bias every rank-boundary flux.
   sync(aP_);
+  // The aP that D_f reads: aP_ itself, unless ADR-043's diagnostic leaves the
+  // diffusion through one axis's faces out of it.
+  if (ctl_.rhieChowAxisOff < 0) {
+    aPrc_ = aP_;
+  } else {
+    const int ax = ctl_.rhieChowAxisOff;
+    ScalarField r("aPrc", nt);
+    Kokkos::deep_copy(r, aP_);
+    auto faI = m_.faceArea(); auto baI = m_.boundaryArea();
+    Kokkos::parallel_for("aPrcInt", Kokkos::RangePolicy<ExecSpace>(0, nf),
+      KOKKOS_LAMBDA(const Index f) {
+        const Real mag = Kokkos::sqrt(faI(f,0)*faI(f,0) + faI(f,1)*faI(f,1) + faI(f,2)*faI(f,2));
+        if (Kokkos::fabs(faI(f, ax)) <= 0.9 * mag) return;
+        const Real nuf = turb ? nu + (w(f) * nut(own(f)) + (1.0 - w(f)) * nut(nei(f))) : nu;
+        Kokkos::atomic_add(&r(own(f)), -nuf * a(f));
+        Kokkos::atomic_add(&r(nei(f)), -nuf * a(f));
+      });
+    Kokkos::parallel_for("aPrcBnd", Kokkos::RangePolicy<ExecSpace>(0, nb),
+      KOKKOS_LAMBDA(const Index f) {
+        if (bt(f) == static_cast<int>(VelocityBC::ZeroGradient)) return;
+        const Real mag = Kokkos::sqrt(baI(f,0)*baI(f,0) + baI(f,1)*baI(f,1) + baI(f,2)*baI(f,2));
+        if (Kokkos::fabs(baI(f, ax)) <= 0.9 * mag) return;
+        const Real nub = turb ? nu + nutB(f) : nu;
+        Kokkos::atomic_add(&r(bc(f)), -nub * ab(f));
+      });
+    Kokkos::fence();
+    sync(r);
+    aPrc_ = r;
+  }
 
   // Gradients of each velocity component, for the skewness and non-orthogonal
   // corrections.
@@ -547,7 +576,7 @@ void PisoSolver::rhieChow() {
   const Index nf = m_.nInternalFaces();
   auto own = m_.owner(); auto nei = m_.neighbour();
   auto fa = m_.faceArea(); auto vol = m_.cellVolume();
-  auto w = w_; auto aP = aP_; auto Df = Df_; auto Fstar = Fstar_; auto FOld = FOld_;
+  auto w = w_; auto aP = aPrc_; auto Df = Df_; auto Fstar = Fstar_; auto FOld = FOld_;
   const bool exact = exactOldFlux();
   auto H = exact ? q_ : HbyA_; auto uo = uOld_; auto gp = gp_; auto rOld = rOld_;
   auto sk = skew_; auto GH0 = gH0_; auto GH1 = gH1_; auto GH2 = gH2_;
@@ -666,7 +695,7 @@ void PisoSolver::solvePressure(LinearSolver& solver) {
       Kokkos::atomic_add(&diag(nei(f)), a);
       up(f) = -a; lo(f) = -a;
     });
-  auto apb = pdiff_.aBnd(); auto pt = pType_; auto aPv = aP_;
+  auto apb = pdiff_.aBnd(); auto pt = pType_; auto aPv = aPrc_;
   auto volAll = m_.cellVolume();
   if (openDomain_) {
     Kokkos::parallel_for("pmatBnd", Kokkos::RangePolicy<ExecSpace>(0, nb),
@@ -1056,7 +1085,7 @@ StepReport PisoSolver::advance(const VectorField& uB, const ScalarField& fB,
       Kokkos::parallel_for("seed", Kokkos::RangePolicy<ExecSpace>(0, nt),
         KOKKOS_LAMBDA(const Index c) { x(c) = u(c, d); });
       Kokkos::fence();
-      momentumSolver.solve(sys, x, 1e-13, 1e-18, 5000);
+      momentumSolver.solve(sys, x, ctl_.momentumSolveTol, 1e-18, 5000);
       Kokkos::parallel_for("store", Kokkos::RangePolicy<ExecSpace>(0, nt),
         KOKKOS_LAMBDA(const Index c) { u(c, d) = x(c); });
       Kokkos::fence();
@@ -1282,8 +1311,17 @@ void PisoSolver::enableEnergy(const EnergyModel& model) {
       });
     Kokkos::fence();
   }
-  phSolver_ = std::make_unique<NativeCG>(m_, comm_, true);
+  // The native CG unless the caller has given p_h a solver (ADR-044).
+  if (!phSolver_) phSolver_ = std::make_unique<NativeCG>(m_, comm_, true);
   phSolver_->notifyMatrixChanged();
+}
+
+void PisoSolver::setHydrostaticSolver(std::unique_ptr<LinearSolver> solver) {
+  // Before enableEnergy the solver waits there; after it, it takes over at
+  // once. Either way the constant matrix is new to it.
+  phSolver_ = std::move(solver);
+  if (!phSolver_ && energy_) phSolver_ = std::make_unique<NativeCG>(m_, comm_, true);
+  if (phSolver_) phSolver_->notifyMatrixChanged();
 }
 
 void PisoSolver::setTemperatureBoundary(const View1<int>& type, const ScalarField& value) {

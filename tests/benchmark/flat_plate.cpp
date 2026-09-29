@@ -288,6 +288,15 @@ int main(int argc, char** argv) {
       ctl.pressureExtrapSweeps = std::atoi(e);
       if (ctl.pressureExtrapSweeps == 0) ctl.pressureExtrapolation = false;
     }
+    // ADR-043's ablations: BDF1 throughout, ADR-031's V1 old-flux form, the
+    // momentum predictor's tolerance.
+    if (std::getenv("VIBEFLOW_FP_BDF1")) ctl.bdf1 = true;
+    if (const char* e = std::getenv("VIBEFLOW_OLDFLUX"))
+      if (std::string(e) == "v1") ctl.oldFlux = OldFluxForm::V1;
+    if (const char* e = std::getenv("VIBEFLOW_MOMENTUM_TOL")) ctl.momentumSolveTol = std::atof(e);
+    // ADR-043's test of its cause: D_f without the vertical diffusion (1: the
+    // faces normal to y).
+    if (const char* e = std::getenv("VIBEFLOW_RC_AXIS_OFF")) ctl.rhieChowAxisOff = std::atoi(e);
     // Momentum's face value: linear upwind, because central differencing let
     // the leading edge set the odd-even mode going upstream along the
     // symmetry plane (ADR-042). VIBEFLOW_CONVECTION=linear, or =upwind for
@@ -460,6 +469,37 @@ int main(int argc, char** argv) {
     snapshot(uPrev, kPrev, wPrev);
     VectorField src("src", nt, 3);
     Real time = 0.0;
+    // ADR-043: VIBEFLOW_FP_MODE prints every step's odd-even change. The cells
+    // come in rows along x (make_mesh.py writes them so); A(phi) is the
+    // largest |d(i-1) - 2 d(i) + d(i+1)| / 4 over interior cells, d the change
+    // of phi over the step and i the column. The march then ends when A(p)
+    // passes VIBEFLOW_FP_MODE_STOP (default 1e-2), or at the step limit --
+    // not on the steady test.
+    const bool modeDiag = std::getenv("VIBEFLOW_FP_MODE") != nullptr;
+    Real modeStop = 1e-2;
+    if (const char* e = std::getenv("VIBEFLOW_FP_MODE_STOP")) modeStop = std::atof(e);
+    Index nx = 0;
+    std::vector<Real> pLast, uLast;
+    auto modeSnapshot = [&]() {
+      auto pp = host(solver.pressure()); auto uu = host(solver.velocity());
+      pLast.resize(nc); uLast.resize(nc * 2);
+      for (Index c = 0; c < nc; ++c) { pLast[c] = pp(c); uLast[2*c] = uu(c,0); uLast[2*c+1] = uu(c,1); }
+    };
+    if (modeDiag) {
+      auto cc = host(mesh.cellCentre());
+      nx = 1;
+      while (nx < nc && cc(nx,0) > cc(nx-1,0)) ++nx;
+      bool rows = nx > 2 && nc % nx == 0;
+      for (Index c = 0; rows && c < nc; ++c) {
+        const Index i = c % nx, j = c / nx;
+        rows = std::abs(cc(c,0) - cc(i,0)) <= 1e-12 &&
+               std::abs(cc(c,1) - cc(j*nx,1)) <= 1e-9 * std::abs(cc(j*nx,1));
+      }
+      if (rows) std::printf("  mode diagnostic: %ld rows of %ld cells\n",
+                            static_cast<long>(nc / nx), static_cast<long>(nx));
+      else { std::printf("  mode diagnostic: the cells are not in rows; off\n"); nx = 0; }
+      modeSnapshot();
+    }
     for (step = 1; step <= maxSteps; ++step) {
       if (step > 1 && (step - 1) % 100 == 0 && dtNow < dt) {
         dtNow = std::min(2.0 * dtNow, dt);
@@ -503,6 +543,34 @@ int main(int argc, char** argv) {
         }
       }
       if (!std::isfinite(cf)) { std::printf("  step %d: not finite\n", step); break; }
+      if (modeDiag && nx > 2) {
+        auto pp = host(solver.pressure()); auto uu = host(solver.velocity());
+        auto cc = host(mesh.cellCentre());
+        Real a[3] = {0.0, 0.0, 0.0};
+        Index at[3] = {0, 0, 0};
+        for (Index c = 0; c < nc; ++c) {
+          const Index i = c % nx;
+          if (i == 0 || i == nx - 1) continue;
+          const Real dp = ((pp(c-1) - pLast[c-1]) - 2.0 * (pp(c) - pLast[c])
+                           + (pp(c+1) - pLast[c+1])) / 4.0;
+          const Real dv[2] = {
+            ((uu(c-1,0) - uLast[2*(c-1)]) - 2.0 * (uu(c,0) - uLast[2*c])
+             + (uu(c+1,0) - uLast[2*(c+1)])) / 4.0,
+            ((uu(c-1,1) - uLast[2*(c-1)+1]) - 2.0 * (uu(c,1) - uLast[2*c+1])
+             + (uu(c+1,1) - uLast[2*(c+1)+1])) / 4.0};
+          const Real v3[3] = {std::abs(dp), std::abs(dv[0]), std::abs(dv[1])};
+          for (int k = 0; k < 3; ++k) if (v3[k] > a[k]) { a[k] = v3[k]; at[k] = c; }
+        }
+        std::printf("    mode %6d  A(p) %.4e at (%.4f, %.3e)  A(u) %.4e at (%.4f, %.3e)  "
+                    "A(v) %.4e at (%.4f, %.3e)\n", step, a[0], cc(at[0],0), cc(at[0],1),
+                    a[1], cc(at[1],0), cc(at[1],1), a[2], cc(at[2],0), cc(at[2],1));
+        std::fflush(stdout);
+        modeSnapshot();
+        if (!(a[0] <= modeStop)) {
+          std::printf("  mode: A(p) passed %g at step %d\n", modeStop, step);
+          break;
+        }
+      }
       if (step % 50 == 0 || step == maxSteps) {
         snapshot(uN, kN, wN);
         const Change cu = relChange(uN, uPrev, 3), ck = relChange(kN, kPrev, 1),
@@ -527,7 +595,10 @@ int main(int argc, char** argv) {
                     cu.rel, ccH(cu.cell,0), ccH(cu.cell,1), ck.rel, ccH(ck.cell,0), ccH(ck.cell,1),
                     cw.rel, ccH(cw.cell,0), ccH(cw.cell,1));
         std::fflush(stdout);
-        if (dcf < 1e-6 && dpk < 1e-6 && change < 1e-6 && dtNow == dt) { steady = true; break; }
+        if (dcf < 1e-6 && dpk < 1e-6 && change < 1e-6 && dtNow == dt && !modeDiag) {
+          steady = true;
+          break;
+        }
       }
     }
     if (step > maxSteps) step = maxSteps;

@@ -14,6 +14,11 @@ on every level. Each level is every other point of the next finer one.
 
 Run:  python3 make_mesh.py [level ...]      levels: 35x25 69x49 137x97 273x193 545x385
       (default: all), each written to <level>.hex beside this script.
+
+Two hybrids for ADR-043, built from the 545x385 points and not written by
+default: 545x193 (545's x-lines, every other y-line: 273's) and 273x385 (the
+reverse). Each is refined in one direction only, which the two-corrector
+odd-even mode is looked for on.
 """
 
 import gzip
@@ -28,6 +33,8 @@ LEVELS = {"35x25": "flatplate_clust2_4levelsdown_35x25.p2dfmt.gz",
           "137x97": "flatplate_clust2_2levelsdown_137x97.p2dfmt.gz",
           "273x193": "flatplate_clust2_1leveldown_273x193.p2dfmt.gz",
           "545x385": "flatplate_clust2_0levelsdown_545x385.p2dfmt.gz"}
+# ADR-043's hybrids: (x stride, y stride) through the 545x385 points.
+HYBRIDS = {"545x193": (1, 2), "273x385": (2, 1)}
 DZ = 0.01          # one cell thick; slip on both z faces, so any thickness
 
 
@@ -69,7 +76,16 @@ def write_hex(x, y, out):
 def main():
     levels = sys.argv[1:] or list(LEVELS)
     for lv in levels:
-        x, y = read_p2d(HERE / "tmr" / LEVELS[lv])
+        if lv in HYBRIDS:
+            sx, sy = HYBRIDS[lv]
+            x, y = read_p2d(HERE / "tmr" / LEVELS["545x385"])
+            x, y = x[::sy, ::sx], y[::sy, ::sx]
+            # TMR's own coarser level is the same points taken both ways.
+            x2, y2 = read_p2d(HERE / "tmr" / LEVELS["273x193"])
+            assert np.abs(read_p2d(HERE / "tmr" / LEVELS["545x385"])[0][::2, ::2] - x2).max() < 1e-12
+            assert np.abs(read_p2d(HERE / "tmr" / LEVELS["545x385"])[1][::2, ::2] - y2).max() < 1e-12
+        else:
+            x, y = read_p2d(HERE / "tmr" / LEVELS[lv])
         # The x-lines are vertical and the y-lines horizontal: every cell is
         # a rectangle, and the plate's leading edge is a grid point.
         assert np.abs(np.diff(x, axis=0)).max() < 1e-12

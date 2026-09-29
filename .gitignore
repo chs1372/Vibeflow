@@ -1,4 +1,5 @@
 build/
+build2/
 __pycache__/
 *.pyc
 .spack-env/

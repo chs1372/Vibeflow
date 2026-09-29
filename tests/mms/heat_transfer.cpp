@@ -55,6 +55,9 @@
 // The same resting fluid on the randomly perturbed fixture mesh, which has no
 // layers, is reported in both forms and not gated.
 //
+// VIBEFLOW_PH=<PETSc configuration> solves the hydrostatic pressure p_h on
+// that backend instead of the native CG (ADR-044's check).
+//
 // Run:  heat_transfer <fixtures> [gates, default 12345] [grids, default 8 16 32]
 
 #include "mesh/HexMesh.hpp"
@@ -62,12 +65,18 @@
 #include "physics/Piso.hpp"
 #include "linalg/NativeBiCGStab.hpp"
 #include "linalg/NativeCG.hpp"
+#ifdef VIBEFLOW_HAVE_PETSC
+#include "linalg/PetscSolver.hpp"
+#include <petscsys.h>
+#endif
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <algorithm>
 #include <exception>
 #include <functional>
+#include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -316,6 +325,24 @@ BuoyancyForm gateForm() {
   return (e && std::string(e) == "cell") ? BuoyancyForm::Cell : BuoyancyForm::Balanced;
 }
 
+// The hydrostatic pressure's solver (ADR-044): the native Jacobi CG, which is
+// also every gate's pressure solver here, unless VIBEFLOW_PH names a PETSc
+// configuration -- that ADR's check of a p_h on another backend.
+void hydrostaticSolver(PisoSolver& solver, const Mesh& mesh) {
+  const char* e = std::getenv("VIBEFLOW_PH");
+  if (!e || std::string(e) == "native") return;
+#ifdef VIBEFLOW_HAVE_PETSC
+  auto s = std::make_unique<PetscSolver>(mesh, Comm(), std::string(e));
+  s->setConstantNullSpace(true);
+  s->setUnpreconditionedNorm(true);
+  s->setSymmetricAMG();
+  solver.setHydrostaticSolver(std::move(s));
+#else
+  (void)solver; (void)mesh;
+  throw std::runtime_error(std::string("built without PETSc; VIBEFLOW_PH=") + e + " unavailable");
+#endif
+}
+
 // ------------------------------------------ 1. temperature in an exact flow
 std::vector<Real> energyExactFlow(const HexMesh& mesh, Real dt, int nsteps, Real nu,
                                   Real kappa, int outer) {
@@ -328,6 +355,7 @@ std::vector<Real> energyExactFlow(const HexMesh& mesh, Real dt, int nsteps, Real
   em.kappa = kappa;
   em.form = gateForm();
   solver.enableEnergy(em);
+  hydrostaticSolver(solver, mesh);
 
   VectorField u0 = cellVector(mesh, [nu](const Vec3& q) { return esVelocity(q, 0.0, nu); });
   ScalarField p0 = cellScalar(mesh, [nu](const Vec3& q) { return esPressure(q, 0.0, nu); });
@@ -422,6 +450,7 @@ Steady steadyBoussinesq(const HexMesh& mesh, Real dt, Real tol, Real nu = 0.1,
   em.tRef = 0.0;
   em.form = gateForm();
   solver.enableEnergy(em);
+  hydrostaticSolver(solver, mesh);
 
   VectorField src = cellVector(mesh, [nu](const Vec3& q) { return bMomentumSource(q, nu); });
   VectorField ub; ScalarField fb;
@@ -542,6 +571,7 @@ Rest restState(const HexMesh& mesh, Real tRef, Vec3 tRefGrad, const ScalarFn& pr
   em.tRefGrad = tRefGrad;
   em.form = form;
   solver.enableEnergy(em);
+  hydrostaticSolver(solver, mesh);
   solver.setTemperature(cellScalar(mesh, profile));
   solver.setTemperatureSource(cellScalar(mesh, [source](const Vec3&) { return source; }));
 
@@ -644,6 +674,9 @@ bool gateRestCurved() {
 }  // namespace
 
 int main(int argc, char** argv) {
+#ifdef VIBEFLOW_HAVE_PETSC
+  PetscInitialize(&argc, &argv, nullptr, nullptr);
+#endif
   Kokkos::initialize(argc, argv);
   int rc = 0;
   {
@@ -659,6 +692,7 @@ int main(int argc, char** argv) {
 
     bool ok = true;
     std::printf("buoyancy form: %s\n", gateForm() == BuoyancyForm::Cell ? "cell" : "balanced");
+    if (const char* e = std::getenv("VIBEFLOW_PH")) std::printf("p_h solver: %s\n", e);
     auto runGate = [&](char g, const auto& fn) {
       if (gates.find(g) == std::string::npos) return;
       try {
@@ -677,5 +711,8 @@ int main(int argc, char** argv) {
     rc = ok ? 0 : 1;
   }
   Kokkos::finalize();
+#ifdef VIBEFLOW_HAVE_PETSC
+  PetscFinalize();
+#endif
   return rc;
 }

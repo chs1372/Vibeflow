@@ -287,6 +287,17 @@ struct PisoControls {
   // non-orthogonal sweeps and +52% wall time on the cylinder. Ten cold sweeps
   // move the cylinder drag by 0.0001, so three stand.
   bool pressureExtrapWarmStart = false;
+  // Two diagnostic switches for ADR-043's ablations, off by default: BDF1 on
+  // every step instead of only the first, and the momentum predictor's
+  // relative tolerance (1e-13, as it always was).
+  bool bdf1 = false;
+  Real momentumSolveTol = 1e-13;
+  // And one for its cause: the aP that the Rhie-Chow coefficient D_f (and
+  // with it the pressure equation) reads leaves out the diffusion through the
+  // faces normal to this axis (0, 1, 2; -1, the default, leaves nothing
+  // out). The cell velocity's V/aP keeps it. It changes the discretisation
+  // and exists only to show what that diffusion does to the correctors.
+  int rhieChowAxisOff = -1;
 };
 
 // Coarse phase timings. ADR-016 was written because a sweep count was
@@ -368,6 +379,13 @@ class PisoSolver {
   // correctors, with the corrected face flux, so that a converged outer loop
   // carries no coupling lag. The outer loop's convergence test includes T.
   void enableEnergy(const EnergyModel& model);
+  // The solver for the balanced form's hydrostatic pressure p_h (ADR-044):
+  // before or after enableEnergy. Without a call, or with a null pointer,
+  // the native Jacobi CG with its null-space projection (ADR-041). The solve
+  // keeps its tolerances -- the residual's 2-norm below 1e-15 of the
+  // right-hand side's -- so a backend must measure that norm: a PetscSolver
+  // for p_h takes setConstantNullSpace and setUnpreconditionedNorm.
+  void setHydrostaticSolver(std::unique_ptr<LinearSolver> solver);
   // type is one TemperatureBC per boundary face, value the prescribed
   // temperature or heat flux. Without a call every face is FixedValue at 0.
   void setTemperatureBoundary(const View1<int>& type, const ScalarField& value);
@@ -500,6 +518,7 @@ class PisoSolver {
   LeastSquaresGradient grad_;
 
   ScalarField w_, aP_, Df_, Fstar_;
+  ScalarField aPrc_;           // the aP D_f reads: aP_ itself unless rhieChowAxisOff
   // The non-orthogonal correction, kept ACROSS calls. It is the fixed point of
   // a deferred-correction loop whose answer moves only a little from one
   // pressure solve to the next, so starting from the last one costs nothing

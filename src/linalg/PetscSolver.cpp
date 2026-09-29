@@ -27,6 +27,8 @@ struct PetscSolver::Impl {
   bool dirty{true};
   int pcInterval{1};
   int matrixChanges{0};
+  bool constantNullSpace{false};   // ADR-044
+  bool nullSpaceSet{false};
 
   Impl(const Mesh& m, Comm c, std::vector<Index> g) : mesh(m), comm(c), grow(std::move(g)) {
     nOwned = mesh.nCells();
@@ -118,6 +120,16 @@ struct PetscSolver::Impl {
     }
     chk(MatAssemblyBegin(A, MAT_FINAL_ASSEMBLY), "AssemblyBegin");
     chk(MatAssemblyEnd(A, MAT_FINAL_ASSEMBLY), "AssemblyEnd");
+    // The null space is an attribute of the matrix and survives
+    // re-assembly, so it is attached once.
+    if (constantNullSpace && !nullSpaceSet) {
+      MatNullSpace ns;
+      chk(MatNullSpaceCreate(PetscObjectComm(reinterpret_cast<PetscObject>(A)), PETSC_TRUE, 0,
+                             nullptr, &ns), "MatNullSpaceCreate");
+      chk(MatSetNullSpace(A, ns), "MatSetNullSpace");
+      chk(MatNullSpaceDestroy(&ns), "MatNullSpaceDestroy");
+      nullSpaceSet = true;
+    }
     dirty = false;
   }
 };
@@ -201,5 +213,37 @@ SolveReport PetscSolver::solve(LinearSystem& sys, ScalarField& x,
 }
 
 void PetscSolver::notifyMatrixChanged() { impl_->dirty = true; }
+
+void PetscSolver::setConstantNullSpace(bool on) {
+  impl_->constantNullSpace = on;
+  if (!on && impl_->nullSpaceSet) {
+    chk(MatSetNullSpace(impl_->A, nullptr), "MatSetNullSpace");
+    impl_->nullSpaceSet = false;
+  }
+}
+
+void PetscSolver::setUnpreconditionedNorm(bool on) {
+  chk(KSPSetNormType(impl_->ksp, on ? KSP_NORM_UNPRECONDITIONED : KSP_NORM_DEFAULT),
+      "KSPSetNormType");
+}
+
+void PetscSolver::setSymmetricAMG() {
+  PC p;
+  chk(KSPGetPC(impl_->ksp, &p), "KSPGetPC");
+  PetscBool isHypre = PETSC_FALSE;
+  chk(PetscObjectTypeCompare(reinterpret_cast<PetscObject>(p), PCHYPRE, &isHypre),
+      "PetscObjectTypeCompare");
+  if (!isHypre) return;
+  // A prefix of this solver's own, so that the options reach no other KSP.
+  static int serial = 0;
+  const std::string prefix = "vfsym" + std::to_string(serial++) + "_";
+  chk(KSPSetOptionsPrefix(impl_->ksp, prefix.c_str()), "KSPSetOptionsPrefix");
+  const std::string o = "-" + prefix + "pc_hypre_boomeramg_relax_type_";
+  chk(PetscOptionsSetValue(nullptr, (o + "all").c_str(), "symmetric-SOR/Jacobi"),
+      "PetscOptionsSetValue");
+  chk(PetscOptionsSetValue(nullptr, (o + "coarse").c_str(), "symmetric-SOR/Jacobi"),
+      "PetscOptionsSetValue");
+  chk(PCSetFromOptions(p), "PCSetFromOptions");
+}
 
 }  // namespace vibeflow

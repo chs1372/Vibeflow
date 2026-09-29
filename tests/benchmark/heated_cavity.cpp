@@ -38,7 +38,9 @@
 // reference velocity; the steady state does not depend on it (ADR-037).
 //
 // Runs in the balanced buoyancy form (ADR-041); VIBEFLOW_BUOYANCY=cell selects
-// ADR-038's cell force.
+// ADR-038's cell force. Its hydrostatic pressure p_h is solved on the
+// pressure's backend (ADR-044); VIBEFLOW_PH=native gives it ADR-041's Jacobi
+// CG, or names another.
 //
 // Run:  heated_cavity [Ra ...] [-n N ...]    default all four, 32 64 128
 
@@ -81,18 +83,46 @@ template <class V> auto host(const V& v) {
 // with it, so neither does the steady state; only the cost does. BoomerAMG
 // where PETSc is built, as the cylinder uses -- 0.41 s a step on 128^2 against
 // Jacobi CG's 1.47 -- and VIBEFLOW_PRESSURE selects another ("native", ...).
-std::unique_ptr<LinearSolver> makePressureSolver(const Mesh& mesh) {
+std::string pressureConfig() {
   const char* e = std::getenv("VIBEFLOW_PRESSURE");
 #ifdef VIBEFLOW_HAVE_PETSC
-  const std::string cfg = e ? e : "cg+hypre";
+  return e ? e : "cg+hypre";
 #else
-  const std::string cfg = e ? e : "native";
+  return e ? e : "native";
 #endif
+}
+
+std::unique_ptr<LinearSolver> makePressureSolver(const Mesh& mesh) {
+  const std::string cfg = pressureConfig();
   if (cfg == "native") return std::make_unique<NativeCG>(mesh, Comm(), true);
 #ifdef VIBEFLOW_HAVE_PETSC
   return std::make_unique<PetscSolver>(mesh, Comm(), cfg);
 #else
   std::fprintf(stderr, "built without PETSc; VIBEFLOW_PRESSURE=%s unavailable\n", cfg.c_str());
+  std::exit(2);
+#endif
+}
+
+// The hydrostatic pressure's backend (ADR-044): the pressure's, unless
+// VIBEFLOW_PH names another ("native" is ADR-041's Jacobi CG). A PETSc p_h
+// solver measures the residual NativeCG measures and carries the constants
+// as its null space, so the solve's tolerance keeps its meaning.
+std::string hydrostaticConfig() {
+  const char* e = std::getenv("VIBEFLOW_PH");
+  return e ? e : pressureConfig();
+}
+
+std::unique_ptr<LinearSolver> makeHydrostaticSolver(const Mesh& mesh) {
+  const std::string cfg = hydrostaticConfig();
+  if (cfg == "native") return std::make_unique<NativeCG>(mesh, Comm(), true);
+#ifdef VIBEFLOW_HAVE_PETSC
+  auto s = std::make_unique<PetscSolver>(mesh, Comm(), cfg);
+  s->setConstantNullSpace(true);
+  s->setUnpreconditionedNorm(true);
+  s->setSymmetricAMG();
+  return s;
+#else
+  std::fprintf(stderr, "built without PETSc; p_h backend %s unavailable\n", cfg.c_str());
   std::exit(2);
 #endif
 }
@@ -157,6 +187,7 @@ Result run(Index N, const Reference& ref, bool verbose, const Fields* start) {
   em.tRef = 0.5;
   em.form = gateForm();
   solver.enableEnergy(em);
+  solver.setHydrostaticSolver(makeHydrostaticSolver(mesh));
 
   // Sides: 0 x- (hot), 1 x+ (cold), 2 y-, 3 y+ (adiabatic), 4 z-, 5 z+ (slab).
   auto side = host(mesh.boundarySide());
@@ -322,6 +353,9 @@ int main(int argc, char** argv) {
     if (grids.empty()) grids = {32, 64, 128};
     const bool verbose = std::getenv("VIBEFLOW_VERBOSE") != nullptr;
     std::printf("De Vahl Davis differentially heated cavity, Pr = %.2f\n", PR);
+    // Which backends the two Poisson solves use (ADR-044).
+    std::printf("  pressure solver %s, p_h solver %s\n", pressureConfig().c_str(),
+                hydrostaticConfig().c_str());
     bool ok = true;
     try {
       for (const Reference& ref : REF) {
@@ -336,6 +370,11 @@ int main(int argc, char** argv) {
           std::printf("  Ra %.0e  N=%-4d steps %7d  residual %.1e  Nu %.5f  u_max %.4f  "
                       "v_max %.4f  (%.0f s)\n", ref.ra, N, r.steps, r.resid, r.nusselt,
                       r.uMax, r.vMax, r.seconds);
+          // VIBEFLOW_CAVITY_EXACT: the same three to ten digits, for comparing
+          // two backends' runs (ADR-044).
+          if (std::getenv("VIBEFLOW_CAVITY_EXACT"))
+            std::printf("      exact: Nu %.10e  u_max %.10e  v_max %.10e\n", r.nusselt, r.uMax,
+                        r.vMax);
           std::fflush(stdout);
           if (!(r.resid < 1e-5)) { std::printf("  FAIL: not steady\n"); ok = false; }
         }
