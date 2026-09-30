@@ -44,7 +44,8 @@
 // Exploration only, not used by the gate: VIBEFLOW_BS_DEBUG (each step's
 // extremes and where they are), VIBEFLOW_BS_SAVE_AT=<step>[,...] (the state
 // after those steps too), VIBEFLOW_BS_STOP=<step>, VIBEFLOW_BS_RAMP=<n> (start
-// at dt/n), VIBEFLOW_BS_FROZEN, VIBEFLOW_CONVECTION, VIBEFLOW_NO_NONORTH,
+// at dt/n), VIBEFLOW_BS_CUP / VIBEFLOW_BS_CDOWN (the ramp's thresholds),
+// VIBEFLOW_BS_FROZEN, VIBEFLOW_CONVECTION, VIBEFLOW_NO_NONORTH,
 // VIBEFLOW_CORRECTORS.
 
 #include "mesh/PolyMesh.hpp"
@@ -496,7 +497,10 @@ int main(int argc, char** argv) {
     // third revision): C = dt sum_f |F_f| / 2V. Every 100 steps dt doubles,
     // never past the level's dt, if C at the doubled dt is at most C_UP;
     // whenever C exceeds C_DOWN it halves and holds for 100 steps.
-    const Real C_UP = 8.0, C_DOWN = 12.0;
+    Real C_UP = 8.0, C_DOWN = 12.0;
+    // Exploration only: other thresholds (VIBEFLOW_BS_CUP, VIBEFLOW_BS_CDOWN).
+    if (const char* e = std::getenv("VIBEFLOW_BS_CUP")) C_UP = std::atof(e);
+    if (const char* e = std::getenv("VIBEFLOW_BS_CDOWN")) C_DOWN = std::atof(e);
     const int MAX_STEPS = 20000;
     auto ownH = host(mesh.owner()); auto neiH = host(mesh.neighbour());
     auto bclH = host(mesh.boundaryCell()); auto volH = host(mesh.cellVolume());
