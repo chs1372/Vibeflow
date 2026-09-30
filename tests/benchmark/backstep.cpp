@@ -41,6 +41,7 @@
 //   <out>.prof      x_station, y, u at x = -4, 1, 4, 6, 10: each pair of cells
 //                   straddling the station across an x-facing face,
 //                   interpolated linearly in x
+//   <out>.cpw       x, Cp from the extrapolated wall pressure (reported only)
 //   <out>.state     x y u v w p k omega per cell (VIBEFLOW_BS_SAVE)
 //   and one line    FINAL xr ... cf4 ... uc4 ... bubble ... steps ... settled ...
 //
@@ -794,6 +795,19 @@ int main(int argc, char** argv) {
       for (std::size_t i = 0; i < pw.size(); ++i)
         std::fprintf(fp, "%.10e %.10e\n", bottom.x[i], 2.0 * (pw[i] - p40));
       std::fclose(fp);
+      // Reported, not gated (after ADR-045's results): Cp from the solver's
+      // own wall pressure, the cell's extrapolated to the face.
+      {
+        auto pb = host(solver.boundaryPressure());
+        std::vector<Real> pf(bottom.face.size());
+        for (std::size_t i = 0; i < pf.size(); ++i) pf[i] = pb(bottom.face[i]);
+        const Real pf40 = interpAt(bottom.x, pf, 40.0);
+        std::FILE* fw = std::fopen((out + ".cpw").c_str(), "w");
+        std::fprintf(fw, "# x  Cp from the extrapolated wall pressure, 0 at x = 40\n");
+        for (std::size_t i = 0; i < pf.size(); ++i)
+          std::fprintf(fw, "%.10e %.10e\n", bottom.x[i], 2.0 * (pf[i] - pf40));
+        std::fclose(fw);
+      }
       // The profiles at the stations.
       auto u = host(solver.velocity());
       std::FILE* fq = std::fopen((out + ".prof").c_str(), "w");

@@ -3945,3 +3945,67 @@ every digit written, and the Cf and Cp files do not depend on it. L2's
 profiles were extracted again from its saved state (a no-step mode,
 `VIBEFLOW_BS_STOP=0`, the same Cf and Cp to every digit), and L1, 60
 steps in, starts again. The gates stand; no solver code changes.
+
+**Results** (after the runs, and the eight revisions above them). The
+gate fails: gates 1, 2, 3, 5 and 6 pass, and gate 4, the pressure
+recovery, fails at the two points nearest the step's lip.
+
+1. *The mesh.* Every level passes: level 1 319,488 cells and 320,801
+   points, level 2 79,872 and 80,529, the channel's 1,490 to round-off.
+2. *The upstream layer* (level 1, x = −4): Cf 2.92834e-3 against CFL3D's
+   2.93290e-3 (−0.16%, within 2%), and u within 0.0027 of CFL3D's profile
+   at its 106 points in 1 ≤ y ≤ 2.5 (within 0.01). Pass.
+3. *Reattachment* (level 1): x_r 6.5210 against 6.5435 (−0.34%, within
+   2%). Pass.
+4. *The pressure recovery* (level 1): fail. Behind the step Cp is within
+   0.0044 of CFL3D's at all 497 of its points. On the upstream floor the
+   difference grows towards the lip — +0.005 at x = −4, +0.011 at −0.125,
+   +0.014 at −0.063 — and passes the bound at the last two points, 0.0174
+   at x = −0.021 and 0.0205 at the corner itself: our suction at the lip
+   is weaker than CFL3D's (Cp −0.198 against −0.219 at the corner). Level
+   2 has the same shape, a little larger (0.0181 and 0.0221). Looked at
+   after the verdict, and not judged: the solver's own wall pressure,
+   extrapolated from the cells, gives the same values to four digits as
+   the wall cells' pressure the harness writes, and compressibility at
+   M = 0.128, CFL3D's, is worth about 0.002 of the peak by the
+   Prandtl–Glauert factor. The cause is not established.
+5. *The profiles* (level 1): u within 0.0171 of CFL3D's at x = 1 (at
+   y = 1.03, in the shear layer), 0.0052 at x = 4, 0.0028 at 6 and 0.0026
+   at 10 (within 0.03). Pass.
+6. *Settled*: L2_cal quasi-steady at dt = 0.04 (1,500 steps), L2 at 0.08
+   (1,700), L1 at 0.04 (1,300), each after 1,000 steps at its dt. Pass.
+
+Reported, not gated:
+
+- *Level 2 beside level 1*, at the same U_in: x_r 6.5567 against 6.5210,
+  Cf(−4) 2.8793e-3 against 2.9283e-3, Cp at the lip 0.0221 from CFL3D's
+  against 0.0205, and the profiles within 0.0041 of CFL3D's at x = −4
+  and 0.0036–0.0154 behind the step. Two levels give no observed order;
+  the plan's third diverged (the first revision).
+- *The corner bubble*: level 1 from x = 0.103 to 1.276, level 2 0.110 to
+  1.248; CFL3D's 0.059 to 1.339.
+- *The experiment*: its x_r, 6.26 ± 0.10, is 0.26 short of level 1's and
+  0.28 of CFL3D's. Cf lies within its error at 8 of its 20 stations on
+  both levels, CFL3D's at 7; Cp is 0.0155 rms from it on level 1, CFL3D's
+  0.0182; and at its five velocity stations our rms differences are
+  CFL3D's to 0.001.
+- *U_in and the core velocity*: L2_cal's u_c(−4) = 1.056337 at U_in = U
+  gave U_in = 0.944775; with it u_c(−4) is 0.99929 on level 2 and 0.99891
+  on level 1, against CFL3D's 0.998.
+- Level 1's first step clipped k or ω in 4,061 cells of the interpolated
+  state, and none after; the linear-upwind marches on level 2 clipped
+  none.
+- *The cost*, on two threads: L2_up 1,300 steps (50 minutes) after the
+  exploration run's 1,500 (1.8 hours on one thread), L2_cal 1,500
+  (1.9 hours), L2 1,700 (2.5 hours) and L1 1,300 (5.0 hours) — 12 hours
+  of marching for the gate, and about as long again in the runs behind
+  the revisions.
+
+**Decision.** v2b's second benchmark does not pass. The gate stays as
+stated and so does the verdict: gates 2, 3 and 5 are well inside their
+bounds, and gate 4 is not over the last 0.03 H before the lip. The
+harness, the gate script and the report stay, and the result goes into
+the known limits. What would change it is a finding that the lip's
+suction belongs to the reference or to the grid rather than to this
+solver — FUN3D's Cp at the lip beside CFL3D's, or TMR's finest grid —
+stated in an ADR of its own before it is looked at.
