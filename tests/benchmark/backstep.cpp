@@ -21,11 +21,12 @@
 // correctors (ADR-045's fifth revision). The step starts at dt/64 from the
 // uniform stream, dt/8 from a state, and follows the largest cell Courant
 // number C (the third revision): every 100 steps dt doubles, never past the
-// level's dt nor to a dt it was once halved from, if C at the doubled dt is at
-// most 3; whenever C exceeds 6 it halves and holds for 100 steps (the sixth
-// revision's thresholds). Once the
-// march has held its dt for 1,000 steps -- the level's, or the one it may not
-// double -- it ends at the steady criteria of the flat plate (u, k and omega
+// level's dt nor to a dt it was halved from after its first 100 steps (the
+// fifth and seventh revisions), if C at the doubled dt is at most 3; whenever
+// C exceeds 6 it halves and holds for 100 steps (the sixth revision's
+// thresholds). Once the march has held its dt for 1,000 steps -- the level's,
+// or the one it may not double -- it ends at the steady criteria of the flat
+// plate (u, k and omega
 // changing by less than 1e-6 of their size over 50 steps) or ADR-045's
 // quasi-steady one: the reattachment point and Cf at x = -4 moving by no more
 // than 0.2% over the march's last 20%. Otherwise it ends after the given
@@ -661,7 +662,9 @@ int main(int argc, char** argv) {
       if (std::isfinite(cNow.c) && cNow.c > C_DOWN) {
         std::printf("  step %6d  ramp: C %.2f at dt %.3e, at (%.4f, %.3e): halves\n", step, cNow.c,
                     dtNow, ccH(cNow.cell,0), ccH(cNow.cell,1));
-        ceiling = dtNow;
+        // A halving in the march's first 100 steps -- the start's own
+        // transient -- sets no ceiling (the seventh revision).
+        if (step > 100) ceiling = dtNow;
         dtNow *= 0.5; solver.setTimeStep(dtNow);
         sinceChange = 0; holdUntil = step + 100; refused = false; cappedSaid = false;
       }
