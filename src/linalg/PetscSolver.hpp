@@ -58,11 +58,12 @@ class PetscSolver final : public LinearSolver {
   //     for CG the preconditioned residual, whose size BoomerAMG changes.
   void setConstantNullSpace(bool on);
   void setUnpreconditionedNorm(bool on);
-  // BoomerAMG as a symmetric preconditioner, which CG needs: symmetric
-  // Gauss-Seidel on every level, the coarsest included, in place of hypre's
-  // hybrid Gauss-Seidel and Gaussian elimination there. Added after the
-  // first run with a PETSc p_h (ADR-044): on the singular p_h Laplacian the
-  // defaults broke CG down (indefinite preconditioner, then indefinite
+  // BoomerAMG with its coarsest level relaxed rather than solved: symmetric
+  // SOR/Jacobi there, as PETSc already relaxes on the way down and up, in
+  // place of the Gaussian elimination PETSc uses on the coarsest level,
+  // whose matrix is as singular as a pure-Neumann operator's. Added after
+  // the first run with a PETSc p_h (ADR-044): on the singular p_h Laplacian
+  // the defaults broke CG down (indefinite preconditioner, then indefinite
   // matrix) after a few iterations. Set through this solver's own options
   // prefix, so no other solver sees it; no-op unless the PC is hypre.
   void setSymmetricAMG();

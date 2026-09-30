@@ -22,7 +22,7 @@ gate suite is the only thing that tells the two apart.
 | v0 | mesh geometry, FVM diffusion, CGNS input, ParaView output, MPI decomposition, linear-solver backends | **complete** — 8 gates |
 | v1 | incompressible laminar flow: PISO/PIMPLE, Rhie–Chow, BDF2, inlet/outlet boundaries, MPI | **complete** — 15 gates |
 | v2a | energy equation, Boussinesq buoyancy (balanced form), slip walls | **complete** — 10 gates |
-| v2b | RANS turbulence: k-ω SST, low-Reynolds wall treatment | **in progress** — 6 gates; the backward-facing step next |
+| v2b | RANS turbulence: k-ω SST, low-Reynolds wall treatment | **in progress** — 6 gates; the backward-facing step running (ADR-045) |
 | v2c | wall functions, conjugate heat transfer | not started |
 | v2.5 | GPU build | not started |
 | v3 | compressible flow | not started |
@@ -219,9 +219,10 @@ the ν_t peak is 0.4% high. SST-2003 gives a Cf 0.45% lower on 273×193.
   small (ADR-040). Steady answers do not depend on it.
 - **Hydrostatic balance is exact on layered meshes only.** On a randomly
   perturbed mesh the resting fluid of the balanced form still reaches
-  0.037 κ/L (0.50 with the cell force). Its hydrostatic pressure is solved by
-  Jacobi-preconditioned CG whatever the pressure's backend, which makes the
-  balanced cavity 71% dearer than the cell force (ADR-041).
+  0.037 κ/L (0.50 with the cell force). Its hydrostatic pressure is solved on
+  the pressure's backend (ADR-044), BoomerAMG with its coarsest level relaxed
+  rather than solved, since that level is as singular as the operator; the
+  balanced cavity then costs about what the cell force does.
 - **On the finest flat-plate grid two PISO correctors are not enough.**
   545×385, whose wall cells are 2,000 to 20,000 times longer than thick, grows
   a streamwise odd–even pressure mode across the boundary layer with two or
@@ -246,7 +247,7 @@ the ν_t peak is 0.4% high. SST-2003 gives a Cf 0.45% lower on 273×193.
 - The native Jacobi BiCGStab needs ten times the iterations of ILU on cells
   of aspect ratio 1e3 and more; cases like the flat plate use PETSc's.
 - Wall functions are v2c's; the backward-facing step, v2b's second benchmark,
-  is not run yet.
+  is being run (ADR-045).
 - A fixed-heat-flux wall hands the gradient the cell's own temperature: exact
   for the adiabatic walls the gates use, first order in that boundary value
   where a non-zero flux is prescribed.
@@ -291,7 +292,7 @@ describes a fuller dependency set but has not been exercised yet.
 python3 tests/mms/run_gates.py v0     # about a minute
 sh cases/cylinder/make_meshes.sh      # the two cylinder meshes, about 15 s
 python3 tests/mms/run_gates.py v1     # about an hour on two cores
-python3 tests/mms/run_gates.py v2     # hours: the cavity alone took four on one core
+python3 tests/mms/run_gates.py v2     # hours: the cavity alone about two and a half
 python3 cases/flatplate/make_mesh.py  # TMR's flat-plate grids as .hex, a few seconds
 python3 tests/mms/run_gates.py v2b    # the flat plate alone is many hours
 ```
@@ -339,7 +340,7 @@ The architecture, the stage plan and a record of each round of work, in
 Korean, are in [`ROADMAP.md`](ROADMAP.md), a copy of the living roadmap
 document kept in step with it.
 
-[`docs/DECISIONS.md`](docs/DECISIONS.md) is append-only: 42 entries, each
+[`docs/DECISIONS.md`](docs/DECISIONS.md) is append-only: 45 entries, each
 saying what was decided, why, and what would reverse it. It keeps the wrong
 turns too, marked where later entries corrected them. Three runs of entries
 are worth reading as a story:

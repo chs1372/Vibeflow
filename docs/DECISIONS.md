@@ -3641,6 +3641,68 @@ Adopted if the three pass and the cavity at Ra = 10⁴ on 32² and 64², one
 thread, timed back to back with the native p_h, is not slower; the cost of
 the whole gate is reported.
 
+**Results** (after the code and the runs). The three gates pass, the
+first after a change to the p_h solver's preconditioner made when its
+first run failed, which the gate did not foresee and is disclosed here;
+p_h on the pressure's backend is adopted.
+
+1. *The first run, and the change.* With `PetscSolver`'s BoomerAMG as the
+   pressure has it, gate 1 failed: CG broke down on the singular p_h
+   Laplacian (`DIVERGED_INDEFINITE_PC`), and the resting fluids moved —
+   gate 4's Cartesian box to 1.3e-8, gate 5's to 1.4e-10 and 9.2e-9,
+   against 1e-12 — while gate 2 and the dt check passed. PETSc's
+   BoomerAMG relaxes symmetrically on the way down and up (symmetric
+   SOR/Jacobi) but solves its coarsest level by Gaussian elimination, and
+   that level's matrix is as singular as p_h's. `setSymmetricAMG()`
+   relaxes the coarsest level too (`relax_type_coarse`; `relax_type_all`
+   is set to the default it already had), under an options prefix of the
+   solver's own, so that the pressure's solver keeps its settings. The
+   operator, the tolerance and the null space are as stated. On a 64²
+   pure-Neumann Laplacian, checked while writing this, PETSc's defaults
+   stall CG at 3.5e-12 of the right-hand side and break it down after 154
+   iterations; with the coarsest level relaxed it reaches 2.3e-15 in 11.
+   The code's comment first blamed the smoother; it is corrected.
+
+2. *Gate 1*, with the change: every gate passes both ways. The resting
+   fluids with the PETSc p_h: gate 3 1.1e-14 and 3.9e-15, gate 4 8.3e-15
+   and 4.6e-15, gate 5 1.3e-14 and 1.1e-14 (max|u|, Cartesian and
+   distorted). Gate 2's L2 errors agree within 1.4e-9 relative (u on the
+   orthogonal 16³ mesh; T 2.2e-10 there; the distorted meshes and 8³ to
+   the eleven digits printed); the dt check's spread is 2.7e-12 in u and
+   1.0e-10 in T with it, 2.8e-12 and 1.0e-10 without.
+
+3. *Gate 2.* The whole heated-cavity gate with p_h on BoomerAMG passes,
+   and on all twelve meshes Nu, u_max and v_max are ADR-041's to the
+   digits printed. The step counts are the same on five meshes (all of
+   Ra = 10³, and 32² at 10⁴ and 10⁶) and differ on seven, by one to nine
+   steps: at 10⁴, 64² 535 against 538 and 128² 1,671 against 1,672; at
+   10⁵, 774, 1,130 and 2,340 against 776, 1,131 and 2,342; at 10⁶, 64²
+   2,774 against 2,771 and 128² 5,401 against 5,410. Those three Rayleigh
+   numbers were run again with the native p_h, each whole chain, since
+   each finer mesh starts from the one before. The reruns reproduce
+   ADR-041's counts exactly, and printed to ten digits the two agree
+   within 1.9e-8 relative, the largest u_max on 64² at Ra = 10⁴, where the
+   counts differ by three: the stopping test met a few steps apart, not
+   a different answer.
+
+4. *Gate 3.* The full suite passes. It ran every gate but the two it
+   leaves to runs of their own, the heated cavity (gate 2, above) and the
+   flat plate, and 36 of those 37 passed at once. The decoupling gate ran
+   past its 30-minute limit, which it reads as divergence, while the suite
+   shared the two cores with two other runs; run again, the other runs
+   paused for most of it, it passes (the fastest cell over the tail 1.34,
+   against 3.0). The flat plate's own run passes, every grid's Cf, CD and
+   ν_t peak ADR-042's to the digits printed: to the ten digits of the
+   harness's last line, Cf, the ν_t peak and the step counts the same on
+   all five runs and CD within 1e-10 relative, the extrapolated Cf again
+   0.885% above TMR's. The machine restarted during its finest grid,
+   which was run again, the three coarser reused.
+
+**Cost.** Ra = 10⁴ on 32² and 64², one thread, back to back: 133 s with
+the native p_h, 88 s with BoomerAMG (−34%), where ADR-041's cell force
+took 84 s. The whole cavity gate: 148 minutes (99 minutes of CPU),
+against ADR-041's 243 (209), both on cores shared with other runs.
+
 ## ADR-045 — v2b's second benchmark: the backward-facing step against TMR's SST results. Stated before the code and the runs, answered after
 
 **Context.** v2b's second case is the one ADR-042 named: the flow over a
