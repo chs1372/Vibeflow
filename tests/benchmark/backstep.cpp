@@ -22,7 +22,8 @@
 // uniform stream, dt/8 from a state, and follows the largest cell Courant
 // number C (the third revision): every 100 steps dt doubles, never past the
 // level's dt nor to a dt it was once halved from, if C at the doubled dt is at
-// most 8; whenever C exceeds 12 it halves and holds for 100 steps. Once the
+// most 3; whenever C exceeds 6 it halves and holds for 100 steps (the sixth
+// revision's thresholds). Once the
 // march has held its dt for 1,000 steps -- the level's, or the one it may not
 // double -- it ends at the steady criteria of the flat plate (u, k and omega
 // changing by less than 1e-6 of their size over 50 steps) or ADR-045's
@@ -582,7 +583,8 @@ int main(int argc, char** argv) {
     // third revision): C = dt sum_f |F_f| / 2V. Every 100 steps dt doubles,
     // never past the level's dt, if C at the doubled dt is at most C_UP;
     // whenever C exceeds C_DOWN it halves and holds for 100 steps.
-    Real C_UP = 8.0, C_DOWN = 12.0;
+    // 3 and 6 since ADR-045's sixth revision (8 and 12 before it).
+    Real C_UP = 3.0, C_DOWN = 6.0;
     // Exploration only: other thresholds (VIBEFLOW_BS_CUP, VIBEFLOW_BS_CDOWN).
     if (const char* e = std::getenv("VIBEFLOW_BS_CUP")) C_UP = std::atof(e);
     if (const char* e = std::getenv("VIBEFLOW_BS_CDOWN")) C_DOWN = std::atof(e);
