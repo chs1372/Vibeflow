@@ -38,8 +38,9 @@
 //                   per wall face, on (1/2) rho U^2
 //   <out>.cp        x, Cp there, from the wall cells' pressure, shifted to 0 at
 //                   x = 40 as TMR shifts its own
-//   <out>.prof      x_station, y, u at x = -4, 1, 4, 6, 10: the two cell
-//                   columns on either side of each station, interpolated
+//   <out>.prof      x_station, y, u at x = -4, 1, 4, 6, 10: each pair of cells
+//                   straddling the station across an x-facing face,
+//                   interpolated linearly in x
 //   <out>.state     x y u v w p k omega per cell (VIBEFLOW_BS_SAVE)
 //   and one line    FINAL xr ... cf4 ... uc4 ... bubble ... steps ... settled ...
 //
@@ -238,6 +239,32 @@ Columns columnsAt(const PolyMesh& mesh, Real at) {
   std::sort(col.left.begin(), col.left.end(), byY);
   std::sort(col.right.begin(), col.right.end(), byY);
   return col;
+}
+
+// A station's profile: for every x-facing face whose two cells' centres
+// straddle x = at, the two cells' y and u interpolated linearly in x to it,
+// sorted by y. Behind the step TMR's grid lines lean by about 1e-5 across the
+// channel, so a column cannot be found by its centres' x (ADR-045's results).
+struct Profile { std::vector<Real> y, u; };
+template <class U>
+Profile stationProfile(const PolyMesh& mesh, const U& u, Real at) {
+  auto cc = host(mesh.cellCentre()); auto fa = host(mesh.faceArea());
+  auto own = host(mesh.owner()); auto nei = host(mesh.neighbour());
+  std::vector<std::pair<Real, Real>> rows;
+  for (Index f = 0; f < mesh.nInternalFaces(); ++f) {
+    const Real mag = std::sqrt(fa(f,0)*fa(f,0) + fa(f,1)*fa(f,1) + fa(f,2)*fa(f,2));
+    if (std::abs(fa(f,0)) < 0.9 * mag) continue;
+    Index a = own(f), b = nei(f);
+    if (b >= mesh.nCells()) continue;
+    if (cc(a,0) > cc(b,0)) std::swap(a, b);
+    if (!(cc(a,0) < at && cc(b,0) >= at)) continue;
+    const Real t = (at - cc(a,0)) / (cc(b,0) - cc(a,0));
+    rows.emplace_back((1.0 - t) * cc(a,1) + t * cc(b,1), (1.0 - t) * u(a,0) + t * u(b,0));
+  }
+  std::sort(rows.begin(), rows.end());
+  Profile pr;
+  for (const auto& r : rows) { pr.y.push_back(r.first); pr.u.push_back(r.second); }
+  return pr;
 }
 
 // A march's checkpoint (ADR-045's fifth revision): the fields, the face
@@ -639,7 +666,9 @@ int main(int argc, char** argv) {
     // The checkpoint every 500 steps (VIBEFLOW_BS_CKPT_EVERY, for testing).
     const int ckptEvery = std::getenv("VIBEFLOW_BS_CKPT_EVERY") ?
                           std::max(1, std::atoi(std::getenv("VIBEFLOW_BS_CKPT_EVERY"))) : 500;
-    for (step = firstStep; ; ++step) {
+    // VIBEFLOW_BS_STOP=0: no step at all -- the outputs of the initial state
+    // (used to extract a finished march's profiles again from its state).
+    for (step = firstStep; stopAt != 0; ++step) {
       if (step > 1 && (step - 1) % 100 == 0 && dtNow < dt && step > holdUntil) {
         const Real d2 = std::min(2.0 * dtNow, dt);
         if (d2 >= ceiling) {
@@ -768,16 +797,11 @@ int main(int argc, char** argv) {
       // The profiles at the stations.
       auto u = host(solver.velocity());
       std::FILE* fq = std::fopen((out + ".prof").c_str(), "w");
-      std::fprintf(fq, "# x_station  y  u  (the two columns around it, interpolated)\n");
+      std::fprintf(fq, "# x_station  y  u  (each pair of cells straddling it, interpolated in x)\n");
       for (Real xs : STATIONS) {
-        const Columns cs = columnsAt(mesh, xs);
-        const Real t = (xs - cs.xl) / (cs.xr - cs.xl);
-        const std::size_t n = std::min(cs.left.size(), cs.right.size());
-        for (std::size_t j = 0; j < n; ++j) {
-          const Index a = cs.left[j], b = cs.right[j];
-          std::fprintf(fq, "%.4f %.10e %.10e\n", xs, (1.0 - t) * ccH(a,1) + t * ccH(b,1),
-                       (1.0 - t) * u(a,0) + t * u(b,0));
-        }
+        const Profile pr = stationProfile(mesh, u, xs);
+        for (std::size_t j = 0; j < pr.y.size(); ++j)
+          std::fprintf(fq, "%.4f %.10e %.10e\n", xs, pr.y[j], pr.u[j]);
       }
       std::fclose(fq);
       if (std::getenv("VIBEFLOW_BS_SAVE")) saveState(out + ".state");

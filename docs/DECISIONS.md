@@ -3932,3 +3932,16 @@ start's transient fixing a step four times smaller than the flow needs.
 So a halving in a march's first 100 steps does not set the ceiling; it
 still halves, and holds for 100 steps. L2 starts again. The gates stand;
 no solver code changes.
+
+*Eighth revision, before the results: a harness fault.* L2 settled
+(quasi-steady at dt = 0.08, step 1,700), and its profiles, looked at
+before L1 went far, held one point at each station behind the step. The
+harness found a station's two columns by their centres' x within 1e-9;
+behind the step TMR's grid lines lean by about 1e-5 across the channel,
+so each column there was one cell. It now takes, at each station, every
+x-facing face whose two cells straddle it, and interpolates the two in x.
+Ahead of the step (x = −4, the columns exact) the profile is unchanged to
+every digit written, and the Cf and Cp files do not depend on it. L2's
+profiles were extracted again from its saved state (a no-step mode,
+`VIBEFLOW_BS_STOP=0`, the same Cf and Cp to every digit), and L1, 60
+steps in, starts again. The gates stand; no solver code changes.
