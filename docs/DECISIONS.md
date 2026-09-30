@@ -3863,3 +3863,40 @@ first order:
   L2_up's state.
 
 The gates stand; no solver code changes.
+
+*Fifth revision, before the results.* The first-order start, continued
+from step 1,500, reached dt = 0.16 and settled towards x_r ≈ 6.43; then,
+650 steps later, a disturbance grew in the first cells behind the corner,
+threefold every 50 steps, until C passed 12 at step 1,390 and the ramp
+halved dt. 111 steps on, the ramp doubled it back to 0.16 and the
+disturbance returned, so the march could never hold a dt for 1,000 steps.
+Runs from the same state with dt = 0.16 held show whose growth it is.
+With momentum's explicit non-orthogonal diffusion off, it grows faster
+(C 9.6 against 6.5 at step 300); with the turbulence frozen, faster still
+(14.1); with eight correctors instead of four, not at all (the change
+falls from 1e-2 to 6e-3 over 450 steps). It is the corrector iteration's
+failing, the flat plate's finest grid's (ADR-043), here at the step's
+corner. Linear upwind with eight correctors, or twelve, still does not
+hold dt = 0.16 there (C 14–18 within 100 steps). At 0.08 its C creeps
+from 3.9 to 5.9 over 200 steps, and at 0.04 it settles at 1.3. That is
+the deferred correction's Courant-number limit (the fourth revision),
+which the ramp handles. So:
+
+- every march takes eight PISO correctors;
+- a dt the ramp halves from is not taken again in that march, so a
+  march whose step keeps being knocked back settles at the largest dt
+  it can hold;
+- a march that starts from another's state (L2_cal, L2, L1) starts at
+  its level's dt/8, not dt/64: its flow is developed, its C at dt/8
+  about 1, and from there it follows the ramp;
+- each march keeps its state every 500 steps and resumes from it if
+  stopped — the machine restarted once under these runs already. A
+  resumed march continues its step count, its ramp and its history, and
+  its log says where it resumed.
+
+The centroid-based non-orthogonality of TMR's grids goes into the known
+limits. In the long, thin wall cells behind the step, a cell's slight
+taper tilts the line between centroids from the face normal by up to
+74° on level 2, 84° and 87° on levels 3 and 4 (whose outlet columns
+diverged), and 45° on level 1; at the corner, 16° on level 2 and 6° on
+level 1. The gates stand; no solver code changes.
