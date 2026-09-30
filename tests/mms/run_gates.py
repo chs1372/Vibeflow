@@ -178,7 +178,9 @@ GATES = {
          cylinder_wake, BUILD / "cylinder"),
     ],
     # v2a: heat transfer and buoyancy (ADR-038). v2b's backward-facing step
-    # and v2c are added when their gates are stated.
+    # runs on its own (tests/benchmark/backstep_gate.py, half a day on two
+    # cores) and is not in the suite: it fails its pressure recovery at the
+    # step's lip (ADR-045). v2c is added when its gates are stated.
     "v2": [
         ("python: energy equation and Boussinesq buoyancy",
          lambda: run([PY, str(PROTO / "boussinesq.py")], PROTO), None),

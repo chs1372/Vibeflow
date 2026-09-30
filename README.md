@@ -22,14 +22,16 @@ gate suite is the only thing that tells the two apart.
 | v0 | mesh geometry, FVM diffusion, CGNS input, ParaView output, MPI decomposition, linear-solver backends | **complete** — 8 gates |
 | v1 | incompressible laminar flow: PISO/PIMPLE, Rhie–Chow, BDF2, inlet/outlet boundaries, MPI | **complete** — 15 gates |
 | v2a | energy equation, Boussinesq buoyancy (balanced form), slip walls | **complete** — 10 gates |
-| v2b | RANS turbulence: k-ω SST, low-Reynolds wall treatment | **in progress** — 6 gates; the backward-facing step running (ADR-045) |
+| v2b | RANS turbulence: k-ω SST, low-Reynolds wall treatment | **in progress** — 6 gates; the backward-facing step fails one of its six (ADR-045) |
 | v2c | wall functions, conjugate heat transfer | not started |
 | v2.5 | GPU build | not started |
 | v3 | compressible flow | not started |
 | v4 | multiphase (VOF) | not started |
 
-All 39 gates pass on the current code, on Ubuntu 24.04 with two cores. CI
-runs the v0 gates on every push.
+All 39 gates in the suite pass on the current code, on Ubuntu 24.04 with
+two cores. The backward-facing step's gate, run on its own, passes five of
+its six and fails its pressure recovery at the step's lip. CI runs the v0
+gates on every push.
 
 ## What the gates show
 
@@ -193,6 +195,22 @@ The extrapolated Cf is 0.89% above TMR's, inside the gate's 1%; u⁺ against
 y⁺ is TMR's profile to 0.10% up to y⁺ = 500, the log law holds to 1.5%, and
 the ν_t peak is 0.4% high. SST-2003 gives a Cf 0.45% lower on 273×193.
 
+The backward-facing step of Driver & Seegmiller at Re_H = 36,000, on TMR's
+second-finest grid (319,488 cells), against CFL3D's SST results on the same
+grid (ADR-045):
+
+| | ours | CFL3D | bound | |
+| --- | --- | --- | --- | --- |
+| Cf at x = −4 | 0.0029283 | 0.0029329 | 2% | pass |
+| u at x = −4, 1 ≤ y ≤ 2.5 | within 0.0027 | | 0.01 | pass |
+| reattachment x_r | 6.5210 | 6.5435 | 2% | pass |
+| Cp on the bottom wall, −4 ≤ x ≤ 30 | within 0.0205 | | 0.015 | **fail** |
+| u at x = 1, 4, 6, 10, 0 ≤ y ≤ 3 | within 0.0171 | | 0.03 | pass |
+
+Behind the step Cp is within 0.0044 of CFL3D's; the failure is the suction
+at the step's lip, weaker than CFL3D's over the last 0.03 H. The
+experiment's reattachment is 6.26 ± 0.10.
+
 ## Known limits
 
 - **The Strouhal number is 2.8% high on the benchmark domain, and the drag
@@ -246,8 +264,22 @@ the ν_t peak is 0.4% high. SST-2003 gives a Cf 0.45% lower on 273×193.
   which Cf stands above TMR's extrapolation.
 - The native Jacobi BiCGStab needs ten times the iterations of ILU on cells
   of aspect ratio 1e3 and more; cases like the flat plate use PETSc's.
-- Wall functions are v2c's; the backward-facing step, v2b's second benchmark,
-  is being run (ADR-045).
+- **The backward-facing step fails its pressure recovery at the lip.** Cp
+  is within 0.0044 of CFL3D's behind the step, but the suction at the
+  step's lip is weaker than CFL3D's, 0.0205 short at the corner and 0.0174
+  at the point before it, against the gate's 0.015 (ADR-045). The wall's
+  extrapolated pressure gives the same; the cause is not established.
+- **TMR's step grids are hard on this collocated PISO.** In the long, thin
+  wall cells behind the step a cell's slight taper tilts the line between
+  centroids from the face normal by up to 74° on level 2, 84° and 87° on
+  levels 3 and 4 — whose outlet columns diverge within ten steps at any
+  dt — and 45° on level 1. Behind the corner four correctors let a
+  disturbance grow at level 2's dt, and linear upwind's explicit
+  correction is excited above a Courant number of about 3, so the step is
+  marched with eight correctors, a ramp that follows the largest cell
+  Courant number, and a first-order start (ADR-045). Its level-1 march
+  takes five hours on two cores.
+- Wall functions are v2c's.
 - A fixed-heat-flux wall hands the gradient the cell's own temperature: exact
   for the adiabatic walls the gates use, first order in that boundary value
   where a non-zero flux is prescribed.
@@ -295,6 +327,8 @@ python3 tests/mms/run_gates.py v1     # about an hour on two cores
 python3 tests/mms/run_gates.py v2     # hours: the cavity alone about two and a half
 python3 cases/flatplate/make_mesh.py  # TMR's flat-plate grids as .hex, a few seconds
 python3 tests/mms/run_gates.py v2b    # the flat plate alone is many hours
+python3 tests/benchmark/backstep_gate.py build build/backstep   # the step: half a day
+python3 tests/benchmark/backstep_report.py build/backstep       # its reported numbers
 ```
 
 The cylinder meshes are generated rather than stored. With gmsh 4.15.2 the
@@ -327,6 +361,7 @@ prototype/           Python reference implementation of every scheme
 tests/               unit tests, MMS gates, benchmarks, the gate runner
 cases/cylinder/      gmsh mesh generator for the wake benchmark
 cases/flatplate/     NASA TMR's flat-plate grids and SST results
+cases/backstep/      NASA TMR's backward-facing-step grids, CFL3D's SST results, the experiment
 tools/               fixture writers and a mesh-quality report
 docs/                decision log, licensing
 ```
