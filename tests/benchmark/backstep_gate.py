@@ -24,7 +24,8 @@ experiment (backstep_report.py).
 Run:  backstep_gate.py [build dir, default build] [out dir, default
       build/backstep]      VIBEFLOW_BS_REUSE=1 reuses the logs already there;
       VIBEFLOW_BS_UP_INIT=<state> starts L2_up from a state instead of the
-      uniform stream (the fourth revision's continued exploration run).
+      uniform stream (the fourth revision's continued exploration run);
+      VIBEFLOW_BS_RESUME=1 resumes a stopped march from its checkpoint.
 """
 
 import os
@@ -47,6 +48,12 @@ def run(build, out, name, level, u_in, init=None, extra=None):
     log = Path(out) / f"{name}.log"
     if os.environ.get("VIBEFLOW_BS_REUSE") and log.exists() and "FINAL" in log.read_text():
         return log
+    # A march stopped by the machine resumes from its checkpoint when asked
+    # (VIBEFLOW_BS_RESUME, the fifth revision); otherwise a stale one goes.
+    ck = Path(out) / f"{name}.ckpt"
+    resume = bool(os.environ.get("VIBEFLOW_BS_RESUME")) and ck.exists()
+    if ck.exists() and not resume:
+        ck.unlink()
     # Threads: VIBEFLOW_BS_THREADS, or a file `threads` in the output
     # directory read as each march starts -- the cost only.
     threads = os.environ.get("VIBEFLOW_BS_THREADS", "1")
@@ -54,11 +61,15 @@ def run(build, out, name, level, u_in, init=None, extra=None):
     if tf.exists():
         threads = tf.read_text().strip() or threads
     env = dict(os.environ, OMP_NUM_THREADS=threads, OMP_PROC_BIND="false", VIBEFLOW_BS_SAVE="1")
-    print(f"  {name}: {threads} thread(s)", flush=True)
+    print(f"  {name}: {threads} thread(s){', resumed from its checkpoint' if resume else ''}",
+          flush=True)
     if init:
         env["VIBEFLOW_BS_INIT"] = str(init)
     env.update(extra or {})
-    with open(log, "w") as fh:
+    env.pop("VIBEFLOW_BS_RESUME", None)
+    if resume:
+        env["VIBEFLOW_BS_RESUME"] = "1"
+    with open(log, "a" if resume else "w") as fh:
         subprocess.run([str(Path(build) / "tests" / "backstep"), str(CASE / f"L{level}.hex"),
                         str(Path(out) / name), str(DT[level]), "5000", f"{u_in:.12g}"],
                        env=env, stdout=fh, stderr=subprocess.STDOUT, check=False)

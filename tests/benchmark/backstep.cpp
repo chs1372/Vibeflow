@@ -16,17 +16,20 @@
 // U_in is the inlet speed, given on the command line: ADR-045 sets it once,
 // on level 3, so that the channel's centre velocity at x = -4 is CFL3D's.
 //
-// From the uniform stream, or from a coarser grid's state (VIBEFLOW_BS_INIT,
-// each cell taking the state of the nearest coarse cell), marched from dt/64
-// with a ramp that follows the largest cell Courant number C (ADR-045's third
-// revision): every 100 steps dt doubles, never past the level's dt, if C at
-// the doubled dt is at most 8; whenever C exceeds 12 it halves and holds for
-// 100 steps. Once the march has held its dt for 1,000 steps -- the level's, or
-// the one the cap refused to double -- it ends at the steady criteria of the
-// flat plate (u, k and omega changing by less than 1e-6 of their size over 50
-// steps) or ADR-045's quasi-steady one: the reattachment point and Cf at
-// x = -4 moving by no more than 0.2% over the march's last 20%. Otherwise it
-// ends after the given number of steps at that dt, or 20,000 in all.
+// From the uniform stream, or from another march's state (VIBEFLOW_BS_INIT,
+// each cell taking the state of the nearest cell there), with eight PISO
+// correctors (ADR-045's fifth revision). The step starts at dt/64 from the
+// uniform stream, dt/8 from a state, and follows the largest cell Courant
+// number C (the third revision): every 100 steps dt doubles, never past the
+// level's dt nor to a dt it was once halved from, if C at the doubled dt is at
+// most 8; whenever C exceeds 12 it halves and holds for 100 steps. Once the
+// march has held its dt for 1,000 steps -- the level's, or the one it may not
+// double -- it ends at the steady criteria of the flat plate (u, k and omega
+// changing by less than 1e-6 of their size over 50 steps) or ADR-045's
+// quasi-steady one: the reattachment point and Cf at x = -4 moving by no more
+// than 0.2% over the march's last 20%. Otherwise it ends after the given
+// number of steps at that dt, or 20,000 in all. Every 500 steps it keeps a
+// checkpoint, <out>.ckpt, from which VIBEFLOW_BS_RESUME continues it.
 //
 // Written out, for the gate:
 //   <out>.cf        x, Cf on the bottom wall (y = 1 upstream, y = 0 behind),
@@ -45,8 +48,8 @@
 // extremes and where they are), VIBEFLOW_BS_SAVE_AT=<step>[,...] (the state
 // after those steps too), VIBEFLOW_BS_STOP=<step>, VIBEFLOW_BS_RAMP=<n> (start
 // at dt/n), VIBEFLOW_BS_CUP / VIBEFLOW_BS_CDOWN (the ramp's thresholds),
-// VIBEFLOW_BS_FROZEN, VIBEFLOW_CONVECTION, VIBEFLOW_NO_NONORTH,
-// VIBEFLOW_CORRECTORS.
+// VIBEFLOW_BS_FROZEN, VIBEFLOW_BS_NO_TRANSPOSE, VIBEFLOW_BS_CKPT_EVERY,
+// VIBEFLOW_CONVECTION, VIBEFLOW_NO_NONORTH, VIBEFLOW_CORRECTORS.
 
 #include "mesh/PolyMesh.hpp"
 #include "physics/Piso.hpp"
@@ -235,6 +238,63 @@ Columns columnsAt(const PolyMesh& mesh, Real at) {
   return col;
 }
 
+// A march's checkpoint (ADR-045's fifth revision): the fields, the face
+// flux and the march's bookkeeping, every 500 steps, so that a march stopped
+// by the machine resumes where it was. Binary, written beside and renamed.
+struct Checkpoint {
+  long nc = 0, nif = 0;
+  int step = 0, sinceChange = 0, holdUntil = 0, refused = 0;
+  double time = 0, dtNow = 0, ceiling = 0, seconds = 0;
+  std::vector<double> u, p, k, w, F;
+  std::vector<int> histStep;
+  std::vector<double> histXr, histCf4;
+};
+
+template <class T> void putv(std::FILE* f, const std::vector<T>& v) {
+  const long n = static_cast<long>(v.size());
+  std::fwrite(&n, sizeof n, 1, f);
+  if (n) std::fwrite(v.data(), sizeof(T), v.size(), f);
+}
+template <class T> bool getv(std::FILE* f, std::vector<T>& v) {
+  long n = 0;
+  if (std::fread(&n, sizeof n, 1, f) != 1 || n < 0) return false;
+  v.resize(static_cast<std::size_t>(n));
+  return n == 0 || std::fread(v.data(), sizeof(T), v.size(), f) == v.size();
+}
+
+void writeCheckpoint(const std::string& path, const Checkpoint& c) {
+  const std::string tmp = path + ".tmp";
+  std::FILE* f = std::fopen(tmp.c_str(), "wb");
+  if (!f) return;
+  std::fwrite("VFBSCK01", 1, 8, f);
+  std::fwrite(&c.nc, sizeof c.nc, 1, f); std::fwrite(&c.nif, sizeof c.nif, 1, f);
+  const int ints[4] = {c.step, c.sinceChange, c.holdUntil, c.refused};
+  const double dbl[4] = {c.time, c.dtNow, c.ceiling, c.seconds};
+  std::fwrite(ints, sizeof ints, 1, f); std::fwrite(dbl, sizeof dbl, 1, f);
+  putv(f, c.u); putv(f, c.p); putv(f, c.k); putv(f, c.w); putv(f, c.F);
+  putv(f, c.histStep); putv(f, c.histXr); putv(f, c.histCf4);
+  const bool ok = std::fflush(f) == 0;
+  std::fclose(f);
+  if (ok) std::rename(tmp.c_str(), path.c_str());
+}
+
+bool readCheckpoint(const std::string& path, Checkpoint& c) {
+  std::FILE* f = std::fopen(path.c_str(), "rb");
+  if (!f) return false;
+  char magic[8];
+  bool ok = std::fread(magic, 1, 8, f) == 8 && std::string(magic, 8) == "VFBSCK01";
+  int ints[4]; double dbl[4];
+  ok = ok && std::fread(&c.nc, sizeof c.nc, 1, f) == 1 && std::fread(&c.nif, sizeof c.nif, 1, f) == 1 &&
+       std::fread(ints, sizeof ints, 1, f) == 1 && std::fread(dbl, sizeof dbl, 1, f) == 1;
+  ok = ok && getv(f, c.u) && getv(f, c.p) && getv(f, c.k) && getv(f, c.w) && getv(f, c.F) &&
+       getv(f, c.histStep) && getv(f, c.histXr) && getv(f, c.histCf4);
+  std::fclose(f);
+  if (!ok) return false;
+  c.step = ints[0]; c.sinceChange = ints[1]; c.holdUntil = ints[2]; c.refused = ints[3];
+  c.time = dbl[0]; c.dtNow = dbl[1]; c.ceiling = dbl[2]; c.seconds = dbl[3];
+  return true;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -334,8 +394,9 @@ int main(int argc, char** argv) {
 
     PisoControls ctl;
     ctl.outer = 1;
-    // Four correctors, as the flat plate's (ADR-043, ADR-045).
-    ctl.correctors = 4;
+    // Eight correctors (ADR-045's fifth revision): four, the flat plate's
+    // (ADR-043), let a disturbance grow behind the step's corner.
+    ctl.correctors = 8;
     if (const char* e = std::getenv("VIBEFLOW_CORRECTORS")) ctl.correctors = std::atoi(e);
     ctl.convection = ConvectionScheme::LinearUpwind;
     // Exploration only: the face value (linear, or upwind for first order)
@@ -346,17 +407,28 @@ int main(int argc, char** argv) {
       else if (c == "upwind") ctl.deferredCorrection = false;
     }
     if (std::getenv("VIBEFLOW_NO_NONORTH")) ctl.diffusionNonOrth = false;
-    Real dtNow = dt / 64.0;
+    // From the uniform stream the ramp starts at dt/64; from another march's
+    // developed state at dt/8 (the fifth revision).
+    const char* initPath = std::getenv("VIBEFLOW_BS_INIT");
+    Real dtNow = initPath ? dt / 8.0 : dt / 64.0;
     if (const char* e = std::getenv("VIBEFLOW_BS_RAMP")) dtNow = dt / std::max(1.0, std::atof(e));
+    // A stopped march resumes from its checkpoint (VIBEFLOW_BS_RESUME).
+    Checkpoint ck;
+    const bool resume = std::getenv("VIBEFLOW_BS_RESUME") && readCheckpoint(out + ".ckpt", ck) &&
+                        ck.nc == static_cast<long>(nc) && ck.nif == static_cast<long>(mesh.nInternalFaces());
+    if (resume) dtNow = ck.dtNow;
     PisoSolver solver(mesh, NU, dtNow, ctl);
     solver.setBoundaryTypes(uType);
     solver.setPressureBoundary(pType, pval);
+    std::printf("  PISO correctors %d, first dt %.4g\n", ctl.correctors, dtNow);
+    if (resume)
+      std::printf("  resumed from %s.ckpt: step %d, t %.3f, dt %.4g, %d steps at it\n", out.c_str(), ck.step,
+                  ck.time, ck.dtNow, ck.sinceChange);
 
-    const char* initPath = std::getenv("VIBEFLOW_BS_INIT");
     CoarseState coarse;
     std::vector<Index> fromCoarse;
     auto ccH = host(mesh.cellCentre());
-    if (initPath) {
+    if (initPath && !resume) {
       coarse = readState(initPath);
       fromCoarse.resize(nt);
       for (Index c = 0; c < nt; ++c) fromCoarse[c] = nearestCoarse(coarse, ccH(c,0), ccH(c,1));
@@ -367,7 +439,9 @@ int main(int argc, char** argv) {
       ScalarField p0("p0", nt), F0("F0", mesh.nInternalFaces());
       auto hu = host(u0); auto hp = host(p0);
       for (Index c = 0; c < nt; ++c) {
-        if (initPath) {
+        if (resume && c < nc) {
+          hu(c,0) = ck.u[c*3]; hu(c,1) = ck.u[c*3 + 1]; hu(c,2) = ck.u[c*3 + 2]; hp(c) = ck.p[c];
+        } else if (initPath && !resume) {
           const auto& q = coarse.v[fromCoarse[c]];
           hu(c,0) = q[2]; hu(c,1) = q[3]; hu(c,2) = q[4]; hp(c) = q[5];
         } else {
@@ -390,17 +464,28 @@ int main(int argc, char** argv) {
           F0(f) = sum;
         });
       Kokkos::fence();
+      if (resume) {
+        // The checkpoint's own face flux, not an interpolation of it.
+        auto hF = host(F0);
+        for (Index f = 0; f < mesh.nInternalFaces(); ++f) hF(f) = ck.F[f];
+        Kokkos::deep_copy(F0, hF);
+      }
       solver.setState(u0, p0, F0);
     }
     TurbulenceModel tm;
     tm.variant = SstVariant::Menter1994;
     if (std::getenv("VIBEFLOW_BS_FROZEN")) tm.frozen = true;      // exploration only
+    if (std::getenv("VIBEFLOW_BS_NO_TRANSPOSE")) tm.transposeStress = false;   // exploration only
     solver.enableTurbulence(tm, wallMask);
     solver.setTurbulenceBoundary(kind, kB, wB);
     {
       ScalarField k0("k0", nt), w0("w0", nt);
       Kokkos::deep_copy(k0, K_IN); Kokkos::deep_copy(w0, W_IN);
-      if (initPath) {
+      if (resume) {
+        auto hk = host(k0); auto hw = host(w0);
+        for (Index c = 0; c < nc; ++c) { hk(c) = ck.k[c]; hw(c) = ck.w[c]; }
+        Kokkos::deep_copy(k0, hk); Kokkos::deep_copy(w0, hw);
+      } else if (initPath) {
         auto hk = host(k0); auto hw = host(w0);
         for (Index c = 0; c < nt; ++c) {
           hk(c) = coarse.v[fromCoarse[c]][6]; hw(c) = coarse.v[fromCoarse[c]][7];
@@ -528,6 +613,9 @@ int main(int argc, char** argv) {
     Real time = 0.0;
     int step = 0, sinceChange = 0, holdUntil = 0;
     bool refused = false, steady = false, quasi = false;
+    // A dt the ramp halved from is not taken again (the fifth revision).
+    Real ceiling = 1e300;
+    double secondsBefore = 0.0;
     Cfl cNow;
     // Every 50 steps: the reattachment point and Cf at x = -4, with the step
     // they were taken at, for the quasi-steady test.
@@ -535,14 +623,34 @@ int main(int argc, char** argv) {
     std::vector<Real> histXr, histCf4;
     Separation sep;
     Real cf4 = 0.0, uc = 0.0;
-    for (step = 1; ; ++step) {
+    int firstStep = 1;
+    if (resume) {
+      firstStep = ck.step + 1; time = ck.time; sinceChange = ck.sinceChange; holdUntil = ck.holdUntil;
+      refused = ck.refused != 0; ceiling = ck.ceiling; secondsBefore = ck.seconds;
+      histStep = ck.histStep; histXr = ck.histXr; histCf4 = ck.histCf4;
+    }
+    auto elapsed = [&]() {
+      return secondsBefore + std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    };
+    bool cappedSaid = false;
+    // The checkpoint every 500 steps (VIBEFLOW_BS_CKPT_EVERY, for testing).
+    const int ckptEvery = std::getenv("VIBEFLOW_BS_CKPT_EVERY") ?
+                          std::max(1, std::atoi(std::getenv("VIBEFLOW_BS_CKPT_EVERY"))) : 500;
+    for (step = firstStep; ; ++step) {
       if (step > 1 && (step - 1) % 100 == 0 && dtNow < dt && step > holdUntil) {
         const Real d2 = std::min(2.0 * dtNow, dt);
-        const Cfl c2 = courant(d2);
-        refused = c2.c > C_UP;
-        if (!refused) { dtNow = d2; solver.setTimeStep(dtNow); sinceChange = 0; }
-        std::printf("  step %6d  ramp: C %.2f at dt %.3e, at (%.4f, %.3e): %s\n", step, c2.c, d2,
-                    ccH(c2.cell,0), ccH(c2.cell,1), refused ? "holds" : "doubles");
+        if (d2 >= ceiling) {
+          refused = true;
+          if (!cappedSaid)
+            std::printf("  step %6d  ramp: dt %.3e was halved from before: holds\n", step, d2);
+          cappedSaid = true;
+        } else {
+          const Cfl c2 = courant(d2);
+          refused = c2.c > C_UP;
+          if (!refused) { dtNow = d2; solver.setTimeStep(dtNow); sinceChange = 0; }
+          std::printf("  step %6d  ramp: C %.2f at dt %.3e, at (%.4f, %.3e): %s\n", step, c2.c, d2,
+                      ccH(c2.cell,0), ccH(c2.cell,1), refused ? "holds" : "doubles");
+        }
       }
       solver.advance(ub, fb, src, momentum, *pressure);
       time += dtNow;
@@ -551,8 +659,9 @@ int main(int argc, char** argv) {
       if (std::isfinite(cNow.c) && cNow.c > C_DOWN) {
         std::printf("  step %6d  ramp: C %.2f at dt %.3e, at (%.4f, %.3e): halves\n", step, cNow.c,
                     dtNow, ccH(cNow.cell,0), ccH(cNow.cell,1));
+        ceiling = dtNow;
         dtNow *= 0.5; solver.setTimeStep(dtNow);
-        sinceChange = 0; holdUntil = step + 100; refused = false;
+        sinceChange = 0; holdUntil = step + 100; refused = false; cappedSaid = false;
       }
       // Steps at the dt the march settles at: the level's, or the one the
       // cap last kept it at.
@@ -600,7 +709,7 @@ int main(int argc, char** argv) {
           dxr = std::max(dxr, std::abs(histXr[i] - sep.xr) / std::max(std::abs(sep.xr), 1e-300));
           dcf = std::max(dcf, std::abs(histCf4[i] - cf4) / std::abs(cf4));
         }
-        const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        const double secs = elapsed();
         std::printf("  step %6d  t %9.3f  dt %.2e  C %.2f  xr %.5f  Cf(-4) %.6e  uc(-4) %.6f  "
                     "bubble %.3f %.3f  drift %.1e %.1e  change/50 steps %.1e  bounded %lld  (%.0f s)\n",
                     step, time, dtNow, cNow.c, sep.xr, cf4, uc, sep.c0, sep.c1, dxr, dcf, change,
@@ -613,6 +722,23 @@ int main(int argc, char** argv) {
         if (atDt >= 1000 && change < 1e-6) { steady = true; break; }
         if (atDt >= 1000 && sep.xr > 0.0 && dxr <= 2e-3 && dcf <= 2e-3) { quasi = true; break; }
         if (atDt >= maxFull || step >= MAX_STEPS) break;
+      }
+      if (step % ckptEvery == 0) {
+        Checkpoint c;
+        c.nc = nc; c.nif = mesh.nInternalFaces();
+        c.step = step; c.sinceChange = sinceChange; c.holdUntil = holdUntil; c.refused = refused ? 1 : 0;
+        c.time = time; c.dtNow = dtNow; c.ceiling = ceiling; c.seconds = elapsed();
+        auto u = host(solver.velocity()); auto p = host(solver.pressure());
+        auto k = host(solver.turbulentKineticEnergy()); auto w = host(solver.specificDissipation());
+        auto F = host(solver.faceFlux());
+        c.u.resize(nc * 3); c.p.resize(nc); c.k.resize(nc); c.w.resize(nc); c.F.resize(c.nif);
+        for (Index i = 0; i < nc; ++i) {
+          for (int d = 0; d < 3; ++d) c.u[i*3 + d] = u(i, d);
+          c.p[i] = p(i); c.k[i] = k(i); c.w[i] = w(i);
+        }
+        for (Index f = 0; f < c.nif; ++f) c.F[f] = F(f);
+        c.histStep = histStep; c.histXr = histXr; c.histCf4 = histCf4;
+        writeCheckpoint(out + ".ckpt", c);
       }
       if (step == stopAt) break;
     }
@@ -651,7 +777,7 @@ int main(int argc, char** argv) {
       std::fclose(fq);
       if (std::getenv("VIBEFLOW_BS_SAVE")) saveState(out + ".state");
       const PisoTimings& ts = solver.timings();
-      const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+      const double secs = elapsed();
       std::printf("timings: total %.0f s  pressure solve %.0f  momentum solve %.0f  assembly %.0f\n",
                   ts.total, ts.pressureSolve, ts.momentumSolve, ts.assemble + ts.pressureAssembly);
       std::printf("FINAL xr %.6f cf4 %.8e uc4 %.8f bubble %.5f %.5f steps %d full %d dt %.6g time %.3f "
@@ -660,6 +786,7 @@ int main(int argc, char** argv) {
                   dtNow, time,
                   steady ? "steady" : quasi ? "quasi" : "no", solver.boundedCells(), secs);
     }
+    std::remove((out + ".ckpt").c_str());     // the march is done
     rc = (steady || quasi) ? 0 : 1;
   }
   Kokkos::finalize();
