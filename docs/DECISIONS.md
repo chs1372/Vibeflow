@@ -3920,3 +3920,15 @@ start. So:
   L2_up is not run again.
 
 The gates stand; no solver code changes.
+
+*Seventh revision, before the results.* L2_cal settled at dt = 0.04
+(quasi-steady at step 1,500; the corner excited at 0.08, as the sixth
+revision expected, and halved there at step 498). L2 then started from
+its state with the calibrated U_in, and its first step, the inlet's speed
+dropping 5.5% at once through a channel full of the old flow, put C at
+6.2 in the corner cell: the ramp halved dt from 0.02 to 0.01, and the
+fifth revision's ceiling then barred 0.02 for the rest of the march — a
+start's transient fixing a step four times smaller than the flow needs.
+So a halving in a march's first 100 steps does not set the ceiling; it
+still halves, and holds for 100 steps. L2 starts again. The gates stand;
+no solver code changes.
