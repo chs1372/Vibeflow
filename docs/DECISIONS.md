@@ -3900,3 +3900,23 @@ taper tilts the line between centroids from the face normal by up to
 74° on level 2, 84° and 87° on levels 3 and 4 (whose outlet columns
 diverged), and 45° on level 1; at the corner, 16° on level 2 and 6° on
 level 1. The gates stand; no solver code changes.
+
+*Sixth revision, before the results.* L2_up settled (quasi-steady at
+dt = 0.16, x_r 6.431, u_c(−4) 1.0560 with U_in = U), and L2_cal, the first
+linear-upwind march, started from its state. It ran calm at dt = 0.08
+(C 2.6–2.8, 5.3 s a step on two threads) until the ramp let it double to
+0.16, because C there was 5.6, under the cap of 8. Within 60 steps C
+passed 12 and the ramp halved dt. Back at 0.08 the corner stayed excited:
+C 7.1–7.7, x_r swinging between 6.43 and 6.61, and a step took 8–9 s.
+From the first-order state at step 1,500 (fifth revision), linear upwind
+held at dt = 0.04 had C 1.3 and no swing; held at 0.08, its C crept from
+3.9 to 5.9 in 200 steps. Linear upwind is excited somewhere between C ≈ 3
+and 5, not at the 8 and 12 the third revision set from the first-order
+start. So:
+
+- the ramp doubles dt only if C at the doubled dt is at most 3, and
+  halves it whenever C exceeds 6 (was 8 and 12);
+- L2_cal starts again from L2_up's state; the run above is kept, and its
+  L2_up is not run again.
+
+The gates stand; no solver code changes.
