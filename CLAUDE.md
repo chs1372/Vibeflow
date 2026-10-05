@@ -123,11 +123,20 @@ DECISIONS.md에 기록된다. 초록색 CI가 그 단계들까지 덮는다고 �
 
 ## 빌드와 실행(이 PC)
 
-**환경.** WSL2 Ubuntu 26.04.1, i5-9600K 6코어(SMT 없음), RAM 31 GB. GCC 15.2,
-CMake 4.2.3, Python 3.14이다. README의 apt 목록을 이 배포판에서 설치하면 OpenMPI
-5.0.10, PETSc 3.24.4, hypre 3.0.0, CGNS 4.5.0이 들어오고, Kokkos 5.2.2는 소스로
-빌드한다. README의 검증 구성(Ubuntu 24.04, GCC 13.3, OpenMPI 4.1, PETSc 3.19,
-hypre 2.28, CGNS 3.4)이나 CI와 다르다.
+**환경.** WSL2 Ubuntu 26.04.1, i5-9600K 6코어(SMT 없음), RAM 31 GB. GCC 15.2와
+CMake 4.2.3이다. apt로 OpenMPI 5.0.10, PETSc 3.24.4, hypre 3.0.0, CGNS 4.5.0을,
+소스로 Kokkos 5.2.2를 설치했다. venv는 Python 3.12.15(uv)다. README의 검증
+구성(Ubuntu 24.04, GCC 13.3, OpenMPI 4.1, PETSc 3.19, hypre 2.28, CGNS 3.4)이나
+CI와 다르다. 2026-10-05 기준으로 빌드는 95초, 컴파일러 경고는 0개이고, v0은
+8개 모두 통과하며 확산 차수는 README와 같다.
+
+**venv에 시스템 Python 3.14를 쓰지 않는다.** Python 3.14에서는 v0의 VTU
+게이트가 실패한다. VtuWriter는 헤더와 데이터를 따로 base64 인코딩한다. meshio
+5.3.5는 이런 파일을 "b64decode가 첫 패딩에서 멈춘다"는 Python 3.13 이하의
+동작에 기대어 읽는데, 3.14의 b64decode는 패딩 뒤로도 계속 디코딩해 어긋난
+바이트를 낸다. 같은 문자열을 3.12.15는 4바이트로, 3.14.4는 20바이트로
+디코딩한다. 코드도 게이트도 바꾸지 않았고, Python만 CI와 같은 3.12로 맞췄다.
+3.14 venv는 재현용으로 `~/venv-py314`에 남아 있다.
 
 **기록된 숫자는 두 코어 기계에서 나왔다.** 후향계단은 두 스레드에서 돌았다.
 run_gates.py는 직렬 게이트의 `OMP_NUM_THREADS`를 정하지 않으므로, 이 PC에서는
@@ -163,8 +172,17 @@ sudo apt-get install -y build-essential cmake git pkg-config python3-venv \
     libgl1 libglu1-mesa libxcursor1 libxft2 libxinerama1
 ```
 
-Kokkos는 `~/kokkos-install`에, venv는 `~/Vibeflow/.venv`에 있다(numpy, scipy,
-meshio, h5py, sympy, gmsh 4.15.2). 빌드 디렉터리는 반드시 저장소 루트의
+Kokkos는 `~/kokkos-install`에, venv는 `~/Vibeflow/.venv`에 있다. venv는 Python
+3.12이고 numpy 2.5.3, scipy 1.18.1, meshio 5.3.5, h5py 3.16.0, sympy 1.14.0,
+gmsh 4.15.2가 들어 있다. venv를 다시 만들 때는 uv(`~/venv-py314/bin/uv`)를
+쓴다.
+
+```sh
+uv python install 3.12 && uv venv --python 3.12 .venv
+uv pip install --python .venv/bin/python numpy scipy meshio h5py sympy gmsh
+```
+
+빌드 디렉터리는 반드시 저장소 루트의
 `build`여야 한다. run_gates.py가 `build/tests`를 하드코딩하고 있어서, 다른
 디렉터리에 빌드하면 C++ 게이트가 모두 'not built'로 건너뛰어진다.
 
