@@ -4009,3 +4009,580 @@ the known limits. What would change it is a finding that the lip's
 suction belongs to the reference or to the grid rather than to this
 solver — FUN3D's Cp at the lip beside CFL3D's, or TMR's finest grid —
 stated in an ADR of its own before it is looked at.
+
+## ADR-046 — The step's lip: is its missing suction the reference's, the grid's or this solver's? Stated before the data and the runs, answered after
+
+**Context.** ADR-045's gate 4 compares Cp with CFL3D's on level 1. It
+fails at the two points nearest the step's lip, and only there. Behind
+the step our Cp is within 0.0044 of CFL3D's at all 497 of its points. On
+the upstream floor the difference grows towards the lip: +0.005 at
+x = −4, +0.011 at −0.125 and +0.014 at −0.063. It then passes the bound
+of 0.015 at the last two points: 0.0174 at x = −0.021 and 0.0205 at the
+corner (Cp −0.198 against −0.219). Level 2 has the same shape, 0.0181
+and 0.0221. Our suction at the lip is weaker than CFL3D's. What else is
+known:
+
+- the solver's own wall pressure, extrapolated from the cells, gives the
+  same values to four digits as the pressure of the wall cells that the
+  gate reads. Compressibility at CFL3D's M = 0.128 is worth about 0.002
+  of the peak. Both were looked at after ADR-045's verdict and were not
+  judged;
+- CFL3D's Cp file holds 868 points, TMR level 1's wall nodes zone by
+  zone, and they agree with the nodes to 3.8e-6 in x. The zone
+  interfaces x = −4 and x = 8 each appear twice. x = 0 also appears
+  twice, once as the lip (0, 1) at the end of the upstream floor and once
+  as the bottom corner (0, 0) at the start of the lower floor
+  (`split_floors` relies on this). Our Cp is each wall cell's pressure at
+  its face centre, halfway between two of those nodes. CFL3D's corner
+  value is a node value at the lip. The repository does not say how a
+  cell-centred code produced it;
+- on level 1, gate 4 therefore interpolates our Cp to x = −0.021 between
+  the faces at −0.03125 and −0.01041 (weight 0.500129 on the right). At
+  the corner it extrapolates over half a cell:
+  1.499871 v_last − 0.499871 v_prev. On level 2 the point x = −0.021 lies
+  5.4e-6 past the last face (−0.020835), so the value read there is in
+  effect the last wall cell's own pressure, and the corner is
+  extrapolated over 0.0208 (1.499486 and 0.499486);
+- gate 4 prints only its largest difference. No committed script
+  produced ADR-045's per-point Cp differences or its level-2 Cp against
+  CFL3D's;
+- the grid at the lip, read for this ADR. The first cell is 1.504e-4
+  high on level 1 and 3.107e-4 on level 2. The upstream wall cells that
+  gate 4 reads are orthogonal: the largest angle between the
+  centroid line and the face normal within 0.01 of the lip is 1.4°.
+  ADR-045's fifth revision gives 6° on level 1 and 16° on level 2 "at the
+  corner". Those angles belong to the face just behind the lip, at
+  x = 0.0104 and 0.0208, between the first cells above and below y = 1.
+
+ADR-045's decision names what would change it: "a finding that the lip's
+suction belongs to the reference or to the grid rather than to this
+solver — FUN3D's Cp at the lip beside CFL3D's, or TMR's finest grid —
+stated in an ADR of its own before it is looked at." This is that ADR.
+
+**What this ADR can change.** The user decided the following on
+2026-10-05:
+
+- gate 4 stays as ADR-045 stated it: Cp within 0.015 of CFL3D's on
+  level 1 for −4 ≤ x ≤ 30, read floor by floor with `floor_values`. Its
+  verdict is FAIL in every outcome here and is never re-scored. A gate
+  line that any run below prints is not a verdict. A finding can change
+  only ADR-045's decision that v2b's second benchmark does not pass;
+- if nothing below attributes the excess to the reference or to the
+  grid, this ADR records *cause not found* and the limit stays in the
+  known limits. This ADR does not decide whether v2b is then closed and
+  v2c begins; a later ADR decides that. On 2026-10-06 the user extended
+  this to every outcome: closing v2b is never decided here;
+- ADR-047, written right after this one, puts the backstep harness under
+  MPI. Its serial-equivalence gate is stated before its code. No march
+  here runs under MPI before that gate has passed, and step 7 says which
+  marches may run under MPI after it.
+
+**Data seen before this was written.**
+
+- Everything ADR-045 prints, including its per-point lip numbers on
+  levels 1 and 2. The change from level 2 to level 1 (0.0221 to 0.0205 at
+  the corner, 0.0181 to 0.0174 at −0.021) is therefore known, and it
+  bears on the grid. When ADR-045 was answered, d along the upstream
+  floor on levels 1 and 2 was computed by a script that was not
+  committed, and it was seen. Only the numbers ADR-045 prints survive,
+  and the rules below use only those.
+- ADR-045's second revision ran the gate script on CFL3D's own data in
+  place of ours. Its largest difference was 0.0015 at x = 8, where the
+  file holds two values 0.0015 apart at a zone edge. At x = −4, the other
+  shared edge, the two values are 0.0003 apart. The repository does not
+  record how the file was fed: ADR-045 says "in place of ours" and
+  commit c5a80ca "Tried on CFL3D's own results", and neither says more.
+- CFL3D's four SST files and the experiment's files, as ADR-045 used
+  them. The Cp file's header reads "Pressure coefficient results from
+  CFL3D, Re_H=36,000, SST model" and says the values are "shifted so that
+  Cp is close to 0 near x/H=40". CFL3D's SST variant, SSTm, comes from
+  ADR-045's reading of TMR's page and not from the file.
+- TMR's step page as it was read for ADR-045. That includes its
+  statement that CFL3D and FUN3D both reattach "near x/H = 6.50", which
+  is a FUN3D result for the step. No FUN3D Cp or lip value was seen.
+- TMR's grids for levels 1 to 4. For this ADR and its reviews, only
+  these were read: near the lip, face centres, first-cell heights and
+  centroid-line angles; along the whole bottom wall, the match between
+  CFL3D's x and the level-1 nodes. Scratch scripts outside the
+  repository did the reading.
+- The harness, the gate script and the report.
+
+No Cp value of ours, and no CFL3D value near the lip, was read or
+evaluated for this ADR beyond what ADR-045 prints. One review's search
+of CFL3D's Cp file incidentally printed its first values, at
+x ≈ −130. Nothing has been run without being looked at. No state, log or Cp
+file from ADR-045's marches exists on this machine. The user states that
+nobody working on this project, in any session, has seen TMR's FUN3D
+results for the step beyond the reattachment statement above, TMR's
+grid-convergence plots or data for the step, or TMR's finest grid for
+the step. None of them is in the repository.
+The rules below were written knowing the numbers in the first two
+bullets and the grid geometry in the fifth.
+
+**The target.** For each CFL3D point on the upstream floor, d(x) is ours
+minus CFL3D's, read as gate 4 reads it. "The corner" is CFL3D's
+upstream-floor point x = 0, and "−0.021" is its point x = −0.0208296.
+Both are nodes of TMR's level 1 and, if the finest grid is nested as
+levels 4 to 1 are, of the finest grid. On levels 2 to 4 only the corner
+is a node. In ADR-045 the excess
+E = d − 0.015 is:
+
+| ADR-045 | d at the corner | E | d at −0.021 | E |
+|---|---|---|---|---|
+| level 1 (gated) | 0.0205 | 0.0055 | 0.0174 | 0.0024 |
+| level 2 (reported) | 0.0221 | 0.0071 | 0.0181 | 0.0031 |
+
+Steps 1 to 3 involve no new run of ours and use this table. Steps 5 and 6
+compare new runs with each other. They use S0's own d (step 4), and on
+the same level E_S0 = d_S0 − 0.015. Each step has a base level: level 1
+for step 5, level 2 for step 6. A lip point is not judged in a step if
+S0's d there on that step's base level is at most 0.015, read by the
+gate reading from the final state. Step 5's two named outcomes need both
+points judged. With only one, Δ/E_S0 is recorded there and nothing else.
+Step 6's rules use the points still judged. If neither point qualifies
+for a step, that step is void, and the outcome is recorded as step 4
+says.
+
+**Readings and bands**, fixed now and used by every step:
+
+- *The frame.* Ours is shifted to zero at x = 40, as the harness writes
+  it. CFL3D's level-1 file is used as published, as gate 4 uses it, and
+  its value at x = 40 (linear between its points) is C40. Every other
+  reference (FUN3D's, CFL3D's on another grid) is shifted by a constant
+  so that its value at x = 40, linear between its own points, equals C40.
+  A reference with no points on both sides of x = 40 is reported and not
+  judged.
+- *The gate reading*: `floor_values` and `split_floors` from
+  `backstep_gate.py`, unchanged, applied to the `.cp` of a march (the
+  wall cells' pressure). The `.cpw` file is read the same way and
+  reported beside it.
+- *The face reading*: on each floor, e = ours − c at each of that
+  floor's wall face centres, where c is the reference's Cp on that floor
+  taken as linear between its points, its corner included. e is then
+  carried to the reference's points on that floor by `floor_values`. Because the reading is linear, this equals d − b, where
+  b is step 1's reading bias. It extrapolates the difference to the
+  corner, not ours.
+- *The lip print and the band.* Every 50 steps the harness prints p40
+  and the Cp at the last four upstream bottom faces (`%.10e`). On levels
+  2 and 1 both lip values of both readings follow from those four faces
+  to the printed precision, and on level 0 if its grid is nested as
+  levels 4 to 1 are: 1,277,952 cells, and every level-1 node a level-0
+  node to 1e-9. If it is not, step 5's lip values are read from the
+  final state's `.cp` alone, and G is inconclusive. The *window* is the
+  samples taken in the last 1,000
+  steps of a march, all at its settled dt; that is about 20 samples. For
+  each lip value, B is its range over the window and m its mean. A
+  window that contains a resume is flagged and still used. Its samples
+  are those of the resumed march; samples printed before the
+  interruption at steps the resumed march repeats are dropped. A resume
+  restarts BDF at first order from the checkpointed state and takes the
+  checkpoint's face flux as both F and F_old. A change of dt also
+  restarts BDF at first order but keeps F_old, and the window contains
+  none.
+- *When a rule about a single march holds.* Such a rule compares one
+  march with a reference value. It *holds* if it holds at every sample
+  of the window under both readings. It *fails* if it fails at every
+  sample under both. Anything else is *inconclusive*. Where a rule also
+  covers the rest of the upstream floor, that part is read once, from the
+  final state's `.cp`, under both readings.
+- *The floor* n = 0.0015 is the spread of CFL3D's own two values at
+  x = 8. It applies only where a reference value enters a rule (steps 2
+  and 3). Any duplicate-point spread in other files is reported, not
+  judged.
+- *Settled* means steady or quasi-steady by ADR-045's criteria, as its
+  revisions left them and as the harness applies them whatever a march's
+  corrector count: the 3/6 ramp, the ceiling rule, 1,000 steps held, then either a change below 1e-6 over 50 steps or at
+  most 0.2% drift in x_r and Cf(−4) over the march's last 20%. The march
+  must settle within 5,000 steps at that dt and 20,000 in all.
+
+Compressibility (about 0.002 at the peak) and renormalising by each
+code's core velocity (about 0.0004, see the predictions) are reported
+only. By the printed estimates each is below E at both points. Neither
+attributes anything, alone or with anything else.
+
+**Decision.** Six steps look for the excess, each judged by a rule
+written here.
+
+*1. The reading (R). Reported, not judged.* No run and no new data.
+CFL3D's upstream-floor Cp is taken as linear between its points, its
+corner included. It is sampled at the upstream face centres of levels
+1 and 2, and of level 0 once that grid is committed, as point values.
+`floor_values` then reads them back to CFL3D's points exactly as gate 4
+reads ours. The reading bias is b(x) = that value − CFL3D(x). Step 1
+reports b at every upstream point. At the two lip points it reports
+d − b and which of them, if any, b brings within 0.015. It also reports
+C40. The two lip biases have opposite signs (see the predictions), so a
+rule requiring both points cannot fire, and step 1 carries none. Whatever
+b and C40 are, ADR-045's decision does not change because of them.
+ADR-045's second revision fixed gate 4's reading and frame before its
+results. A reading found wanting after the verdict is not changed to
+alter that verdict (CLAUDE.md rule 2). A b that alone brings a lip
+point within the bound (d − b ≤ 0.015 there), or a C40 that alone does
+(d + C40 ≤ 0.015, ours carried to CFL3D's value at x = 40), is recorded
+in the known limits beside gate 4's reading. It is not called a fault
+or a cause. A later ADR may restate the reading for later cases.
+
+*Files, fetched after this ADR is committed.* From TMR's backward-facing
+step pages, and nothing else:
+
+- (i) FUN3D's SST Cp on the bottom wall;
+- (ii) every numeric Cp file for the step on a grid other than level 1,
+  from CFL3D or FUN3D;
+- (iii) the finest grid.
+
+Each file is committed as downloaded, with its URL and date in the commit
+message. It is not opened, plotted or read for values before the reading
+script exists, and anything seen of it before then is recorded.
+Grid-convergence plots without numbers are recorded as existing and are
+not judged: a lip Cp read off a plot cannot resolve 0.0024. If a file
+cannot be obtained, its step is recorded as not run, and the steps that
+do not need it proceed. The contract below is fixed now. No revision may
+change it, and the first revision's reading script only implements it:
+
+- the SST variant and the grid are taken as TMR labels them: in the
+  file, beside its link, or in a statement on the TMR page holding the
+  link that names that code's results for the step. That is how ADR-045
+  took CFL3D's level-1 file as SSTm on level 1, from TMR's page and not
+  from the file. A file without both labels from one of these places is
+  reported, not judged. Where these places disagree, the file is
+  reported, not judged.
+  A file is on level 1 if its label names the grid backstep5_1levdn or
+  gives that grid's dimensions. It is on the finest grid if its label
+  names the grid one level finer in the same family or gives that grid's
+  dimensions. Any other label is reported, not judged;
+- `split_floors` applies unchanged. A file without exactly two x = 0
+  points is reported, not judged;
+- a file is judged at the lip only if its upstream floor has points at
+  x = 0 and x = −0.0208296 to within 1e-5. Between its own points it is
+  linear, and it is never extrapolated. A file whose upstream floor does
+  not span −4 ≤ x ≤ 0 is reported, not judged; for step 3 its lower
+  floor must also span 0 ≤ x ≤ 30;
+- for level 1, step 3 always uses the committed CFL3D level-1 file. A
+  CFL3D level-1 file among the downloads that differs from it is
+  reported.
+
+*2. The reference (F).* F is judged only if FUN3D's file is SSTm (as
+CFL3D's is taken to be) on TMR's level 1 and meets the contract.
+Otherwise it is reported, not judged. FUN3D's file on the finest grid is
+reported only. In the frame, D(x) = FUN3D − CFL3D at CFL3D's
+upstream-floor points.
+
+- *The failure belongs to the reference* if D ≥ E (the level-1 row) at
+  both lip points, and if |d − D| ≤ 0.015 at ADR-045's three other
+  printed upstream points (−4, −0.125 and −0.063). Those three are
+  printed to three digits, so their rounding of 0.0005 counts against
+  ours there. At the lip, D ≥ E means that FUN3D lies on our side of
+  CFL3D by at least the excess. In plain terms, at the lip either ours
+  meets gate 4's bound against FUN3D, or ours lies between the two
+  references. That is the intent. ADR-045's context names TMR's own SST
+  results, "CFL3D and FUN3D", as the reference, and gate 4 compares with
+  CFL3D's file alone. ADR-045 does not say why. The extra points keep a FUN3D that lies on our
+  side at the lip but beyond the bound elsewhere upstream from counting.
+- *The reference is ruled out* if D ≤ n at both lip points. Anything in
+  between is recorded as D/E at each point, and the reference is not
+  called the cause.
+- Reported: D at every upstream point, D unshifted, FUN3D's own value at
+  x = 40, and the comparison behind the step. Once S0 exists, S0's
+  level-1 Cp against FUN3D over the whole floor is reported.
+
+*3. The reference on the finest grid (T). An input to step 5, never an
+attribution on its own.* T is judged only on a CFL3D Cp file for TMR's
+finest grid that TMR labels SSTm (as CFL3D's level-1 file is taken to
+be) and that meets the contract. In the frame,
+Δ_ref = CFL3D_finest − CFL3D_L1 at the two lip points. It is classed
+*towards ours* if Δ_ref ≥ n at both points, *away* if Δ_ref ≤ −n at
+both, *unchanged* if |Δ_ref| < n at both, and *mixed* otherwise. The
+same quantity for FUN3D is reported.
+
+*4. The chain again (S0).* No L1 or L2 state exists on this machine, so
+ADR-045's chain is marched again. `backstep_gate.py` runs it with
+ADR-045's harness plus the lip print, `VIBEFLOW_BS_THREADS=2`, and a
+new, empty output directory, with no `threads` file. Every march of
+steps 5 and 6 likewise writes to a new prefix in a new, empty
+directory, and the directories are recorded. No other variable is set,
+except after an interruption: then `VIBEFLOW_BS_RESUME=1` and
+`VIBEFLOW_BS_REUSE=1` are set together. The second skips the marches
+that already have a FINAL line, which would otherwise be marched again
+over their own logs. The variables that were set are recorded. This is
+not ADR-045's chain as it ran:
+
+- ADR-045's L2_up began with an exploration run's first 1,500 steps
+  under four correctors, the 8/12 ramp and no ceiling. It was continued
+  for 1,300 steps from that state under eight correctors, the ceiling
+  rule and still the 8/12 ramp (the sixth revision's 3/6 came after it
+  settled). S0's L2_up runs from the uniform stream under eight
+  correctors and the 3/6 ramp throughout (`VIBEFLOW_BS_UP_INIT` unset);
+- S0's U_in is the one its own L2_cal calibrates, and it is reported
+  beside ADR-045's 0.944775;
+- the toolchain is Ubuntu 26.04, GCC 15.2, OpenMPI 5.0.10, PETSc 3.24.4
+  and hypre 3.0.0. README's tested configuration is Ubuntu 24.04,
+  GCC 13.3, OpenMPI 4.1, PETSc 3.19 and hypre 2.28. ADR-045 does not
+  state its own toolchain, and CLAUDE.md records its numbers as coming
+  from a two-core machine.
+
+*S0 reproduces ADR-045* if, on levels 2 and 1, each quantity lies within
+half of ADR-045's own change from level 2 to level 1, so that S0 is
+nearer ADR-045 than one grid level is:
+
+- x_r within 0.018;
+- Cf(−4) within 2.4e-5;
+- u_c(−4) within 0.0002, and U_in within 0.0002;
+- the lip d (gate reading, final state) within 0.0008 at the corner and
+  0.0004 at −0.021.
+
+A failure to reproduce is reported and replaces none of ADR-045's
+numbers. S0's outcomes:
+
+- one of S0's marches diverges or does not settle: the failed chain is
+  reported, and a revision then states one other start before it runs,
+  whatever steps 2 and 3 have found. If that chain settles, it is S0. If
+  it also fails, steps 5 and 6 are void, and no further start is tried in
+  this ADR;
+- S0's lip d on level 1 or level 2 is at most 0.015 at a point: that is
+  recorded, and the gate line is not a verdict. The point is not judged
+  in the step whose base level that is (see the target). The lip's sensitivity to the start or the toolchain
+  goes into the known limits. It is not an attribution, and ADR-045's
+  decision stands on it.
+
+Otherwise S0 is the base of steps 5 and 6, whether or not it reproduces.
+
+*5. TMR's finest grid (G).* The grid is gate-checked before any march.
+ADR-045's gate 1 applies: every one of TMR's cells, each interface face
+shared once, and the area 1,490 to 1e-12 relative. `make_mesh.py`
+hard-codes `tmr/backstep5_{lv}levdn.p2dfmt.gz` and the four-zone layout,
+so any change it needs is declared in a revision before it is written.
+Every boundary face must fall into one of the harness's classes:
+
+- the span faces, whose normal is along z;
+- the inlet and outlet at the extreme x, and the top at the largest y,
+  each to 1e-9;
+- the upstream floor at y = 1, to 1e-9;
+- the lower floor at y = 0 and the step face at x = 0, each to 1e-12.
+
+The top and upstream-floor faces whose centres have x < −110 are slip,
+as on levels 2 and 1.
+
+If the nesting of levels 4 to 1 holds, the grid has 1,277,952 cells. A
+grid that fails these checks makes G void; that is recorded and nothing
+is run.
+
+The march calls the binary directly, as the gate script calls it:
+
+- arguments `L0.hex <out> 0.04 5000 <S0's U_in>`. 0.04 continues the
+  halving of 0.16 and 0.08;
+- environment `VIBEFLOW_BS_SAVE=1`, `VIBEFLOW_BS_INIT=<S0's L1.state>`,
+  `OMP_NUM_THREADS=2` and `OMP_PROC_BIND=false`;
+- the march starts at dt/8 and follows ADR-045's ramp and settling
+  criteria;
+- a march that diverges, does not settle, or has not settled when its
+  own printed seconds pass 604,800 (168 hours) makes G void. Those are
+  the harness's elapsed seconds, which a resume continues from the
+  checkpoint. It is not extended.
+
+The rule:
+
+- *The failure belongs to the grid* if T is *towards ours* and ours on
+  level 0 is within 0.015 of CFL3D_finest. That means at both lip points
+  (rule held as defined above), and at every CFL3D finest-grid point of
+  the bottom wall −4 ≤ x ≤ 30, read floor by floor (final state, both
+  readings). Then on
+  the finest grid ours meets gate 4's bound against CFL3D's own result on
+  that grid, and CFL3D's lip moved towards ours on refinement, so
+  level 1's failure is level 1's grid's.
+- *This solver needs a finer grid at the lip than CFL3D does.* This is
+  recorded if ours on level 0 meets the same bound against CFL3D_finest
+  while T is unchanged, away or mixed. It is also recorded if T is not
+  judged (no CFL3D finest-grid file obtained, or one reported but not
+  judged) and ours on level 0 is within 0.015 of CFL3D's level-1 file at
+  both lip points (rule held). Either case goes into the known limits, and
+  ADR-045's decision stands.
+- Otherwise the fraction Δ/E_S0 is recorded at each judged point, where
+  Δ = d_L1(S0) − d_L0 by the gate reading.
+- An inconclusive rule makes G inconclusive.
+- Reported: Δ under both readings, and ours on level 0 against both
+  CFL3D files.
+
+*6. Ablations on level 2 (A). These test how sensitive the lip is to this
+solver's numerics; they attribute nothing.* Each is a march from S0's L2
+state with one change
+declared here:
+
+- (0) none, the null re-march;
+- (a) twelve correctors (`VIBEFLOW_CORRECTORS=12`);
+- (b) half the dt;
+- (c) the explicit non-orthogonal diffusion off in momentum, k and ω
+  (`VIBEFLOW_NO_NONORTH=1`, PisoControls' `diffusionNonOrth`, which the
+  k and ω transport solve in Sst.cpp also reads). At the lip this acts
+  on the face just behind it, not on the orthogonal wall cells upstream;
+- (d) ν_t(∇u)ᵀ off (`VIBEFLOW_BS_NO_TRANSPOSE=1`);
+- (e) first-order momentum (`VIBEFLOW_CONVECTION=upwind`).
+
+The arguments are `L2.hex <out> <dt_S0> 5000 <S0's U_in>`, where dt_S0
+is the dt S0's L2 settled at, and dt_S0/2 for (b). The environment is
+`VIBEFLOW_BS_INIT=<S0's L2.state>`, `VIBEFLOW_BS_SAVE=1`,
+`OMP_NUM_THREADS=2` and `OMP_PROC_BIND=false`, plus the change. The dt
+passed is the ablation's ceiling. An ablation that diverges, does not
+settle, or settles at any other dt is *confounded*: it is reported and
+its rules are inconclusive. If (0) is confounded, step 6's rules are not
+judged and the ablations are reported. Otherwise, δ0 = m_S0 − m_(0) and δ = m_S0 − m_abl, with m the
+window means of step 6's march and of S0's L2, at each judged lip point.
+
+- An ablation *moves the lip* if |δ| > max(|δ0|, (B_S0 + B_abl)/2) at
+  every judged point, and the final samples differ in the same direction
+  as the means.
+- It *closes level 2's excess* if, against CFL3D's level-1 file as
+  ADR-045 read level 2, d_abl ≤ 0.015 holds at every judged point, and
+  if x_r and Cf(−4) are within 2% of S0's L2.
+- Otherwise δ/E_S0 is recorded.
+
+Either finding is recorded as a sensitivity of the lip, with δ/E_S0,
+and goes into the known limits. It is not called the cause. No fix is
+adopted here. A fix is an ADR of its own, followed by the full suite.
+
+*7. Order and triggers.*
+
+- This ADR is committed first, then ADR-047. A first revision of this
+  ADR then states the exact form of the lip print and of the reading
+  script, before either is written.
+- The print must change nothing in the march. With
+  `OMP_NUM_THREADS=1`, `VIBEFLOW_BS_SAVE=1`, `VIBEFLOW_BS_STOP=200` and
+  `VIBEFLOW_CONVECTION=upwind`, a march `L2.hex <out> 0.16 5000 1` from
+  the uniform stream runs with and without the print. The two runs must
+  agree byte for byte in their FINAL line without its `seconds` field and
+  in their `.cf`, `.cp`, `.cpw`, `.prof` and `.state`. One thread is
+  required because the assembly's atomic additions make multithreaded
+  runs differ in the last bits. A mismatch blocks steps 4 to 6 until a
+  revision fixes the print.
+- Step 1 runs once the reading script exists. Steps 2 and 3 run once
+  their files are committed and the reading script exists.
+- Step 4 starts once the print has passed, independently of steps 1
+  to 3. It runs to its end in every case.
+- Steps 5 and 6 start once S0 has settled and steps 2 and 3 have been
+  read or recorded as not run. They start only if step 2 has not
+  attributed the failure to the reference; otherwise they are recorded
+  as not run.
+- No march is moved between threads and MPI once it has started. A
+  march of steps 4 to 6 that is interrupted resumes from its checkpoint
+  and is never started over: step 4 as stated there, steps 5 and 6 with
+  `VIBEFLOW_BS_RESUME=1` added to the same command, appending to the
+  same log. The first checkpoint is written at step 500. A march
+  interrupted before it is started again with the same command in a new,
+  empty directory. For step 4 that command is the whole chain, and S0 is
+  the chain in the new directory; the marches of the abandoned directory
+  are reported, not judged. Every attempt is recorded, its log kept and
+  reported, and only the attempt that reaches its end is judged. No
+  march is stopped by hand before its end. All of step 6, and S0, run on
+  two threads. Step 5 may instead
+  run under MPI only if, when it starts, ADR-047 has passed with a
+  tolerance on the wall's Cp of at most 0.00048, a fifth of the smaller
+  excess (0.0024). The choice is recorded before its first step.
+- At most six threads run at once on this machine's six cores, for
+  example step 5 on two threads beside two ablations.
+- Steps are not summed. Each is judged on its own. A combination of
+  partial fractions, or of b, C40, compressibility and normalisation, is
+  reported, not judged. Step 5 does not run once step 2 has attributed
+  the failure to the reference, so at most one attribution is recorded.
+
+*8. What each outcome does to ADR-045's decision.*
+
+- *Belongs to the reference* (step 2) or *belongs to the grid* (step 5
+  with T *towards ours*): ADR-045's decision that v2b's second benchmark
+  does not pass is withdrawn. Its one failure, gate 4's, is recorded as
+  the reference's (step 2) or the grid's (step 5), not this solver's.
+  Gate 4 stays FAIL, as ADR-045 recorded it. The README and the known
+  limits record both.
+- An inconclusive or void step, a partial fraction, step 1's b or C40,
+  *this solver needs a finer grid*, the sensitivity of S0's lip, or
+  step 6's ablations: ADR-045's decision stands, and what was found goes
+  into the known limits.
+- Nothing attributes: *cause not found*. The limit stays in the known
+  limits with what the steps saw.
+- In every outcome, closing v2b and starting v2c is left to a later ADR.
+
+**Predictions**, computed from ADR-045's printed numbers only, before
+anything above was run or looked at. They are magnitudes, not targets.
+
+- *Step 1.* On level 1 the faces are midpoints of CFL3D's nodes, so
+  b = −S/4 at the corner and +S/4 at −0.021, where
+  S = c(0) − 2c(−0.0208) + c(−0.0417). The trial in ADR-045's second
+  revision bounds S, but how depends on how it fed the file, which is not
+  recorded. If the raw file stood in for `.cp`, its corner was
+  extrapolated from −0.0417 and −0.0208, and the trial's 0.0015 bounds
+  |S|. Then |b| ≤ 0.0004 at both points. If CFL3D was first sampled at
+  our faces, the trial bounds |b| by 0.0015. Under either premise, b is
+  well under E at the corner (0.0055). At −0.021 (E 0.0024) only the
+  first premise leaves a clear margin. Printed numbers give no bound for
+  level 2. Step 1's outcome is therefore largely foreseen.
+- *Normalisation.* Our u_c(−4) is 0.99891 against CFL3D's 0.998:
+  (0.99891/0.998)² − 1 = 0.18% of Cp, about 0.0004 at the lip.
+- *Steps 2 and 3.* No prediction, because the files have not been seen.
+- *Step 5.* Suppose ours on level 0 follows ADR-045's change from level
+  2 to level 1 (−0.0016 at the corner, −0.0007 at −0.021). Measured
+  against CFL3D's level-1 file:
+
+| level 0, if the change from level 1… | d at the corner | d at −0.021 |
+|---|---|---|
+| repeats (no convergence) | 0.0189 | 0.0167 |
+| halves (first order) | 0.0197 | 0.0171 |
+| quarters (second order) | 0.0201 | 0.0172 |
+| converged limit, first order | 0.0189 | 0.0167 |
+| converged limit, second order | 0.0200 | 0.0172 |
+
+None of these rows reaches 0.015. Only a CFL3D finest-grid lip that moves
+towards ours by most of the excess could let step 5 attribute anything.
+The trend rests on two levels with no observed order, and four printed
+digits leave each change uncertain by ±0.0001. At −0.021 the level-2
+value is the last cell's own pressure and the level-1 value an
+interpolation, so that change mixes two readings. The corner is convex,
+and its value may not converge at all. These numbers come from ADR-045's
+chain, and S0's may differ.
+
+- *Step 6.* No prediction, because no ablation of the lip has run.
+
+**Code.** No solver code (`src/`) changes for this ADR. The additions to
+the harness and scripts in `tests/benchmark` and `cases/backstep` are the
+lip print, the reading script, and whatever `make_mesh.py` needs for the
+finest grid. Each is declared in a revision of this ADR, with what has
+been seen by then, before it is written. Any extraction from a saved
+state uses `VIBEFLOW_BS_STOP=0` under a prefix of its own, because that
+mode deletes its prefix's checkpoint.
+
+Reported, not judged:
+
+- d under both readings at every upstream point from −4 to 0, and the
+  largest difference behind the step, on every level run;
+- the `.cpw` readings beside the `.cp` readings;
+- the full lip time series of every march;
+- x_r, Cf(−4), u_c(−4) and the corner bubble of every march;
+- each march's settled dt, steps, threads or ranks, resumes, and time
+  per step over its first 100 steps on this machine;
+- the toolchain.
+
+*Cost, estimated before any run.* ADR-045's numbers come from a two-core
+machine. This machine's own time per step is measured and reported.
+
+- Steps 1 to 3: minutes.
+- S0: ADR-045's gate marches took about 10.2 hours on two threads (L2_up
+  50 minutes, L2_cal 1.9 hours, L2 2.5 hours, L1 5.0 hours), plus the
+  exploration start's 1.8 hours on one thread. S0's L2_up from the
+  uniform stream is estimated at as many first-order steps as ADR-045's
+  two parts took together (2,800, about 1.8 hours on two threads). That
+  is an estimate, not a limit; the limit is the settling rule's. S0 thus
+  comes to about 11 hours on that machine.
+- Step 6: six level-2 marches of about 2.5 hours each, about 16 hours of
+  two-thread marching with (a)'s twelve correctors at about 1.5 times the
+  cost per step. That is about 8 hours of wall time at two at a time
+  beside step 5.
+- Step 5: at four times level 1's 13.8 s a step, about 55 s on two
+  threads. Level 1 settled at 0.04 under the cap, so level 0 will likely
+  settle at 0.02 or below. Over 1,300 to 2,600 steps that is 20 to 40
+  hours, within the 168-hour budget, and more if iteration counts grow
+  with the grid. The injection's cost from level 1 to level 0 has not
+  been measured. Threads speed up only the Kokkos share of a step, and
+  that share has not been measured.
+- Disk: C: had 9.8 GB free on 2026-10-06, when this was committed. It
+  holds the WSL disk, which grows and does not shrink. Step 5 needs about 1 GB (L0.hex and a state
+  of about 250 MB each, and checkpoints of about 80 MB with their `.tmp`
+  copies). S0 and step 6 need room for their states and logs as well.
+  Step 5 does not start with less than 2 GB free. The lip band comes from
+  the log, not from saved states.
