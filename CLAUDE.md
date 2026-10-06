@@ -82,6 +82,11 @@ MPI, PETSc/hypre, CGNS). 새 기법은 Python 참조 구현(`prototype/`)으로 
    TMR의 FUN3D 후향계단 결과와 TMR의 가장 고운 후향계단 격자다. 둘 다 저장소에
    없다. ADR-045의 결정이 이 둘을 "stated in an ADR of its own before it is
    looked at"으로 묶었다. 웹에서 받거나 열기 전에 ADR-046을 먼저 커밋한다.
+   ADR-046은 2026-10-06에 커밋됐다(2190119). 그 뒤로는 ADR-046의 "Files,
+   fetched after this ADR is committed" 절을 따른다. 파일은 받은 그대로 URL과
+   날짜를 적어 커밋하고, 읽기 스크립트가 생기기 전에는 열거나 그리거나 값을
+   읽지 않는다. 그 전에 본 것은 모두 기록한다. 내려받기는 매번 사용자의 허락을
+   받는다.
 
 ## 저장소 구조
 
@@ -116,6 +121,13 @@ CMake 타깃 의존성이 계층을 강제한다. 한 계층은 자기보다 아
 `momentumSolveTol`, `rhieChowAxisOff`)는 기본값이 꺼진 채로 트리에 남긴다
 (ADR-042, ADR-043).
 
+예외가 하나 있다. 하네스를 자기 자신과만 비교하는 등가 게이트는 변수를 쓴다.
+ADR-046의 출력 검사와 ADR-047의 MPI 게이트 0–5가 그렇다. 이 게이트들이 쓰는
+변수는 `VIBEFLOW_BS_STOP` 같은 탐색 변수와, 하네스 머리말에 "ADR-047's
+equivalence gates only; never a physics verdict"로 표시한 `VIBEFLOW_BS_SWEEPS`,
+`VIBEFLOW_BS_KEEP_CKPT`다. 이 변수들은 등가 비교에만 쓰고, 기준값과 비교하는
+물리 판정에는 절대 쓰지 않는다.
+
 픽스처를 바꾸는 Python 변경 뒤에는 `python prototype/dump_fixtures.py`를
 실행하고 `git diff tests/fixtures/`를 확인한다. CI(ubuntu-24.04)는 이 픽스처
 검사와 v0만 돌린다. v1부터의 단계와 후향계단은 로컬에서만 돌고, 결과는
@@ -140,8 +152,11 @@ CI와 다르다. 2026-10-05 기준으로 빌드는 95초, 컴파일러 경고는
 
 **기록된 숫자는 두 코어 기계에서 나왔다.** 후향계단은 두 스레드에서 돌았다.
 run_gates.py는 직렬 게이트의 `OMP_NUM_THREADS`를 정하지 않으므로, 이 PC에서는
-Kokkos가 여섯 코어를 다 쓴다. 스레드 수가 바뀌면 리덕션 순서가 바뀌어 마지막
-자리가 달라진다(ADR-034, ADR-040). 기록과 비교할 때는 `OMP_NUM_THREADS=2`와
+Kokkos가 여섯 코어를 다 쓴다. PETSc의 벡터 연산이 부르는 `libblas`도 이 PC에서는
+OpenBLAS의 pthreads 빌드라서, 그 스레드 수 역시 `OMP_NUM_THREADS`를 따르고
+설정하지 않으면 모든 코어를 쓴다(ADR-047). PETSc와 hypre 자체 커널에는 OpenMP가
+없다. 스레드 수가 바뀌면 리덕션 순서가 바뀌어 마지막 자리가 달라진다
+(ADR-034, ADR-040). 기록과 비교할 때는 `OMP_NUM_THREADS=2`와
 `VIBEFLOW_BS_THREADS=2`로 돌린다. 마지막 자리가 어긋나면 툴체인과 스레드 수를
 먼저 의심하고, 그 차이도 함께 보고한다.
 
@@ -154,6 +169,9 @@ Windows 경로를 가리켜 WSL의 git이 읽지 못한다.
 - `~/Vibeflow`의 origin은 Windows 저장소
   `/mnt/c/Users/CHS/Desktop/프로젝트/CFD/Vibeflow`다. Windows 쪽에서 커밋한 뒤
   WSL로 가져온다. `~/Vibeflow`에서는 커밋하지 않는다.
+- ADR-046의 S0는 lip 출력을 추가한 커밋에서 빌드한 별도의 WSL 클론으로 돌린다.
+  그 클론에는 ADR-047의 코드를 빌드하지 않는다(ADR-047의 'Order'). 그 클론의
+  커밋, 경로, 디스크 사용량은 S0의 첫 스텝 전에 기록한다.
 
   ```sh
   cd ~/Vibeflow && git fetch origin && git checkout -B <branch> origin/<branch>
