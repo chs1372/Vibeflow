@@ -4904,3 +4904,113 @@ The exception for F5 and F6: for each P separately, from the global ids that P =
 - Gate 7: the suite's hours, the heated cavity's about 2.5 and the flat plate's several.
 - Code: about 800 to 1,100 lines, in the harness, the test, the script and about 60 lines of solver code.
 - Disk: gate 6's states and checkpoints are about 150 MB. The second clone and its build are measured before S0. ADR-046's 2 GB floor for step 5 stands.
+
+## ADR-048 — "Fixtures are current" and the runner's CPU: the generator's kernels pinned. Stated before the change and the runs, answered after
+
+**Context.** CI's step "Fixtures are current" runs `python prototype/dump_fixtures.py` and then `git diff --exit-code tests/fixtures/`. The workflow has run 11 times, 12 jobs counting a re-run, from 2026-09-26 to 2026-10-06. Six jobs failed at this step and six passed:
+
+| run | date | branch | region | step |
+| --- | --- | --- | --- | --- |
+| 36259343238 | 09-26 | main | westcentralus | fail |
+| 36425851561 | 09-28 | main | westus | fail |
+| 37292822208 | 10-05 | main | westus3 | fail |
+| 37296772804 | 10-05 | setup-review | centralus | pass |
+| 37298939502 | 10-05 | setup-review | westus3 | pass |
+| 37298971473 | 10-05 | setup-review (PR) | centralus | pass |
+| 37299357936 | 10-05 | main | eastus | fail |
+| 37469104182 | 10-06 | adr-046 | westus3 | pass |
+| 37469143648 | 10-06 | adr-046 (PR) | centralus | pass |
+| 37513026138, attempt 1 | 10-06 | adr-047 | westcentralus | fail |
+| 37513026138, attempt 2 | 10-06 | adr-047 | westus3 | fail |
+| 37513094393 | 10-06 | adr-047 (PR) | centralus | pass |
+
+All twelve ran on ubuntu-24.04 images and installed numpy 2.5.3 and scipy 1.18.1 from the same two wheels. Eleven ran CPython 3.12.14 and one passing run ran 3.12.15. The region does not separate the outcomes: westus3 appears on both sides. The six failure diffs are byte-identical, 765 lines in two files:
+
+- `solution_caseA.txt`: 238 of 512 lines (blob 0ac916f → 5bf52bf);
+- `MANIFEST.txt`: two lines (blob acadaa2 → b244ecb), `max_nonorthogonality_deg` 25.650505504806468 → …471 and `solution_caseA_L2_error` 0.0056073824656658342 → …324.
+
+The other 17 fixture files never differ. A failure at this step skips the next one, so the v0 gates did not run on CI in those six jobs. That includes all four pushes to main that the workflow has run on, so main's head is red.
+
+No log names the processor. No step prints it, and the runner's set-up section gives the region and the image, not the CPU.
+
+**What the check is for.** The fixtures are a record of the Python reference. The check says that the committed record is what the generator gives now. That meaning holds only if the generator's output depends on the repository alone. Today it also depends on the runner's CPU.
+
+**Data seen before this was written.** Everything below was looked at read-only, in one session, and nothing was committed.
+
+- *The 12 logs*, as tabled above.
+- *A reproduction.* It ran on an Intel Xeon with AVX-512 (family 6, model 207, 4 cores) with CPython 3.12.3 and numpy 2.5.3 and scipy 1.18.1 from PyPI. The generator ran at 81de3a6 in a scratch copy.
+  - Natively, the 19 files regenerate with no diff. Both bundled OpenBLAS libraries report SkylakeX: numpy's (0.3.34) and scipy's (0.3.31.dev). numpy dispatches to X86_V4 and AVX512_SPR.
+  - With `OPENBLAS_CORETYPE=Haswell` (or `Zen`) and `NPY_DISABLE_CPU_FEATURES=X86_V4`, the diff is byte-identical to the six CI failures, git blob hashes included.
+  - *scipy's OpenBLAS moves `solution_caseA` and the L2 line.* With numpy's library on Haswell and scipy's on SkylakeX, all 512 lines match the committed ones. With scipy's on Haswell, the same 238 lines move.
+  - *Inside `op.solve`.* The matrix and the right-hand side are bit-identical. SuperLU's factors from `spla.splu` differ in 5,609 of 19,514 L entries and 6,555 of U, and the first solve differs in 229 of 512 entries. scipy 1.18.1's `_superlu` imports `dtrsv`, `dgemv`, `dtrsm`, `dgemm` and six other BLAS routines from scipy's bundled OpenBLAS (`nm -D`).
+  - *numpy's OpenBLAS.* `np.linalg.inv` in the least-squares gradient moves 150 of 4,608 entries by at most 1.4e-17. That does not reach u's 17 digits.
+  - *numpy's dispatch moves the non-orthogonality line.* In `non_orthogonality` the dot products and norms are bit-identical. `np.arccos` (float64) has two targets in numpy 2.5.3, X86_V4 and the X86_V2 baseline, and they differ by 1 ulp on 145 of 1,344 faces. Turning numpy's AVX-512 off moves nothing else.
+  - *Sizes.* `solution_caseA` moves by at most 4 ulp (3.3e-16 absolute, 7.2e-16 relative), the L2 line by 2 ulp and the non-orthogonality line by 1 ulp.
+  - *Other kernel sets give other bits again.* Sandybridge changes 332 lines and Prescott 299. `OPENBLAS_NUM_THREADS=1` changes nothing.
+  - *Both variables fail silently.* numpy accepts an unknown name in `NPY_DISABLE_CPU_FEATURES`. OpenBLAS ignores an unknown core type and detects the CPU instead.
+- *Readers.* Nothing in the repository reads `solution_caseA.txt` or `MANIFEST.txt`: not `src/`, `tests/`, `tools/`, `prototype/`, `cases/`, CI or `docs/`. The gates read these fixtures:
+  - the vertex files, as mesh input;
+  - the geometry files, at 1e-14 absolute in `test_geometry` and at 1e-13 in `check_vtu` (`cell_volume`, `cell_centre`);
+  - the connectivity, exactly.
+
+  None of those moves with the CPU. `crosscheck.py` compares the L2 values it computes afresh, Python against C++, at 1e-11 relative. `test_cgns` compares two C++ non-orthogonalities at 1e-10. No gate can see the 1e-16 movement, so the check is the only reader. The C++ side's own last digits already vary between passing runners (the geometry gate's printed non-orthogonality, the closure error, the C++ L2 at N = 32), all inside those tolerances.
+- *Not seen.* The CPU of any runner: the inference that the failing ones lack AVX-512 rests on the reproduction, not on an observation. The PC (i5-9600K: AVX2, no AVX-512) has not run the generator for this ADR.
+
+**Decision.**
+
+1. *The CPU is logged first.* A CI step before "Fixtures are current" prints:
+   - the CPU model and whether it has `avx512f`, from `/proc/cpuinfo`;
+   - the kernels numpy and scipy load: `numpy.show_runtime()`, with threadpoolctl installed so that it names OpenBLAS's core type.
+
+   The generator does not change in that commit. The workflow is then run by `workflow_dispatch` on it until it has failed three times and passed three times, or 20 runs at most.
+2. *The pin, in the generator.* Before it imports numpy, `prototype/dump_fixtures.py` sets three variables, overriding the environment:
+   - `OPENBLAS_CORETYPE=Haswell`;
+   - `OPENBLAS_NUM_THREADS=1`, which measured no effect here and is set so that the thread count is not a variable;
+   - `NPY_DISABLE_CPU_FEATURES=X86_V4`.
+
+   AVX2 is the largest kernel set that every machine in question has: the runners, the PC and the cloud sessions. The committed bits are AVX-512's, and AVX-512 kernels cannot be forced on a machine without AVX-512, so they cannot be kept.
+
+   After its imports, the generator checks that the pin took effect and refuses to write if it did not. Every OpenBLAS that threadpoolctl lists must report the architecture Haswell. No numpy function's current target in `numpy.lib.introspect.opt_func_info()` may be X86_V4 or AVX512_*. The generator also prints the CPU and the pinned kernels to stderr, because CI discards only stdout.
+3. *The versions.* CI installs `numpy==2.5.3 scipy==1.18.1`: those of every run so far and of the PC's venv. It also installs threadpoolctl. With the versions fixed, a failure means that the generator changed, not that a wheel did. A bump is a change of its own and comes with a regeneration in the same commit. The refusal in 2 stops the generator if a bump makes one of the pin's names stop working.
+4. *One regeneration*, in the same commit as 2 and 3, on an AVX-512 machine (this cloud session's), and committed. The prediction is that the diff is byte-identical to the CI failure diff (765 lines; blobs b244ecb and 5bf52bf) and that no other file changes. The reproduction above has already shown this, so it checks the code, not the idea.
+5. *The check stays as it is:* `git diff --exit-code tests/fixtures/`, bitwise, on all 19 files.
+
+**What this loosens: nothing.** The check still compares every byte of every file. What it changes:
+
+- two fixture files' bits, which no gate reads;
+- the record, which now holds the AVX2 kernels' answer instead of AVX-512's, at most 4 ulp away;
+- the generator, which now needs threadpoolctl (the PC's venv gains it);
+- CI's numpy and scipy, which stop floating.
+
+**Rejected.**
+
+- *The pin in the CI step only.* The PC and any AVX-512 machine that runs the generator by hand, as CLAUDE.md asks after a Python change, would disagree with CI. The generator is where the bits are made.
+- *Comparing these two files at a bound.* No reader exists, so no reader's tolerance justifies a bound. Any bound would be chosen after seeing 4 ulp. It would loosen the check from bitwise to bounded, and it needs a comparison script.
+- *Fewer digits.* Rounding moves the boundary instead of removing it. For this pair of outputs, 14 of the 512 lines still differ at %.15g and none at %.13g. Any value that lies near a rounding boundary flips for any pair of outputs. It also drops the 17-digit round trip that the generator's docstring promises.
+- *Dropping the two files from the check.* That loosens it.
+
+**Gates**, stated before the code:
+
+1. *The cause* (CLAUDE.md rule 8), judged on step 1's runs. The cause is named as "the runner has no AVX-512, so scipy's OpenBLAS and numpy's `arccos` take their AVX2 paths" if all of these hold:
+   - every failing run reports no `avx512f`;
+   - every passing run reports `avx512f`;
+   - every failure diff is byte-identical to the one above;
+   - on the PC, which has no AVX-512, the unmodified generator gives that same diff.
+
+   If fewer than three of either outcome appear within 20 runs, the rule is judged on what was seen, and the shortfall is reported. If the rule does not hold, the cause is not named. What was seen is recorded, and gates 2–4 are still judged on their own.
+2. *Two machines, one answer.* After the change, the generator followed by `git diff --exit-code tests/fixtures/` is clean on this cloud machine (AVX-512) and on the PC (AVX2, CLAUDE.md's venv plus threadpoolctl).
+3. *CI.* The fixture check passes on every run of the change's commit and of the commits after it, until at least 10 runs (push, pull_request and dispatched) have been seen. At least 3 of them must report `avx512f` and at least 3 must not, by step 1's log, within 30 runs at most. Any failure fails this ADR and is recorded as one.
+4. *Nothing else moves.* v0 passes on those CI runs and locally. No other script imports `dump_fixtures.py`, so the Python gates of v1, v2 and v2b run code this ADR does not touch. No solver code changes, so the full suite is not run: CLAUDE.md rule 3 asks for it after a solver change.
+
+Adopted if gates 2–4 pass. If gate 3 fails, the pin is not adopted: the generator, the versions and the fixtures revert, and this ADR records why.
+
+**Order.** This ADR, then:
+
+1. the CPU log (`ci:`), and the dispatched runs, recorded here;
+2. the generator, the versions and the fixtures, in one commit;
+3. the CI runs;
+4. `docs: ADR-048 answered -- …`.
+
+*Reverses if:* a numpy or scipy bump makes the pin's names stop working. The refusal then stops the generator, and a later ADR picks the new names. It also reverses if a machine without AVX2 has to run the generator: OpenBLAS's Haswell kernels would stop it with an illegal instruction rather than let it write other bits.
+
+**Cost.** About ten lines in the generator, one CI step, two version pins and one package in `pip install`, 20 to 50 CI runs of about three minutes each, and two fixture files.
