@@ -4586,3 +4586,431 @@ machine. This machine's own time per step is measured and reported.
   copies). S0 and step 6 need room for their states and logs as well.
   Step 5 does not start with less than 2 GB free. The lip band comes from
   the log, not from saved states.
+
+## ADR-047 — The backward-facing step under MPI: the harness, a parallel ILU and the serial answer. Stated before the code and the runs, answered after
+
+**Context.** ADR-046 needs TMR's finest grid for the step, about 1.28 million cells (its step 5). It estimates that march at 20 to 40 hours on two threads. The PETSc 3.24.4 and hypre 3.0.0 on this machine are built without OpenMP (`petscconf.h` has `PETSC_HAVE_HYPRE` and no `PETSC_HAVE_OPENMP`; hypre's `HYPRE_USING_OPENMP` is undefined), so their own kernels are serial. PETSc's vector operations call `libblas`, which on this machine resolves to OpenBLAS's pthreads build (the `libblas.so.3` alternative, priority 100, and the binary links it). Its threads follow `OMP_NUM_THREADS`, or every core when that is unset. So threads speed up the Kokkos share of a step and some of the Krylov vector work. ADR-046's cost note that threads speed up only the Kokkos share is not exact in this respect. How much of a solve they parallelise has not been measured. Ranks would split the whole of each solve.
+
+ADR-046 lets step 5 run under MPI on one condition: "only if, when it starts, ADR-047 has passed with a tolerance on the wall's Cp of at most 0.00048, a fifth of the smaller excess (0.0024)". It also says that no march there runs under MPI before this ADR's gate has passed, and that "no march is moved between threads and MPI once it has started". Step 5's own rule reads ours at every CFL3D point of the bottom wall from −4 to 30. So "the wall's Cp" here means that whole stretch, not only the lip.
+
+S0, the re-marched chain of ADR-046's step 4, runs with "ADR-045's harness plus the lip print". Step 6 runs on two threads, and ADR-046 does not name its binary. This ADR must not change what either of them runs.
+
+The harness, `tests/benchmark/backstep.cpp`, is serial. It reads the whole mesh as a `PolyMesh` (:348) and gives every solver a default `Comm()` (:96, :98, :450, :536, :538). Every decision it takes on the host comes from local data: the Courant number that drives the ramp (:626-641), the bottom wall's Cf and Cp, x_r, the steady and quasi-steady stops, the station profiles, the state file and the checkpoint. Reading the code for this ADR found the following.
+
+- *`PetscSolver` already takes a global row map.* The map is `globalRowOf` (`PetscSolver.hpp:28-38`), and with it the solver builds a `MATMPIAIJ` on more than one rank. No caller has ever passed one. The solution is read back as `arr[c]` for the owned cells (`PetscSolver.cpp:207`). That silently assumes each rank's owned rows are contiguous and in local order. Ghost columns are taken from the map unchecked (:108-120). Nothing checks either assumption, and `firstRow` is set but never read (:23, :38, :40).
+- *`configure()` knows only jacobi, ilu, gamg and hypre* (:82-91). It never calls `KSPSetFromOptions`; only `setSymmetricAMG` calls `PCSetFromOptions`, under its own prefix (:230-247). PETSc's documentation says its ILU factors only sequential matrices. So `bicgstab+ilu`, the default for momentum, k and ω, cannot run on more than one rank. This was not run here; gate 1 reports it.
+- *A latent defect in solver code.* The non-orthogonal pressure loop stops when `comm_.max(delta) < ctl_.nonOrthTol * scale` (`Piso.cpp:811`). `scale`, the largest |F*| (:803-806), is a maximum over this rank's faces only and is never reduced across ranks.
+  - Under MPI with `nonOrthTol > 0`, ranks can leave the loop after different numbers of sweeps. The next collectives then do not match, which by reading means a hang or mismatched messages.
+  - It is the only loop of its kind with this defect. `Diffusion.cpp:137-138`, `Piso.cpp:1106`, :1150-1176 and :1403/:1470 all reduce their scales.
+  - Every MPI gate that runs `PisoSolver` sets `nonOrthTol = 0` (`mms_parallel_ns.cpp:105`, `mms_parallel_heat.cpp:124`, `mms_parallel_sst.cpp:66`), so this branch has never run under MPI. The step uses the default, 1e-8 (`Piso.hpp:226`).
+- *The MPI gates so far* compare one L2 scalar with the serial run within 1e-10. They run either two steps (the PISO gates, 512 cells, with native Jacobi solvers, four fixed non-orthogonal sweeps and `nonOrthTol = 0`) or one steady solve (the diffusion gates, 4,096 cells, NativeCG at 1e-14 inside `DiffusionOperator::solve`'s non-orthogonal sweep loop, which converges to 1e-12 on reduced scales, `Diffusion.cpp:118-140`).
+  - Measured: ADR-021 up to 2.7e-15, ADR-035 up to 9.3e-14, ADR-041 4.8e-15, ADR-042 2.8e-14.
+  - None of them has a pressure outlet, k/ω wall conditions, linear upwind, eight correctors, `PisoSolver`'s converging non-orthogonal pressure loop, PETSc, or a march with ramp and stop decisions.
+  - None compares fields cell by cell.
+- *Serial and MPI cannot be expected to agree bit for bit.*
+  - The assembly's atomic additions make multithreaded runs differ in the last bits (ADR-046, step 7).
+  - Every Krylov solve stops on a tolerance: pressure 1e-10 (`Piso.cpp:771`), momentum 1e-13 (:1088), k and ω 1e-13 (`Sst.cpp:378`), each capped at 5,000 iterations. Two runs whose sums are ordered differently can therefore take different iteration counts, and their answers then differ by the solve's remaining error, not by round-off alone. This is the reason ADR-021 fixed its sweep counts (DECISIONS.md, ADR-021).
+  - The rank-dependent preconditioners (BoomerAMG, block-Jacobi ILU) also change the stopping test itself. PETSc's default norm with left preconditioning is the preconditioned one (`PetscSolver.hpp:56-58`).
+- *The serial resume falls back silently.* With `VIBEFLOW_BS_RESUME` set and no valid `<out>.ckpt`, the harness starts a fresh march (:446-449) and later overwrites every output. Every march that ends unsettled exits with 1 (:833), which includes every `VIBEFLOW_BS_STOP` run.
+- *What a restore gives back.*
+  - `setState` and `setTurbulence` exchange the halos of u, p, k and ω (`Piso.cpp:111`, `Sst.cpp:206-207`).
+  - The wall-pressure extrapolation is always cold, three sweeps from the cell pressure, because `pressureExtrapWarmStart` is off by default (`Piso.hpp:289`, `Piso.cpp:158-169`) and the harness does not set it.
+- *DistributedMesh's geometry.*
+  - Ghost volumes and centroids are computed over the whole subset before filtering, from this rank's own ring (`DistributedMesh.cpp:446-453`, :567-574). They therefore agree with the owner's and with serial only to round-off.
+  - `globalCellId` covers owned cells only (`DistributedMesh.hpp:69-70`). Owned cells are in increasing global id (`DistributedMesh.cpp:132-135`).
+  - A boundary face's geometry comes from one cell's vertex order, so the bottom wall's face x values are the same bit for bit at any rank count.
+
+**What this ADR can change.**
+
+- It adds an MPI path to the harness, a block-Jacobi ILU and a checked global row map to `PetscSolver`, and the global scale in `Piso.cpp:811`.
+- The serial harness gains five additions: the three below, which gate 0 checks, and the two equivalence-gate variables under *Variables*, which change nothing when unset. Gate 0 runs with `VIBEFLOW_BS_SWEEPS` unset and uses `VIBEFLOW_BS_KEEP_CKPT` only in 0(c):
+  - a refusal to resume from another rank count's checkpoint;
+  - one full-precision line every 50 steps;
+  - one solve-count line before FINAL.
+- It decides whether ADR-046's step 5 may run under MPI.
+- It changes no gate of ADR-045 or ADR-046, no march of S0 or step 6, and no rule of ADR-046.
+
+**Data seen before this was written.**
+
+- The code of the harness, `backstep_gate.py`, `run_gates.py`, the MPI gate programs, `test_backends.cpp`, and `src/core`, `src/mesh`, `src/linalg` and `src/physics`. These were read for this ADR, with file and line references, in a read-only survey and its reviews. Nothing was built or run.
+- The installed PETSc 3.24.4 and hypre 3.0.0 headers (`petscconf.h`, `petscconfiginfo.h`, `petscksp.h`, `petscpc.h`, `petscpctypes.h`, `petscmat.h`, `HYPRE_config.h`). PETSc and hypre have no OpenMP and use 32-bit indices, which is enough for 1.28M rows. PETSc is built with `--with-debugging=0` and `--with-blas-lib=-lblas`; the `libblas.so.3` alternative points to OpenBLAS's pthreads build. The headers do not say which factor shift type `PCILU` and `PCBJACOBI`'s sub-PC use by default.
+- Everything ADR-045 and ADR-046 print, and the results recorded for ADR-021, 023, 035, 041 and 042.
+- No march of the step exists on this machine: no state, log or Cp file. None has ever run under MPI. PETSc has never run on more than one rank in this repository. Nothing was run for this ADR. ADR-046's restrictions stand: nobody has looked at TMR's FUN3D results or its finest grid.
+
+**Decision.**
+
+*The harness (`tests/benchmark/backstep.cpp`).* The changes are written on top of the commit that adds ADR-046's lip print, so the MPI harness carries the same print.
+
+- *One process keeps today's path.* When `Comm::world().size()` is 1, with or without `mpirun -n 1`, the harness reads the `PolyMesh`, passes `Comm()` and builds the same solver objects as today.
+  - Today's helper functions (`wallStress`, `interpAt`, `separation`, `columnsAt`, `stationProfile`, the checkpoint's reader and writer, `saveState`) are left textually unchanged. The MPI path has its own. Turning them into templates could change what is inlined, and with it floating-point contraction.
+  - A one-rank `DistributedMesh` is not used. By reading, it renumbers points in first-touch order and emits boundary faces in a different order (`DistributedMesh.cpp:145-156`, `Geometry.cpp:168-191`). The boundary contributions are added with atomics in face order (`Geometry.cpp:68-72`, :93-94), so its geometry could differ from `PolyMesh`'s in the last bits.
+  - The serial path changes in five places only: (i) to (iii) below, and (iv) `VIBEFLOW_BS_KEEP_CKPT`, which keeps the checkpoint when set, and (v) `VIBEFLOW_BS_SWEEPS`, which sets the sweep count and `nonOrthTol = 0` when set. (iv) and (v) change nothing when unset.
+    - (i) with `VIBEFLOW_BS_RESUME` set and any `<out>.ckpt.*of*` file present, it prints a line beginning `REFUSED` and exits with code 3 before it opens, writes or removes any file;
+    - (ii) it prints the `EQ` line below every 50 steps;
+    - (iii) it prints the `SOLVES` line before FINAL.
+- *More than one process.*
+  - The mesh is built by `RawMesh::fromHexFile`, then `DistributedMesh(raw, Comm::world(), PartitionMethod::RCB)`.
+  - The extents come from `raw.points`, which is parsed by the same code as `PolyMesh`'s (`RawMesh.cpp:45-58`, `PolyMesh.cpp:14-26`).
+  - `Comm::world()` goes to `PisoSolver`, `NativeCG`, `NativeBiCGStab` and `PetscSolver`. `PetscSolver` builds its own row map (below).
+  - All extraction runs on every rank, including `boundaryPressure()`, which exchanges halos. Only the writes happen on rank 0.
+- *Startup and errors.*
+  - `ParallelScope` is constructed before `PetscInitialize`, as in `test_backends.cpp:34-38`.
+  - Under MPI, every error exit (`std::exit` paths, and any exception caught at the top of `main`, `chk()`'s included) goes through `MPI_Abort`.
+  - `VIBEFLOW_BS_DEBUG` is refused on more than one rank.
+  - `ilu` and `gamg` are refused on more than one rank, with exit code 2.
+- *Every decision is taken from identical data on every rank.*
+  - *The Courant number.* The harness's own host loop and formula, over owned cells. The maximum goes through `comm.max`. The position it prints comes from a max-location whose tie goes to the smallest global id, which is what serial's first-index rule picks.
+  - *The bottom wall.* Its faces carry (x, Cf, wall-cell p, extrapolated wall p). They are gathered to every rank with `Comm::alltoallv` and sorted by x. x_r, Cf(−4), p40, the lip print and the quasi-steady drift are then computed from the same arrays everywhere.
+  - *`relChange`.* It reduces both its difference and its scale with `comm.max`, and its positions use the Courant number's max-location rule.
+  - *The centre column at x = −4.* Found with `comm.max` and `comm.min`. The row nearest y = 5 is chosen from gathered (|y − 5|, y, u), with the tie to the lower y.
+  - Every break (non-finite, steady, quasi-steady, limits, stop) follows from these values.
+  - Each step's non-orthogonal sweep count is the increase over that step in the pressure solver's solve count, as the `SOLVES` wrapper counts it: one solve per sweep, summed over the step's correctors. `StepReport.nonOrthSweeps` holds only the last corrector's count (`Piso.cpp:813`, :1186). This count is reduced to its minimum and maximum over ranks.
+- *Station profiles.* `stationProfile` today drops faces whose neighbour is a ghost (:259). Under MPI, an interface face is taken once, on the rank whose cell has the smaller global id. Ghost global ids arrive by one halo exchange of a `ScalarField` holding `globalCellId`, which is exact in double. The face uses the ghost's own centroid and velocity. The rows are gathered to rank 0 and sorted as serial sorts them.
+- *Output.*
+  - Rank 0 writes every file, the FINAL line and the lip print, in today's formats.
+  - `.state` and `.state.<step>` are written in global (file) cell order, so a state from any rank count starts any march, serial or MPI.
+  - Volumes and patch counts are summed over ranks.
+  - The `seconds` in FINAL and in the 50-step lines, and the `timings:` line, are rank 0's. ADR-046's 168-hour limit for step 5 is read from them.
+- *The `EQ` line, every 50 steps, on rank 0, `%.17g`:*
+  - step, dt, C and the global id of the cell that sets it, x_r, Cf(−4), u_c(−4), the bubble's two values, the two drifts, `change`, the three `relChange` values and the global ids of the cells that set their scales (the largest |u_i|, k and ω);
+  - the number of steps since the last line at which that step's non-orthogonal sweep count differed between ranks (its `comm.min` not equal to its `comm.max`), and the smallest and largest count over those steps and ranks.
+  
+  It exists for comparing runs and is never judged against a reference.
+- *The `SOLVES` line.* A wrapper in the harness forwards `solve`, `notifyMatrixChanged` and `backendName` to each solver. Missing `notifyMatrixChanged` would freeze `PetscSolver`'s matrix (`LinearSolver.hpp:42`). The wrapper counts the solves whose `SolveReport` says not converged; today these reports are discarded (`Piso.cpp:771`, :1088, `Sst.cpp:378`). Iterations and solve counts come from the existing counters (`LinearSolver.hpp:46-55`). The line is printed once, before FINAL, and is reported, not judged.
+- *Checkpoints.*
+  - The serial checkpoint, `<out>.ckpt` with magic `VFBSCK01`, is not changed.
+  - On more than one rank, each rank writes `<out>.ckpt.<rank>of<P>`, with magic `VFBSCK02`. Its header holds P, the rank, the local counts and an FNV-1a hash of the owned global ids. It stores the rank's own u, p, k, ω and its own copy of F on every local face, interface faces included. It also stores the march's bookkeeping as `VFBSCK01` holds it: step, sinceChange, holdUntil, refused, time, dtNow, ceiling, seconds and the three histories. A restore therefore puts back exactly what that rank had. Halos are then exchanged by `setState` and `setTurbulence`.
+  - A resume goes ahead only if every rank finds a file with the same P, the same hash and the same step, decided collectively.
+  - On more than one rank, with `VIBEFLOW_BS_RESUME` set, any of these leads to a refusal: a missing or mismatched file on any rank, a serial `<out>.ckpt` present, or per-rank files of another P. Every rank then prints `REFUSED` on rank 0 and exits with code 3, before any file is opened for writing or removed. With `VIBEFLOW_BS_RESUME` set and no checkpoint of any kind, a march starts fresh, as serial does.
+  - So a resume never crosses from serial to MPI or back, or from one P to another, as ADR-046 requires. As in serial, a resume restarts BDF at first order.
+- *Default solvers on more than one rank.* The pressure keeps `cg+hypre`. Momentum, k and ω use `bicgstab+bjilu`.
+- *Variables.* They fall into a header class of their own, "ADR-047's equivalence gates only; never a physics verdict":
+  - `VIBEFLOW_BS_SWEEPS=<n>`: n non-orthogonal sweeps and `nonOrthTol = 0`;
+  - `VIBEFLOW_BS_KEEP_CKPT=1`: the checkpoint is kept when the march ends.
+  
+  The existing exploration variables `VIBEFLOW_BS_STOP`, `_SAVE_AT`, `_CKPT_EVERY`, `VIBEFLOW_CONVECTION`, `VIBEFLOW_CORRECTORS`, `VIBEFLOW_PRESSURE` and `VIBEFLOW_MOMENTUM` are used by the gates below as ADR-046's print check uses `VIBEFLOW_BS_STOP` and `VIBEFLOW_CONVECTION`. The gates compare the harness with itself, never with a reference. Gate 6 sets none of them.
+
+*Solver code.* Both changes are stated here before they are written. The full suite runs after them (CLAUDE.md rule 3).
+
+- `src/physics/Piso.cpp:811`: the stop compares against `comm_.max(scale)`. `Comm::max` returns its argument at one rank (`Parallel.cpp:42-47`), so serial runs are unchanged.
+- `src/linalg/PetscSolver.{hpp,cpp}`:
+  - *A new preconditioner string, `bjilu`.* It is `PCBJACOBI` with one block per process. On the first solve, after `KSPSetOperators` and `KSPSetUp`, each block's KSP is set to `KSPPREONLY` and its PC to `PCILU`. Zero fill levels and natural ordering are set explicitly. The `ilu` branch and every serial caller are untouched.
+  - *`static std::vector<Index> rowMap(const Mesh&, const Comm&)`.* Owned rows are offset + local index, where each rank's offset is the sum of the owned counts of the ranks before it (`Comm::allgatherv`). Ghost rows arrive by one halo exchange of a `ScalarField` holding the owned rows. On more than one rank, an empty `globalRowOf` is filled by this function. `test_backends_mpi` and the harness therefore use the same code.
+  - *A collective check, on more than one rank, of any map passed or built.* Every owned row must be `rstart + c` for the range `MatGetOwnershipRange` gives. Every ghost's row must equal its owner's, compared through one halo exchange of the owned rows. Failure on any rank makes every rank throw. The serial branch is untouched.
+  - *A read-only `describe()`.* It returns the KSP and PC types and, after a solve, for `bjilu`, the number of blocks and each block's KSP type, PC type, fill level and whatever factor options PETSc reports for it (shift type and amount, zero pivot). For `ilu` it returns the same factor options.
+
+Any further change to `src/` found necessary is declared in a revision of this ADR before it is written, and the full suite runs after it.
+
+*A test of the parallel backends (`tests/unit/test_backends_mpi.cpp`, new).*
+
+- *The mesh.* `RawMesh::fromVertexFile(16, vertices_n16_s25.txt)`, partitioned by RCB, as `mms_parallel` does (4,096 cells).
+- *Two systems.*
+  - Diffusion: `DiffusionOperator(mesh, 1.0, comm)` solved by `op.solve` at its own 1e-14 (`Diffusion.cpp:123`), with `test_backends`' source and boundary values.
+  - Convection–diffusion: `assembleMatrix` and `assembleSource`, plus first-order upwind coefficients for a uniform velocity added to the `LinearSystem`'s `diag`, `upper` and `lower` views (`LinearSystem.hpp:17-20`). It is nonsymmetric and diagonally dominant, and is solved once at relTol 1e-12, absTol 1e-16 and a cap of 5,000.
+- *How it judges.* The serial run (P = 1, a one-rank `DistributedMesh`) writes each solution in global id order (`%.17g`). The runs under `mpirun -n 2, 3, 4` read those files and judge themselves.
+- *Commit order.* It is committed first, failing against a stubbed `bjilu` that throws. Then the code follows.
+
+*The gate script (`tests/benchmark/backstep_mpi_gate.py`, new).*
+
+- It is called as `backstep_mpi_gate.py <build> <reference build> <out> [S0's directory]`. It runs gates 0 to 6 below and judges them.
+- *Directories.* Each run gets a new, empty directory. The exceptions are gate 0(d), gates 5(b) to 5(d) and gate 6's own resume, as stated there.
+- *MPI runs.*
+  - They use `mpirun --oversubscribe --allow-run-as-root --bind-to none --report-bindings -n N`, with `OMP_NUM_THREADS=1` and `OMP_PROC_BIND=false`. The reported bindings are recorded.
+  - At most one of this ADR's MPI runs is going at a time.
+  - Every run of gates 1 to 5 is killed when it has taken ten times its P = 1 run's time, and that counts as a failure (a hang). The P = 1 run's time is measured under the same load.
+- *What each run sets.* Each run sets the variables its gate names and no others.
+- *Untouched.* `backstep_gate.py` and `make_mesh.py` are not edited.
+
+**Gates**, stated before the code. The P = 1 runs below are the serial harness without `mpirun`, on one thread, unless a gate says otherwise. Differences are taken point by point in the same order: cells in global order, files row by row. The comparison scales are fixed now:
+
+- *Fields.* For p, k and ω, the scale S is the largest magnitude of that field in the P = 1 run. For u, v and w, S is the largest |**u**| over cells in the P = 1 run, because v and w are near zero in places (w everywhere, in the one-cell slab).
+- *`%.10e` files.* A column is within b if |Δ| ≤ b·S + 1e-10·|v₁|, where S is that column's largest magnitude in the P = 1 file and v₁ the P = 1 value. The second term is one unit in the last printed digit. The x columns must be byte-identical, with the same rows.
+- *Scalars of the `EQ` line.* |Δ| ≤ b·|v₁|.
+
+0. *The serial path is unchanged.* The reference binary is built from the lip-print commit, which S0 also runs. ADR-047's binary is run without `mpirun` and with `mpirun -n 1`. All on one thread, at level 2.
+   - (a) ADR-046's print check: `VIBEFLOW_BS_SAVE=1`, `VIBEFLOW_BS_STOP=200`, `VIBEFLOW_CONVECTION=upwind`, `L2.hex <out> 0.16 5000 1`.
+   - (b) From (a)'s reference `.state`: `VIBEFLOW_BS_INIT=<it>`, `VIBEFLOW_BS_SAVE=1`, `VIBEFLOW_BS_STOP=100`, `VIBEFLOW_BS_CKPT_EVERY=50`, linear upwind, `L2.hex <out> 0.16 5000 1`.
+   - (c) (b)'s command with `VIBEFLOW_BS_STOP=75`, on both binaries (ADR-047's with `VIBEFLOW_BS_KEEP_CKPT=1`).
+     - The script copies the reference's `<out>.ckpt` as soon as it appears. The rename in `writeCheckpoint` makes the file complete when it appears (:308), and it exists from step 50 until the march ends.
+     - The two step-50 checkpoints must be byte-identical except for the 8 bytes of `seconds` at offset 64.
+   - (d) Each binary resumes, in a new directory, from a copy of the reference's step-50 checkpoint under the same prefix, with `VIBEFLOW_BS_RESUME=1`, `VIBEFLOW_BS_STOP=100` and (b)'s other variables.
+   
+   *Judged:*
+   - in (a) and (b), all three runs of each command agree byte for byte in FINAL without `seconds`, in `.cf`, `.cp`, `.cpw`, `.prof` and `.state`, and in the lip print's lines;
+   - (c) as stated;
+   - in (d), the two resumed runs agree byte for byte in the same outputs.
+   
+   The diff shows the serial checkpoint's reader and writer unedited. *Reason:* ADR-046 step 7's own test, with nothing loosened, plus the resume path that the serial refusal now touches.
+
+1. *PETSc on more than one rank* (`test_backends_mpi`). Every solve must report converged. Bounds are absolute, max |Δ| ≤ 1e-9, as in `test_backends` (`test_backends.cpp:107-108`). There |u| ≤ e^1.5 ≈ 4.5, so this is about 2e-10 of max.
+   - (a) At one rank, `bicgstab+bjilu` against `bicgstab+ilu` on the convection system, within 1e-9. Whether they are bitwise equal, and their iteration counts, are reported.
+   - (b) At 2, 3 and 4 ranks, each configuration against its own serial solution, in global order, within 1e-9:
+     - diffusion: `cg+jacobi`, `cg+hypre`;
+     - convection: `bicgstab+jacobi`, `bicgstab+bjilu`. `bicgstab+bjilu` is also compared with serial `bicgstab+ilu`.
+   - (c) `describe()`, called after a solve, shows P blocks, each `preonly` with ILU at zero fill.
+   - (d) On two ranks, a map with permuted owned rows and a map with a wrong ghost row each make the constructor throw on every rank.
+   
+   Reported: `ilu` on two ranks, which is expected to be refused by PETSc or to fail there; the factor options of both PCs.
+
+2. *Round-off, calibrated before any MPI run.* Here the preconditioners do not depend on the rank count, and the sweep counts are fixed.
+   - *Settings.* `VIBEFLOW_PRESSURE=cg+jacobi`, `VIBEFLOW_MOMENTUM=bicgstab+jacobi`, `VIBEFLOW_BS_SWEEPS=2`, `VIBEFLOW_CORRECTORS=2`, `VIBEFLOW_BS_STOP=150`, `VIBEFLOW_BS_SAVE_AT=50,100`, `VIBEFLOW_BS_SAVE=1`, linear upwind, `L2.hex <out> 0.16 5000 1` from the uniform stream. 150 steps include the first ramp check, at step 101.
+   - *Calibration.* First, P = 1 on one thread and P = 1 on two threads, the same binary and settings. The two differ only by the order of the atomic additions and reductions, which is the kind of difference MPI introduces. For each judged quantity q, the floor f_q is their difference in the metric above, and the bound is b_q = max(1e-10, 10·f_q). The floors and bounds are recorded before any P > 1 run of this gate.
+   - *If a floor is too large.* If any f_q exceeds 1e-7, a revision may shorten the march, never below 101 steps, and the calibration is repeated. That revision is made before any P > 1 run, and it changes no rule of the bound.
+   - *Judged, P = 2, 3, 4 against the one-thread P = 1:*
+     - u, v, w, p, k and ω of `.state.50`, `.state.100` and `.state`, each within b;
+     - `.cf`, `.cp`, `.cpw` and `.prof` within b, as defined above;
+     - the `EQ` lines' C, x_r (when positive in P = 1; −1 must stay −1), Cf(−4), u_c(−4), `change` and the three `relChange` values, within b;
+     - the lip print's values within b;
+     - the steps and outcomes (doubles, holds, halves) of the ramp decisions identical, and FINAL's `steps`, `full`, `dt`, `time` and `settled` identical.
+   - *Reported:* the bubble values and drifts; the margin of each ramp decision, |C − threshold| / threshold; the `SOLVES` lines beside P = 1's.
+   
+   *Reason:* the earlier MPI gates' "ten digits" were measured on one L2 scalar of small, well-conditioned meshes, so they are a floor here, not a derivation. The threads' own scatter sets the scale, and the factor 10 is chosen. A pressure solve that reaches its 5,000-iteration cap is reported. The cost and the stability of two correctors are unknown. Any change to the settings is a revision made after the P = 1 runs and before any P > 1 run.
+
+3. *The production solvers, short.* No variable is set but `VIBEFLOW_BS_STOP=50` and `VIBEFLOW_BS_SAVE=1`. The run is `L2.hex <out> 0.16 5000 1` from the uniform stream, with the default solvers (`bicgstab+bjilu` on P > 1), eight correctors and the 1e-8 non-orthogonal stop, at P = 1, 2, 3, 4.
+   - *Judged:*
+     - the fields of `.state`, and `.cf`, `.cp`, `.cpw` and `.prof`, within 1e-5;
+     - the step-50 `EQ` line's C, Cf(−4) and u_c(−4) within 1e-5;
+     - FINAL's `steps`, `full`, `dt`, `time` and `settled` identical;
+     - the number of steps with differing sweep counts zero on every `EQ` line.
+   - *Reported:* x_r, the bubble and the drifts; the `SOLVES` lines; a P = 1 two-thread run of the same command, as a floor.
+   
+   *Reason:* 1e-5 is a chosen bound, not a derived one. The stops that depend on the rank count are the non-orthogonal loop's 1e-8 of max|F*|, BoomerAMG's 1e-10 and bjilu-BiCGStab's 1e-13, both on preconditioned norms. Summed over 50 steps and amplified at the corner by a factor this ADR cannot derive, they are predicted at 1e-8 to 1e-6. A step-to-step wobble of 200 × nonOrthTol, about 2e-6 (ADR-038's results), is already seen in serial. This gate is the only one before gate 6 that runs the converging non-orthogonal loop under MPI. The equal sweep counts check the fix at :811 directly.
+
+4. *Extraction and the state across rank counts.* `VIBEFLOW_BS_STOP=0`, `VIBEFLOW_BS_SAVE=1`.
+   - (i) to (iv): `L2.hex`, with `VIBEFLOW_BS_INIT=<gate 3's P = 1 .state>`, at P = 1, 2, 3, 4. Then P = 1 from the `.state` the P = 4 run wrote.
+     - (i) the u…ω columns of every P > 1 `.state` are byte-identical to P = 1's, and x, y are within 1e-12 absolute;
+     - (ii) `.cp` byte-identical, because p and the face x are the same, and p40 comes from the same sorted arrays;
+     - (iii) `.cf`, `.cpw` and `.prof` within 1e-10 (with the last-digit term), with the same rows;
+     - (iv) the P = 1 run from P = 4's state agrees byte for byte with the P = 1 run from the serial state in `.cf`, `.cp`, `.cpw`, `.prof` and `.state`.
+   - (v) `L1.hex` from gate 3's P = 1 L2 state, at P = 1 to 4 (the coarse-to-fine injection that gate 6 and step 5 use).
+     - The script computes, from the two state files, each fine cell's margin: the second-nearest coarse squared distance minus the nearest, relative to the nearest.
+     - u…ω must be byte-identical at every cell whose margin exceeds 1e-12. The count and positions of the others are reported.
+   - *The station and centre-column margins.* Before any P > 1 run, the script reports P = 1's smallest |x_c − x_station| at each station and the margin between the two nearest |y − 5| at x = −4. A station whose margin is below 1e-12 has its rows reported, not judged. A u_c(−4) margin below 1e-12 is reported beside every u_c(−4) comparison.
+   
+   x_r and Cf(−4) are computed from `.cf` by the script and reported. FINAL holds defaults in this mode. *Reason:* the same-grid injection is exact, because each cell's nearest coarse cell is itself, by a margin of a cell size. So whatever differs is the geometry's round-off or a gathering error.
+
+5. *Checkpoint and resume under MPI.* Gate 2's settings, at P = 4 and at P = 1.
+   - (a) `VIBEFLOW_BS_STOP=120`, `VIBEFLOW_BS_CKPT_EVERY=10`, `VIBEFLOW_BS_KEEP_CKPT=1`. The checkpoint kept is step 120's (it is written before the stop, `backstep.cpp:761-778`), after the step-101 ramp decision and two 50-step lines. The script checks every `VFBSCK02` file's step, sinceChange, holdUntil, refused, time, dtNow, ceiling and step history against P = 1's `VFBSCK01` byte for byte. It checks their x_r and Cf(−4) histories within gate 2's calibrated b of P = 1's, where an x_r of −1 must stay −1. These two are computed from the flow and differ from serial by round-off. The four files' bookkeeping must be byte-identical to each other, except `seconds`.
+   - Each of (b) to (d) runs in a new directory into which the script copies (a)'s checkpoint files, under the same prefix, and records their hashes.
+   - (b) `VIBEFLOW_BS_RESUME=1`, `VIBEFLOW_BS_STOP=0`, `VIBEFLOW_BS_KEEP_CKPT=1`. `.cf`, `.cp`, `.cpw`, `.prof` and `.state` must match (a)'s byte for byte. The restore is exact, and the wall pressure is extrapolated cold in both (see the context).
+   - (c) Three cross-resumes, each with `VIBEFLOW_BS_RESUME=1` and `VIBEFLOW_BS_STOP=150`: P = 4's files at P = 3; P = 4's files at P = 1 without `mpirun`; P = 1's `<out>.ckpt` at P = 4. Each must print `REFUSED`, exit with code 3, and leave every file's hash unchanged and no new file.
+   - (d) `VIBEFLOW_BS_RESUME=1`, `VIBEFLOW_BS_STOP=150`, `VIBEFLOW_BS_CKPT_EVERY=10` from (a)'s step-120 checkpoints, P = 4 against P = 1.
+     - Judged within gate 2's calibrated b: the final `.state`, `.cf`, `.cp`, `.cpw` and `.prof`, the step-150 `EQ` line and the lip print.
+     - FINAL's `steps`, `full`, `dt` and `time` identical.
+   
+   *Reason:* ADR-046 requires that an interrupted march resume. A serial resume does not match an uninterrupted march, because BDF restarts at first order, so (d) compares resumes with resumes.
+
+6. *The production march, and the Cp tolerance ADR-046 asks for.*
+   - *The command.* `mpirun ... -n 4 <build>/tests/backstep <S0's L1.hex> <out> 0.08 5000 <U_in>`, with `VIBEFLOW_BS_INIT=<S0's L2.state>`, `VIBEFLOW_BS_SAVE=1`, `OMP_NUM_THREADS=1` and `OMP_PROC_BIND=false`. That is S0's L1 command (`backstep_gate.py:180`) under MPI.
+     - `<S0's L1.hex>` is the file S0's own L1 read, recorded with its hash.
+     - `<U_in>` is recomputed exactly as `backstep_gate.py:172` and :74 compute it: 0.998 / uc4 from the FINAL line of S0's `L2_cal.log`, formatted with `%.12g`. The string is recorded.
+     - The march runs to its end by ADR-045's ramp and settling.
+   - *The reference* is S0's L1, marched by the lip-print binary on two threads from the same `L2.state`.
+     - If S0 is started over under ADR-046 step 7 after gate 6 has started, gate 6's run is abandoned, reported and not judged. It is run again from the new S0's `L2.state`.
+     - A resume, if needed, is on four ranks with `VIBEFLOW_BS_RESUME=1`, in the same directory, appending to the log.
+   - *Time limits.* The script kills the run, and the gate fails, when its printed seconds pass 54,000, three times ADR-045's L1 (5.0 hours), or when no 50-step line has appeared for an hour.
+   - *Judged:*
+     - (i) *Cp, the tolerance τ = 0.00048.*
+       - |ΔCp| ≤ 0.00048 at every bottom-wall face with −4 ≤ x ≤ 30, on both floors, in the final `.cp`. Face x values are bit-identical, so faces pair one to one.
+       - At three points by the gate reading: the two lip points (the corner and −0.0208296) and the lower floor's first point x = 0, where `floor_values` also extrapolates. The face reading gives the same Δ, because both are linear in ours and the reference cancels.
+       - For the window means m of both lip values, over each march's last 1,000 steps at its settled dt (ADR-046's window).
+     - (ii) x_r and Cf(−4) within 0.2% of S0's L1, which is ADR-045's quasi-steady definition, and u_c(−4) within 0.0002.
+     - (iii) The march settles, steady or quasi-steady, at the dt S0's L1 settled at.
+     - (iv) The number of steps with differing sweep counts zero on every `EQ` line.
+   - *The control, in every outcome.* Once S0's chain has ended and the cores allow, a two-thread re-march of S0's L1 command (lip-print binary, new directory) is run. Its differences from S0's L1, in the same quantities, are reported beside gate 6's. It changes no verdict.
+   
+   *Reason:* 0.00048 is ADR-046's cap, applied over the whole stretch of wall that step 5's rule reads. The comparison includes S0's own two-thread scatter and the quasi-steady march's phase, so it errs towards failing. That risk is accepted here, because ADR-047 cannot loosen ADR-046's cap. Step 5 may use MPI only with the rank count (4), the partition (RCB), the launch form and the commit this gate passed with.
+
+7. *Nothing else moves.* After the two solver changes, the commands are, in order:
+   - `sh cases/cylinder/make_meshes.sh`;
+   - `VIBEFLOW_SUITE_SKIP="de Vahl Davis,NASA TMR" OMP_NUM_THREADS=2 python3 tests/mms/run_gates.py v0 v1 v2 v2b`;
+   - the heated cavity alone: `OMP_NUM_THREADS=2 OMP_PROC_BIND=false build/tests/heated_cavity`, from the repository root, judged by its exit code, as `run_gates.py:209` judges it;
+   - the flat plate alone: `OMP_NUM_THREADS=2 OMP_PROC_BIND=false python3 tests/benchmark/flat_plate_gate.py`, judged by its exit code, as `run_gates.py:228` does.
+   
+   The venv is active throughout. The `SKIPPED` lines are read, and a skipped gate is not counted as passed. `OMP_NUM_THREADS=2` sets the cost only, as CLAUDE.md uses it for comparison with the records.
+
+ADR-047 *has passed* when gates 0 to 7 have all passed and every deliberate fault below has made its gate fail, all on one commit recorded by its hash. Gate 7 must have run on that commit's `src/`. Any later change to `backstep.cpp` or `src/` voids the pass until gates 0 to 6, and gate 7 if `src/` changed, have passed again.
+
+**Deliberate faults.** Each is a one-line edit in a scratch build, never committed, and its diff is recorded in the results. Each must make its gate fail. A hang past the gate's time limit, or an abort, counts as failing. A fault that does not make its gate fail is a failure of that gate, except where an exception is stated here.
+
+- F1: `PisoSolver` given `Comm()` on more than one rank. Gate 2 at P = 4 must fail. Predicted: a rank without outlet faces takes the domain as closed and removes the pressure's mean (`Piso.cpp:82`, :761-768).
+- F2: `Piso.cpp:811` back to the rank-local scale. Gate 3 at P = 4. It is caught if:
+  - an `EQ` line shows a step with differing sweep counts;
+  - the run hangs or aborts;
+  - or gate 3 fails otherwise.
+- F3: in `PetscSolver::rowMap`, ghost rows taken as local indices, without the halo exchange. Gate 1(b) at P = 2 must fail, by the constructor's check or by the solutions.
+- F4: the bottom wall's faces not gathered. Gate 4 at P = 4 must fail.
+- F5: the Courant number's maximum taken over the rank's own cells only, without `comm.max`. Gate 2 at P = 2, 3, 4 must fail on the `EQ` lines' C.
+- F6: `relChange`'s scale taken locally. Gate 2 at P = 2, 3, 4 must fail on `change` or on one of the three `relChange` values.
+
+The exception for F5 and F6: for each P separately, from the global ids that P = 1's `EQ` lines print and that P's partition, the script decides before any fault run whether rank 0 owns the cell that sets C (F5), and whether it owns the cells that set the three `relChange` scales (F6), at every 50-step line. Where it does, that fault cannot show on rank 0's print and is recorded as untestable at that P, not as a failure. At every other P the fault must make gate 2 fail.
+
+**What a failure means.**
+
+- Any gate failing means ADR-047 has not passed. ADR-046's step 5 then runs on two threads, as its step 7 says, and nothing else in ADR-046 changes. The MPI harness goes into the known limits as not shown to give the serial answer, with what failed.
+- *Fixing a defect and running again.* A failure may be fixed and the gate run again only when a defect in this ADR's code is shown independently of the failing gate's numbers. That means a deterministic gate (0, 1, 2, 4 or 5), or a new test declared in a revision that fails before the fix and passes after it.
+  - The fix is declared in a revision before the rerun.
+  - The failed run is reported beside the new one, and no bound changes (CLAUDE.md rule 2).
+  - After any code fix, gates 0 to 5 run again in full, and gate 7 if `src/` changed.
+  - Gate 6 is run again at most once.
+- Gate 7 failing means the solver changes are not neutral as claimed. They are not merged until it passes, and the failure is recorded.
+- Gate 6 failing is a verdict on MPI for step 5, not on S0 or on ADR-045's results.
+
+**Order, beside ADR-046.**
+
+1. This ADR is committed. ADR-046's first revision then states the lip print, and the print is written and passes ADR-046's check.
+2. *A build of its own for S0.* S0 runs the binary built from the lip-print commit. That build lives in a WSL clone of its own, checked out at that commit, and nothing of ADR-047 is ever built into it. The commit, the path and the clone's size on disk are recorded before S0's first step.
+   - `backstep_gate.py` takes its build directory as an argument (:151) and makes its meshes in its own clone's `cases/backstep`.
+   - `run_gates.py` keeps `build/` (:21), in the working clone.
+   - This ADR therefore changes nothing that S0 runs, and gate 0 checks the claim independently.
+   - Which binary step 6, and a two-thread step 5, run is ADR-046's to state, in its first revision.
+3. `test_backends_mpi` is committed failing against the stub. Then the solver changes, then gates 1 and 7.
+4. The harness and the gate script, then gates 0 and 2 to 5, and the faults. None of them needs S0.
+5. Gate 6 starts once gates 0 to 5 have passed and S0's `L2.state` exists, beside S0's L1 if the cores allow. S0's files are read and never written.
+6. *Cores.* Throughout, ADR-047's runs and ADR-046's together use at most six cores, counting ranks × threads (ADR-046 step 7). While S0 runs on two threads, this ADR's runs use at most four. While step 5 runs on four ranks, only one two-thread ablation of step 6 fits beside it, so step 6 takes about twice the wall time that ADR-046's two-at-a-time example assumes.
+7. If ADR-047 has not passed when step 5 is ready to start, step 5 runs on two threads. This ADR does not delay it.
+8. If it has passed, step 5 under MPI is `mpirun --oversubscribe --allow-run-as-root --bind-to none --report-bindings -n 4 <ADR-047 build>/tests/backstep <S0's L0.hex> <out> 0.04 5000 <U_in>`, with `VIBEFLOW_BS_SAVE=1`, `VIBEFLOW_BS_INIT=<S0's L1.state>`, `OMP_NUM_THREADS=1` and `OMP_PROC_BIND=false`.
+   - `<U_in>` is the same `%.12g` string as gate 6's.
+   - The build is of exactly the commit on which ADR-047 passed, recorded by its hash before the first step.
+   - It resumes on four ranks only. Its `seconds` are rank 0's.
+9. *Data seen.* Every Cp, Cf or lip value from ADR-047's runs counts as data seen for any later revision of ADR-046, and that revision lists it. ADR-046's rules use only ADR-046's own marches.
+
+**Predictions**, made before any code or run. They are magnitudes, not targets.
+
+- Gate 0: identity, by construction.
+- Gate 1: bitwise equality at one rank if `PCBJACOBI`'s single block factors with the same ILU routine and options as `PCILU`. That is from PETSc's design and not verified. At 2 to 4 ranks, agreement near the solve tolerance.
+- Gate 2: floors of 1e-14 to 1e-11, and MPI differences of the same order.
+- Gate 3: 1e-8 to 1e-6. On the flat plate, swapping the momentum solver between native Jacobi BiCGStab and ILU(0), or BoomerAMG, left Cf, CD and the ν_t peak equal to ten digits (ADR-042's results). That case was steady, and the step's corner may amplify differences more.
+- Gate 6: no prediction. S0's lip band B has not been seen. ADR-045 defines a quasi-steady march only to 0.2% in x_r and Cf(−4), which the draft's own estimate puts at about 0.0004 in Cp behind the step. Gate 6 may fail against a single realization with no MPI defect, and the control is there to show it.
+- Speed: perhaps two to three times on four ranks, limited by memory bandwidth. This is an estimate; gate 6's time per step measures it.
+
+**Reported, not judged.**
+
+- Every gate's measured largest differences, and where they occur.
+- The ramp's decision sequences and margins, beside S0's.
+- Each solver's iteration totals and unconverged solves.
+- For each rank count: the partition's cells per rank, its interface faces, and which ranks own the last four upstream wall cells, the cells of the x = −4 column, and the cells that set C and the largest |u|.
+- The tie margins of gate 4.
+- Time per step serially and under MPI on level 1.
+- The OpenMPI bindings, the toolchain, and every commit run.
+
+**Cost**, estimated before any run from ADR-045's two-core numbers (level 2 at about 5.3 s a step on two threads, level 1 at 13.8 s) and not measured on this machine.
+
+- Gate 0: about 1,100 one-thread level-2 steps over both binaries, about 1 to 2 hours at three runs at a time.
+- Gate 1: minutes.
+- Gate 2: five runs of 150 steps, plus the fault runs. The Jacobi solves set the cost, which is not known.
+- Gates 3 to 5: under two hours together.
+- Gate 6: ADR-045's L1 took 5.0 hours on two threads, on its two-core machine. On four ranks perhaps 2 to 3 hours. The control takes about as long as S0's L1.
+- Gate 7: the suite's hours, the heated cavity's about 2.5 and the flat plate's several.
+- Code: about 800 to 1,100 lines, in the harness, the test, the script and about 60 lines of solver code.
+- Disk: gate 6's states and checkpoints are about 150 MB. The second clone and its build are measured before S0. ADR-046's 2 GB floor for step 5 stands.
+
+## ADR-048 — "Fixtures are current" and the runner's CPU: the generator's kernels pinned. Stated before the change and the runs, answered after
+
+**Context.** CI's step "Fixtures are current" runs `python prototype/dump_fixtures.py` and then `git diff --exit-code tests/fixtures/`. The workflow has run 11 times, 12 jobs counting a re-run, from 2026-09-26 to 2026-10-06. Six jobs failed at this step and six passed:
+
+| run | date | branch | region | step |
+| --- | --- | --- | --- | --- |
+| 36259343238 | 09-26 | main | westcentralus | fail |
+| 36425851561 | 09-28 | main | westus | fail |
+| 37292822208 | 10-05 | main | westus3 | fail |
+| 37296772804 | 10-05 | setup-review | centralus | pass |
+| 37298939502 | 10-05 | setup-review | westus3 | pass |
+| 37298971473 | 10-05 | setup-review (PR) | centralus | pass |
+| 37299357936 | 10-05 | main | eastus | fail |
+| 37469104182 | 10-06 | adr-046 | westus3 | pass |
+| 37469143648 | 10-06 | adr-046 (PR) | centralus | pass |
+| 37513026138, attempt 1 | 10-06 | adr-047 | westcentralus | fail |
+| 37513026138, attempt 2 | 10-06 | adr-047 | westus3 | fail |
+| 37513094393 | 10-06 | adr-047 (PR) | centralus | pass |
+
+All twelve ran on ubuntu-24.04 images and installed numpy 2.5.3 and scipy 1.18.1 from the same two wheels. Eleven ran CPython 3.12.14 and one passing run ran 3.12.15. The region does not separate the outcomes: westus3 appears on both sides. The six failure diffs are byte-identical, 765 lines in two files:
+
+- `solution_caseA.txt`: 238 of 512 lines (blob 0ac916f → 5bf52bf);
+- `MANIFEST.txt`: two lines (blob acadaa2 → b244ecb), `max_nonorthogonality_deg` 25.650505504806468 → …471 and `solution_caseA_L2_error` 0.0056073824656658342 → …324.
+
+The other 17 fixture files never differ. A failure at this step skips the next one, so the v0 gates did not run on CI in those six jobs. That includes all four pushes to main that the workflow has run on, so main's head is red.
+
+No log names the processor. No step prints it, and the runner's set-up section gives the region and the image, not the CPU.
+
+**What the check is for.** The fixtures are a record of the Python reference. The check says that the committed record is what the generator gives now. That meaning holds only if the generator's output depends on the repository alone. Today it also depends on the runner's CPU.
+
+**Data seen before this was written.** Everything below was looked at read-only, in one session, and nothing was committed.
+
+- *The 12 logs*, as tabled above.
+- *A reproduction.* It ran on an Intel Xeon with AVX-512 (family 6, model 207, 4 cores) with CPython 3.12.3 and numpy 2.5.3 and scipy 1.18.1 from PyPI. The generator ran at 81de3a6 in a scratch copy.
+  - Natively, the 19 files regenerate with no diff. Both bundled OpenBLAS libraries report SkylakeX: numpy's (0.3.34) and scipy's (0.3.31.dev). numpy dispatches to X86_V4 and AVX512_SPR.
+  - With `OPENBLAS_CORETYPE=Haswell` (or `Zen`) and `NPY_DISABLE_CPU_FEATURES=X86_V4`, the diff is byte-identical to the six CI failures, git blob hashes included.
+  - *scipy's OpenBLAS moves `solution_caseA` and the L2 line.* With numpy's library on Haswell and scipy's on SkylakeX, all 512 lines match the committed ones. With scipy's on Haswell, the same 238 lines move.
+  - *Inside `op.solve`.* The matrix and the right-hand side are bit-identical. SuperLU's factors from `spla.splu` differ in 5,609 of 19,514 L entries and 6,555 of U, and the first solve differs in 229 of 512 entries. scipy 1.18.1's `_superlu` imports `dtrsv`, `dgemv`, `dtrsm`, `dgemm` and six other BLAS routines from scipy's bundled OpenBLAS (`nm -D`).
+  - *numpy's OpenBLAS.* `np.linalg.inv` in the least-squares gradient moves 150 of 4,608 entries by at most 1.4e-17. That does not reach u's 17 digits.
+  - *numpy's dispatch moves the non-orthogonality line.* In `non_orthogonality` the dot products and norms are bit-identical. `np.arccos` (float64) has two targets in numpy 2.5.3, X86_V4 and the X86_V2 baseline, and they differ by 1 ulp on 145 of 1,344 faces. Turning numpy's AVX-512 off moves nothing else.
+  - *Sizes.* `solution_caseA` moves by at most 4 ulp (3.3e-16 absolute, 7.2e-16 relative), the L2 line by 2 ulp and the non-orthogonality line by 1 ulp.
+  - *Other kernel sets give other bits again.* Sandybridge changes 332 lines and Prescott 299. `OPENBLAS_NUM_THREADS=1` changes nothing.
+  - *Both variables fail silently.* numpy accepts an unknown name in `NPY_DISABLE_CPU_FEATURES`. OpenBLAS ignores an unknown core type and detects the CPU instead.
+- *Readers.* Nothing in the repository reads `solution_caseA.txt` or `MANIFEST.txt`: not `src/`, `tests/`, `tools/`, `prototype/`, `cases/`, CI or `docs/`. The gates read these fixtures:
+  - the vertex files, as mesh input;
+  - the geometry files, at 1e-14 absolute in `test_geometry` and at 1e-13 in `check_vtu` (`cell_volume`, `cell_centre`);
+  - the connectivity, exactly.
+
+  None of those moves with the CPU. `crosscheck.py` compares the L2 values it computes afresh, Python against C++, at 1e-11 relative. `test_cgns` compares two C++ non-orthogonalities at 1e-10. No gate can see the 1e-16 movement, so the check is the only reader. The C++ side's own last digits already vary between passing runners (the geometry gate's printed non-orthogonality, the closure error, the C++ L2 at N = 32), all inside those tolerances.
+- *Not seen.* The CPU of any runner: the inference that the failing ones lack AVX-512 rests on the reproduction, not on an observation. The PC (i5-9600K: AVX2, no AVX-512) has not run the generator for this ADR.
+
+**Decision.**
+
+1. *The CPU is logged first.* A CI step before "Fixtures are current" prints:
+   - the CPU model and whether it has `avx512f`, from `/proc/cpuinfo`;
+   - the kernels numpy and scipy load: `numpy.show_runtime()`, with threadpoolctl installed so that it names OpenBLAS's core type.
+
+   The generator does not change in that commit. The workflow is then run by `workflow_dispatch` on it until it has failed three times and passed three times, or 20 runs at most.
+2. *The pin, in the generator.* Before it imports numpy, `prototype/dump_fixtures.py` sets three variables, overriding the environment:
+   - `OPENBLAS_CORETYPE=Haswell`;
+   - `OPENBLAS_NUM_THREADS=1`, which measured no effect here and is set so that the thread count is not a variable;
+   - `NPY_DISABLE_CPU_FEATURES=X86_V4`.
+
+   AVX2 is the largest kernel set that every machine in question has: the runners, the PC and the cloud sessions. The committed bits are AVX-512's, and AVX-512 kernels cannot be forced on a machine without AVX-512, so they cannot be kept.
+
+   After its imports, the generator checks that the pin took effect and refuses to write if it did not. Every OpenBLAS that threadpoolctl lists must report the architecture Haswell. No numpy function's current target in `numpy.lib.introspect.opt_func_info()` may be X86_V4 or AVX512_*. The generator also prints the CPU and the pinned kernels to stderr, because CI discards only stdout.
+3. *The versions.* CI installs `numpy==2.5.3 scipy==1.18.1`: those of every run so far and of the PC's venv. It also installs threadpoolctl. With the versions fixed, a failure means that the generator changed, not that a wheel did. A bump is a change of its own and comes with a regeneration in the same commit. The refusal in 2 stops the generator if a bump makes one of the pin's names stop working.
+4. *One regeneration*, in the same commit as 2 and 3, on an AVX-512 machine (this cloud session's), and committed. The prediction is that the diff is byte-identical to the CI failure diff (765 lines; blobs b244ecb and 5bf52bf) and that no other file changes. The reproduction above has already shown this, so it checks the code, not the idea.
+5. *The check stays as it is:* `git diff --exit-code tests/fixtures/`, bitwise, on all 19 files.
+
+**What this loosens: nothing.** The check still compares every byte of every file. What it changes:
+
+- two fixture files' bits, which no gate reads;
+- the record, which now holds the AVX2 kernels' answer instead of AVX-512's, at most 4 ulp away;
+- the generator, which now needs threadpoolctl (the PC's venv gains it);
+- CI's numpy and scipy, which stop floating.
+
+**Rejected.**
+
+- *The pin in the CI step only.* The PC and any AVX-512 machine that runs the generator by hand, as CLAUDE.md asks after a Python change, would disagree with CI. The generator is where the bits are made.
+- *Comparing these two files at a bound.* No reader exists, so no reader's tolerance justifies a bound. Any bound would be chosen after seeing 4 ulp. It would loosen the check from bitwise to bounded, and it needs a comparison script.
+- *Fewer digits.* Rounding moves the boundary instead of removing it. For this pair of outputs, 14 of the 512 lines still differ at %.15g and none at %.13g. Any value that lies near a rounding boundary flips for any pair of outputs. It also drops the 17-digit round trip that the generator's docstring promises.
+- *Dropping the two files from the check.* That loosens it.
+
+**Gates**, stated before the code:
+
+1. *The cause* (CLAUDE.md rule 8), judged on step 1's runs. The cause is named as "the runner has no AVX-512, so scipy's OpenBLAS and numpy's `arccos` take their AVX2 paths" if all of these hold:
+   - every failing run reports no `avx512f`;
+   - every passing run reports `avx512f`;
+   - every failure diff is byte-identical to the one above;
+   - on the PC, which has no AVX-512, the unmodified generator gives that same diff.
+
+   If fewer than three of either outcome appear within 20 runs, the rule is judged on what was seen, and the shortfall is reported. If the rule does not hold, the cause is not named. What was seen is recorded, and gates 2–4 are still judged on their own.
+2. *Two machines, one answer.* After the change, the generator followed by `git diff --exit-code tests/fixtures/` is clean on this cloud machine (AVX-512) and on the PC (AVX2, CLAUDE.md's venv plus threadpoolctl).
+3. *CI.* The fixture check passes on every run of the change's commit and of the commits after it, until at least 10 runs (push, pull_request and dispatched) have been seen. At least 3 of them must report `avx512f` and at least 3 must not, by step 1's log, within 30 runs at most. Any failure fails this ADR and is recorded as one.
+4. *Nothing else moves.* v0 passes on those CI runs and locally. No other script imports `dump_fixtures.py`, so the Python gates of v1, v2 and v2b run code this ADR does not touch. No solver code changes, so the full suite is not run: CLAUDE.md rule 3 asks for it after a solver change.
+
+Adopted if gates 2–4 pass. If gate 3 fails, the pin is not adopted: the generator, the versions and the fixtures revert, and this ADR records why.
+
+**Order.** This ADR, then:
+
+1. the CPU log (`ci:`), and the dispatched runs, recorded here;
+2. the generator, the versions and the fixtures, in one commit;
+3. the CI runs;
+4. `docs: ADR-048 answered -- …`.
+
+*Reverses if:* a numpy or scipy bump makes the pin's names stop working. The refusal then stops the generator, and a later ADR picks the new names. It also reverses if a machine without AVX2 has to run the generator: OpenBLAS's Haswell kernels would stop it with an illegal instruction rather than let it write other bits.
+
+**Cost.** About ten lines in the generator, one CI step, two version pins and one package in `pip install`, 20 to 50 CI runs of about three minutes each, and two fixture files.

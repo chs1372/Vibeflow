@@ -45,6 +45,18 @@ jobs:
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DKokkos_ROOT=$HOME/kokkos-install
           cmake --build build -j$(nproc)
 
+      # ADR-048, step 1: which processor the runner has and which kernels
+      # numpy and scipy load, printed before the fixture check that depends
+      # on them. threadpoolctl lets numpy name OpenBLAS's core type; it does
+      # not change what the generator writes.
+      - name: Runner CPU and kernels (ADR-048)
+        run: |
+          grep -m1 'model name' /proc/cpuinfo
+          if grep -qw avx512f /proc/cpuinfo; then echo 'avx512f: yes'; else echo 'avx512f: no'; fi
+          python --version
+          pip install -q threadpoolctl
+          python -c "import numpy, scipy, scipy.sparse.linalg, threadpoolctl, pprint; print('numpy', numpy.__version__, 'scipy', scipy.__version__); numpy.show_runtime(); pprint.pprint(threadpoolctl.threadpool_info())"
+
       - name: Fixtures are current
         run: |
           python prototype/dump_fixtures.py > /dev/null
