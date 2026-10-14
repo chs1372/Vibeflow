@@ -4587,6 +4587,712 @@ machine. This machine's own time per step is measured and reported.
   Step 5 does not start with less than 2 GB free. The lip band comes from
   the log, not from saved states.
 
+*First revision, before the data and the runs: the lip print, the
+reading script and the binaries.* Step 7 requires this revision before
+either the print or the script is written. ADR-047's Order 2 also leaves
+to it which binary runs step 6 and a two-thread step 5. The revision only
+implements the rules above. Where they are silent on a detail, the
+detail is fixed here and marked *(fixed here)*.
+
+Looked at by then:
+
+- the texts of ADR-047 and ADR-048, and ADR-045's context (for the
+  label "SSTm");
+- CLAUDE.md as of b9c0fcd, and the commits from 81de3a6 to a46e433
+  (ADR-048's through its answer);
+- code, read for this revision without building or running anything:
+  `backstep.cpp` (all of it, blob 03b9cd4), `backstep_gate.py`
+  (106770a), `backstep_report.py` (23f9ee0), `make_mesh.py` (20e4fde),
+  `Piso.cpp:145-194`, the lines of `Piso.hpp` that declare
+  `pressureExtrapWarmStart`, `boundaryPressure()` and `pressure()`,
+  `Geometry.cpp:18-46`, `PolyMesh.cpp:14-67`, the top-level and `tests/`
+  `CMakeLists.txt`, and `.gitignore`.
+
+Nothing of the step has been built or run since this ADR was committed:
+no backstep binary, march, gate script or reading script. The only runs
+since then are these, and none of them touches the step:
+
+- CI's v0 and fixture check on the adr-046 and adr-047 branches
+  (ADR-048's table);
+- ADR-048's reproduction of the fixture generator in a scratch copy;
+- ADR-048's step-1 CI runs of f23f297, and its run of the unmodified
+  fixture generator on the PC (its gate 1);
+- ADR-048's step 2 and its gate-3 runs (59e7523), and the PC's runs of
+  its pinned generator and of v0.
+
+No log, state or Cp file of any march exists on this machine. ADR-047
+has no run, so its Order 9 adds nothing. Nothing has been downloaded: no
+FUN3D file, no finest grid, and no TMR page beyond what this ADR records.
+CFL3D's Cp file was not opened for this revision, and no quantity of the
+steps above was computed.
+
+*The lip print.* It goes into `tests/benchmark/backstep.cpp`, in a
+commit of its own whose parent is this revision's commit. That commit
+changes no other file.
+
+- After the bottom wall is sorted (:406-408), nUp is the number of
+  entries of `bottom.x` below 0. The lip faces are entries nUp − 4 to
+  nUp − 1, in increasing x. All upstream entries come before all
+  lower-floor entries. The slip faces are not in `bottom`, because only
+  the `WALL` case pushes a face (:374, :396-399). If nUp is below 4, the
+  harness prints `fewer than four upstream wall faces` and exits with
+  code 2 before any step. No TMR level has fewer than four.
+- Every process start prints one line right after the `  patches:` line
+  (:418-420): `LIPX %.10e %.10e %.10e %.10e`, the lip faces' `bottom.x`.
+  These are the same doubles in the same format as the `.cp` x column,
+  so the strings match it. A resumed march prints the line again, as it
+  prints its other startup lines.
+- In the 50-step block, after the `      change:` line (:752-755) and
+  before `fflush` (:756), the harness prints
+  `LIP %d %.10e %.10e %.10e %.10e %.10e`: step, p40, then the Cp at the
+  four lip faces in LIPX's order. The values are computed as follows:
+  - the pressure is `auto pH = host(solver.pressure())`;
+  - `pw[i] = pH(bclH(bottom.face[i]))` over every entry of `bottom`,
+    with `bclH` from :622;
+  - `p40 = interpAt(bottom.x, pw, 40.0)`;
+  - each Cp is `2.0 * (pw[j] - p40)`, written inside the printf's
+    arguments.
+
+  These are the expressions of :789-796. p40 is printed as a pressure,
+  not as a Cp.
+- A LIP line is therefore printed at every firing of the block (:725).
+  That includes an off-grid last step at the 5,000-step limit. It is
+  printed before the steady, quasi-steady and limit breaks (:757-759),
+  so the last LIP line of a settled march comes from the state that
+  `.cp` is written from. No LIP line is printed:
+  - after the `not finite` break (:732), which comes before the print;
+  - with `VIBEFLOW_BS_STOP=0`;
+  - at a `VIBEFLOW_BS_STOP` step off the 50-step grid.
+- Neither line carries seconds or any other field that depends on time,
+  because ADR-047's gate 0 compares them byte for byte.
+- Neither line calls `boundaryPressure()`. That call increments the
+  solver's timing counters (`Piso.cpp:149-150`, :170). The `timings:`
+  line does not print them (:824-825), but they are the solver's state.
+  It would also rewrite the warm-start values
+  (:182-186) if `pressureExtrapWarmStart` were set, but the harness leaves
+  it at its default, false (`Piso.hpp:289`), as ADR-047's context says.
+  Leaving the call out keeps the print out of the solver altogether.
+  `.cpw` stays final-state only.
+- Neither tag begins a line that the harness or ADR-047 already prints
+  (`FINAL`, `timings:`, `EQ`, `SOLVES`, `REFUSED`, `backward-facing`,
+  `  step`). `LIP` is a prefix of `LIPX`, so a reader tells them apart
+  by the whole first token (below).
+- The header comment of `backstep.cpp` gains one sentence naming the two
+  lines and this ADR. Nothing else in the file changes.
+- *Contraction.* `interpAt` (:128-135) gains a fourth call site. The
+  repository sets no `-march`, and the build compiles as gnu++20, where
+  GCC contracts floating-point expressions by default. Whether
+  `(1.0 - t) * v[i-1] + t * v[i]` becomes an FMA at a call site therefore
+  depends on flags that the installed Kokkos may add, and those are not
+  in the repository. They were not read for this revision. If the new
+  call changes how the call at :792 is inlined or contracted, the `.cp`
+  bits change, step 7's check fails, and step 7's path applies. Each
+  build's compile line for `backstep` is recorded from its
+  `compile_commands.json`, which the build exports
+  (`CMakeLists.txt:6`).
+
+*The print check* is step 7's and is unchanged. It compares two
+binaries:
+
+- *with the print:* `build/tests/backstep` of S0's clone (see *The
+  binaries*), at the lip-print commit;
+- *without it:* built from this revision's commit, with the same
+  toolchain and CMake command, in the working clone `~/Vibeflow`.
+
+Both binaries' sha256 and compile lines are recorded. Both runs read S0's
+clone's `cases/backstep/L2.hex`, made by that clone's `make_mesh.py 2 1`,
+and its hash is recorded. Each run writes to a new, empty directory.
+
+The comparison:
+
+- `cmp` on the five files;
+- `cmp` on the FINAL lines after `sed 's/ seconds [0-9]*$//'`;
+- the commands are recorded.
+
+Reported beside it, not judged:
+
+- whether the two logs agree once the LIP and LIPX lines, every
+  `(%.0f s)` field, the `timings:` line and FINAL's `seconds` are
+  removed;
+- once the reading script exists, that run's consistency checks (below).
+  These report only counts, equalities and largest differences, never a
+  Cp value. The LIP values of this 200-step first-order start are not
+  otherwise read or plotted. That is recorded as what was seen.
+
+*The reading script* is `tests/benchmark/backstep_lip.py`, in a commit
+of its own after the lip print's. It never runs a march and writes no
+file.
+
+- *Imports.* The script puts `tests/benchmark` on `sys.path`, as
+  `backstep_report.py` does (:23-24), and `cases/backstep` beside it. It
+  then imports:
+  - from `backstep_gate.py`: `floor_values`, `split_floors`, `two_col`,
+    `parse_final`, `final`, `TMR` and `UC_CFL3D`;
+  - from `make_mesh.py`: `read_p2d` and `merge`.
+
+  All are unchanged. Both modules guard `main()` with
+  `if __name__ == "__main__"`, so importing them has no side effect.
+- *Reading a `.hex` file.* The script reads it itself, in
+  `PolyMesh::fromHexFile`'s layout: two integers (points, cells), then
+  that many `x y z` lines. The first half of the points lies on z = 0.
+- *The x = 0 count.* Before any call to `split_floors`, the script
+  counts the exact zeros itself. A file without exactly two is then
+  reported, not judged, even under `python -O`, which strips that
+  function's assert *(fixed here)*.
+- *Linear between points* (`lin`, *fixed here*). A reference is
+  linear between its own points, which `lin` implements on one floor in
+  file order:
+  - the floor's x must be non-decreasing. Otherwise a downloaded file
+    is reported, not judged (the contract), and the script stops only for
+    the committed CFL3D file;
+  - at a duplicated x, a query to its left uses the first entry and a
+    query to its right uses the second;
+  - a query outside the floor's span is not made: that quantity is
+    reported, not judged.
+
+  `floor_values` is used only on our own floors, whose x is strictly
+  increasing.
+- *How it is called:* `backstep_lip.py <mode> [options]`.
+  - The modes: `reading` (step 1), `headers`, `reference` (step 2),
+    `finest` (step 3), `s0` (step 4), `commands`, `grid` (step 5),
+    `ablations` (step 6), `consistency` and `outcome` (step 8).
+  - The options name the inputs: `--s0 <S0's directory>`, `--g <step
+    5's directory>`, `--a <step 6's root>`, `--log <a log>`,
+    `--labels`, `--fun3d`, `--cfl3d-finest`, `--fun3d-finest`,
+    `--grid0 <TMR's finest grid>`, `--l0 <L0.hex>` and `--l1 <S0's
+    L1.hex>`.
+  - A mode whose inputs are missing prints what is missing and stops.
+- *What it prints.* It never prints PASS. It prints FAIL only in
+  `outcome`'s statement that gate 4 stays FAIL as ADR-045 recorded it,
+  and never a new verdict on gate 4. Its lines are the script's reading, and the results record
+  them. The modes that judge end with these lines, with numbers in
+  `%.4f` *(fixed here)*:
+  - `reading`:
+    - `step 1 (R) level <L> <point>: d-b <v> within 0.015 <yes|no>, d+C40 <v> within 0.015 <yes|no>`
+      at each lip point;
+    - then `step 1 (R): reported, not judged`;
+  - `reference`: `step 2 (F): ` followed by `belongs to the reference`,
+    `ruled out`, `D/E <corner> <-0.021>`, `reported, not judged`
+    (with the reason) or `not run`;
+  - `finest`: `step 3 (T): ` followed by `towards ours`, `away`,
+    `unchanged`, `mixed`, `reported, not judged` (with the reason) or
+    `not run`;
+  - `s0`:
+    - `step 4 (S0) <march>: settled <steady|quasi>|diverged|not settled|reported, not judged`
+      for each march;
+    - `step 4 (S0) level <L> <point>: judged|not judged (d_S0 <v>)`;
+    - `step 4 (S0): reproduces|does not reproduce|failed chain`;
+  - `grid`: `step 5 (G): ` followed by `belongs to the grid`,
+    `this solver needs a finer grid`, `fraction <corner> <-0.021>`
+    (each a value or `not judged`), `inconclusive`, `void` (with the
+    reason) or `not run`;
+  - `ablations`:
+    - for each march k: `step 6 (A) <k>: moves the lip <holds|no|inconclusive>, closes level 2's excess <holds|fails|inconclusive>, delta/E_S0 <corner> <-0.021>`,
+      or `step 6 (A) <k>: confounded`;
+    - then `step 6 (A): judged`, or `step 6 (A): not judged, (0) confounded`;
+  - `outcome`: see step 8.
+
+  `headers`, `commands` and `consistency` print their own lines and no
+  step line.
+- *The reference.* The committed CFL3D file is read with `two_col`, as
+  gate 4 reads it. Downloaded files are read by the parser below. A
+  reference's floors are the two parts that `split_floors` returns.
+- *A file's lip points* are its upstream point at x = 0 and its unique
+  upstream point within 1e-5 of −0.0208296, each at that file's own x.
+  A downloaded file without them is reported, not judged (the contract).
+  In the committed CFL3D file, their absence is an error that stops the
+  script.
+
+*Reading a log* (`parse_log`, *fixed here*). Each line is classed by its
+first whitespace-separated token after its leading spaces:
+`backward-facing`, `PISO`, `initial`, `resumed`, `LIPX`, `LIP`, `step`,
+`FINAL` and `REFUSED`. A `step` line is a 50-step line if its third token is `t`,
+a ramp line if its third token is `ramp:`, and the divergence line if
+it ends `not finite`. Every other line is ignored.
+
+The log is read in order and split into attempts. Each attempt begins
+at a `backward-facing step, SST-1994,` header.
+
+- *A truncated line.* If that header text appears inside a line, not at
+  its start, the attempt is split there. The text before it is a
+  truncated line from an interruption, and it is reported and not used.
+- *What each attempt gives:*
+  - the header's mesh, cell count, `dt %g` and `U_in %.6f`;
+  - `  PISO correctors %d`, `  initial state:` and `  resumed from
+    <out>.ckpt: step N`;
+  - LIPX and the LIP lines;
+  - the 50-step lines, with their `dt %.2e` and `(%.0f s)`;
+  - the ramp lines ending `holds`, `doubles` or `halves`;
+  - `not finite` and FINAL.
+- *Resumes.* An attempt with a `resumed from ... step N` line first
+  drops every LIP, 50-step and ramp line already kept at a step above N.
+  It then keeps its own lines, and the resume is recorded with N. This is
+  the dropping that the readings above state.
+- *Refused attempts.* An attempt that has a `REFUSED` line (ADR-047's
+  refusal, which exits with code 3 before any step) and no LIP, 50-step,
+  ramp, `not finite` or FINAL line is a refused attempt. It is recorded
+  with the command that caused it. It keeps and drops nothing, and it is
+  not a silent fresh start. The march is then resumed as step 7 says.
+- *Silent fresh starts.* An attempt after the first that is not a
+  refused attempt and has no `resumed from` line is a silent fresh start: the binary did not read
+  the checkpoint (ADR-047's context). That march was started over, which
+  step 7 forbids. Its log is reported with its structure only, and
+  nothing is computed from its values. The march is run again with the
+  same command in a new, empty directory and recorded as a new attempt.
+  For step 4, the command is the whole chain *(fixed here)*.
+- *Classes.* Before any check, the march is classed from its last
+  attempt:
+  - *diverged*, if it has a `not finite` line;
+  - *unsettled*, if it has no FINAL or FINAL's `settled` is `no`;
+  - *settled* otherwise.
+
+  Each step treats diverged and unsettled marches as that step says of a
+  march that diverges or does not settle. They are not errors.
+- *Errors.* A log is an error, reported and not used, in any of these
+  cases:
+  - it has more than one FINAL, or a FINAL outside its last attempt;
+  - a LIP, LIPX, 50-step or FINAL line has fields that do not parse;
+  - two kept LIP lines share a step;
+  - its LIPX lines differ;
+  - settled, and its last kept LIP line's step is not FINAL's `steps`;
+  - diverged, and the `not finite` step is not FINAL's `steps`, or a
+    kept LIP line is at or above it.
+
+  An unsettled log has no such step check, because a `VIBEFLOW_BS_STOP`
+  run or a march still running ends anywhere. ADR-047's gates may
+  import the function in that case.
+- *First and later attempts.* `initial state:` is printed only when a
+  march does not resume (:461-466). Wherever a log is checked against
+  its command, that line is therefore checked in the first attempt
+  only. Each later attempt must instead show a `resumed from` line, with
+  the same mesh, `dt %g`, `U_in %.6f` and correctors.
+- *How values are compared.* The header prints `%g` and `%.6f` of what
+  `atof` read (:343-345, :415-417). A passed string s is therefore
+  compared as `'%g' % float(s)` for dt and `'%.6f' % float(s)` for U_in.
+
+*The window* (`window`, *fixed here*).
+
+- S is FINAL's `steps`. Only a settled march has a window. The harness
+  then guarantees FINAL's `full` ≥ 1,000 (:757-758), and the script
+  checks it.
+- The window is the set of kept LIP samples with S − 1,000 < step ≤ S.
+  That is twenty samples when S is a multiple of 50.
+- Checked, each failure an error:
+  - every kept 50-step line in the window prints
+    `'%.2e' % float(FINAL's dt token)`;
+  - no kept `doubles` line is at a step ≥ S − 998, and no kept `halves`
+    line at a step ≥ S − 999. A doubling takes effect for its own step,
+    a halving from the next.
+- The window is flagged as containing a resume if any resume has
+  N ≥ S − 1,000.
+- For each lip value, B = max − min and m = `numpy.mean` over the
+  window's samples.
+
+*Lip values* (`lip_values`). For a sample, a reference R and a lip point
+x_l of R:
+
+- X4 are the four LIPX values and C4 the sample's four Cp values.
+- R is CFL3D's level-1 file as published. Any other reference is shifted
+  into the frame by C40 − R(40), with C40 and R(40) taken by `lin` on
+  the lower floors. A reference whose lower floor does not reach both
+  x ≤ 40 and x ≥ 40 is reported, not judged.
+- Gate reading: d_G = `floor_values([x_l], True, X4, C4)` − R(x_l),
+  where R(x_l) is R's own point value.
+- Face reading: e_j = C4_j − c(X4_j), where c is `lin` on R's upstream
+  floor, corner included. Then d_F = `floor_values([x_l], True, X4, e)`.
+- *Why four faces suffice.* On levels 2 and 1, and on a nested level 0,
+  x_l lies at or past the second of the four faces. So `floor_values`
+  uses only the faces that the whole floor would use, and these values
+  are the ones that the whole floor of the same state gives.
+- A sample's four lip values are d_G and d_F at the corner and at
+  −0.021. Unless a step names another reference, they are taken against
+  CFL3D's level-1 file.
+
+*Readings of a final state.* The two readings are applied to a whole
+floor of a `.cp`, and to a `.cpw`, which is reported only.
+
+- d_G is taken at R's points by `floor_values` on that floor.
+- For d_F, e is taken only at the faces that lie inside R's span on that
+  floor *(fixed here)*. CFL3D's level-1 file spans the whole wall, so
+  this matters only for downloaded files.
+- *Duplicated points.* At a reference x that appears twice (−4 and 8 in
+  CFL3D's file), each quantity is computed for every entry. Each entry is
+  a further point of the rule. At one sample under one reading, a rule
+  over several points is true only if it is true at every point, so it
+  is true there only if it is true for every entry *(fixed here)*.
+  *Holds*, *fails* and *inconclusive* then follow this ADR's definition
+  across samples and readings. The spread between entries is reported.
+  Gate 4 already reads both entries at −4.
+
+*Consistency* (`consistency`, reported for every march and for the print
+check):
+
+- LIPX equals the `.cp` x strings of the lip faces. Any difference is an
+  error.
+- Reported, never an error:
+  - the largest difference between the last LIP line's four Cp values
+    and the `.cp` values at those faces;
+  - the largest difference between d_G from those four faces and d_G
+    from the whole `.cp` floor;
+  - the largest |d_F − (d_G − b)|.
+- Each of these should be zero or round-off. They are not made errors
+  because the compiler may contract `interpAt` differently at its call
+  sites (see *Contraction*). A nonzero difference is reported with the
+  recorded compile line.
+
+*Comparisons* (*fixed here*). They are implemented as the text above
+words them.
+
+- *Signed, as written* ("at most", "≤", "≥"):
+  - the judged-point filter, d_S0 ≤ 0.015;
+  - step 1's d − b ≤ 0.015 and d + C40 ≤ 0.015;
+  - step 2's D ≥ E and D ≤ n;
+  - step 3's classes;
+  - step 6's d_abl ≤ 0.015.
+- *Absolute* ("within", |·| ≤ bound):
+  - step 4's bands;
+  - step 5's 0.015;
+  - step 6's 2%.
+
+*Downloaded files.* Their format is unseen, so the parser is fixed here,
+before any is seen.
+
+- *Numbers.* A token is a number if it parses as a float after a
+  Fortran exponent `D` or `d` is replaced by `E`. A row is numeric if
+  every token, split on whitespace and commas, is a number. Every other
+  line is a header line.
+- *Columns.*
+  - If a header line begins with `variables` (any case), the text after
+    its first `=` gives the names. If it contains double-quoted strings,
+    the names are those strings, continued on following lines that hold
+    only quoted strings. Otherwise the names are its tokens, split on
+    whitespace and commas.
+  - Each name is lowercased and stripped of everything but letters and
+    digits. x is the one column named `x` or `xh`, and Cp the one named
+    `cp`. A Cp name that began with `-` makes the file reported, not
+    judged.
+  - Without such a line, every numeric row must have exactly two
+    columns, x and Cp.
+- Rows are kept in file order across zones.
+- A file that fits neither layout is reported, not judged. A change to
+  the parser is a revision that states only what `headers` showed.
+- *The `headers` mode.* It runs on each downloaded file before
+  `reference` or `finest` reads any value, and what it shows is
+  recorded. It prints:
+  - the file's sha256;
+  - the count of numeric rows with their column counts;
+  - each header line verbatim, with every real number in it masked,
+    but only if, once any leading `#`, `!`, `%`, `*` and `/` characters
+    and spaces are removed, its first token contains a letter and is not a
+    number. A real number is any substring matching
+    `[-+]?(\d+\.\d*|\.\d+)([EeDd][-+]?\d+)?` or
+    `[-+]?\d+[EeDd][-+]?\d+`, and each is printed as `<num>`. Integers,
+    such as grid dimensions or "36,000", are kept. So a data row that does
+    not parse as numeric, such as a fixed-width Fortran row whose fields
+    run together at a minus sign or a row with a text column, never shows
+    a value. For any other header line it
+    prints only its token count and how many of its tokens are numbers.
+    TMR's files carry their labels in such comment lines, as CFL3D's
+    first line shows.
+
+  It never prints a number taken from a numeric row.
+
+*Labels.* They are recorded in `cases/backstep/tmr/labels.json`, a new
+file committed with each download.
+
+- *Per file:* its name, URL, date and sha256, and a list of places
+  (`file`, `link` or `page`). Each place carries:
+  - the verbatim text that gives the variant and the grid, or none;
+  - `variant`: the variant token that text contains, verbatim, or none;
+  - `grid_name`: a grid name that text contains, verbatim, or none;
+  - `grid_dims`: the dimensions that text gives, as numbers, or none.
+- *When.* The entries are written from the link and the page when the
+  file is downloaded, before any value is read. A label inside the file
+  is added from what `headers` shows.
+- *How the script classes them*, mechanically *(fixed here)*:
+  - *Variant.*
+    - The token `SSTm`, as TMR marks it (ADR-045), is SSTm.
+    - Any other model or SST variant name is other.
+    - A bare `SST` gives no variant. ADR-045 read the committed CFL3D
+      file's own "SST model" that way, and took SSTm from the page.
+  - *Grid name.* After lowercasing, removing a trailing `.gz` if
+    present, and then a trailing `.p2dfmt` if present:
+    - `backstep5_1levdn` is level 1;
+    - the base name of the committed finest-grid file, as TMR's grid
+      page names it, is finest;
+    - any other name is other.
+  - *Grid dimensions.* A place's dimensions class it as level 1, or as
+    finest, only if they equal `read_p2d`'s zone dimensions of that
+    committed grid. Each zone is ni × nj in either order, and every zone
+    the label gives must match. Otherwise they class it as other.
+  - A place whose name and dimensions give different classes is other.
+- *What the script checks.* It applies the contract: a file is judged
+  only if one place gives both a variant and a grid, every place that
+  gives either agrees, and the classes are SSTm and the step's grid.
+  Otherwise it is reported, not judged.
+
+*Step 1, `reading`.*
+
+- *Face centres of level L*, taken from TMR's grid alone *(fixed
+  here)*:
+  - the points of `merge(read_p2d(...))[0]` with |y − 1| < 1e-9 and
+    x ≤ 1e-12, sorted by x;
+  - the midpoints m of consecutive points, kept where m ≥ −110 (the
+    harness's slip test, :374);
+  - levels 1 and 2 come from `TMR/backstep5_{1,2}levdn.p2dfmt.gz`, and
+    level 0 from `--grid0` once that grid is committed.
+- *b.* c = `lin(m)` on CFL3D's upstream floor. Then
+  b = `floor_values(x_up, True, m, c)` − Cp_up at every CFL3D upstream
+  point. Each b is printed with its x, and the points in −4 ≤ x ≤ 0 are
+  marked.
+- *C40* = `lin(40)` on CFL3D's lower floor.
+- *At each lip point,* for levels 1 and 2, with d from that level's row
+  of the table above: d − b, whether d − b ≤ 0.015, and whether
+  d + C40 ≤ 0.015.
+- *Once S0's `.cp` exist:* the largest |m − x| against their upstream x
+  column, and the face counts, are reported. The two differ in the last
+  bits, because the harness's centres are area-weighted
+  (`Geometry.cpp:18-46`).
+
+*Step 2, `reference`.*
+
+- The labels, the contract, C40 and the shift are applied as above.
+- D = (FUN3D + shift) − CFL3D is taken at every CFL3D upstream point
+  inside FUN3D's upstream span. FUN3D is `lin` between its own points
+  and is never extrapolated.
+- *The rule.*
+  - *Belongs to the reference* needs two things. First, D ≥ E at both
+    lip points, with E = 0.0055 and 0.0024. Second,
+    |d − D| + 0.0005 ≤ 0.015 at the three other points, with d = +0.005,
+    +0.011 and +0.014 as ADR-045 prints them. Adding 0.0005 is how
+    "their rounding counts against ours" is applied *(fixed here)*.
+  - *Ruled out* if D ≤ n at both lip points. Otherwise D/E is recorded
+    at each lip point.
+- *Finding the three points* *(fixed here)*:
+  - x = −4 is both of CFL3D's entries there, combined with each FUN3D
+    entry at −4 if FUN3D has two;
+  - "−0.125" and "−0.063" are CFL3D's unique upstream points within
+    0.001 of those values, and their x is printed;
+  - if either is not unique, the script stops, and a revision states the
+    point before step 2 is read.
+- *Reported:* D at every point, D unshifted, FUN3D's own value at 40,
+  and D behind the step at CFL3D's points in 0 ≤ x ≤ 30 with its largest
+  value. Once S0 exists, also S0's level-1 `.cp` against FUN3D, by both
+  readings at FUN3D's points, on both floors.
+
+*Step 3, `finest`.*
+
+- The contract is applied, including the lower-floor span of
+  0 ≤ x ≤ 30.
+- Δ_ref = (CFL3D_finest + shift) − CFL3D_L1 at CFL3D_L1's two lip x.
+  The finest file is `lin` between its own points.
+- The classes are the ones stated in step 3, with n = 0.0015.
+- Reported: the same quantity for FUN3D, as FUN3D_finest − FUN3D_L1,
+  each shifted into the frame.
+- A downloaded CFL3D level-1 file "differs" if its bytes differ from the
+  committed file's. Its largest numeric differences are then reported.
+
+*Step 4, `s0`.* It reads the logs of S0's L2_up, L2_cal, L2 and L1 and
+the `.cp` and `.cpw` of L2 and L1.
+
+- *Classes.* Each march is classed as above. A diverged or unsettled
+  march takes step 4's first outcome.
+- *U_in.* U_in = `UC_CFL3D / final(L2_cal)["uc4"]`, as the gate script
+  computes it, with s = `'%.12g' % U_in`, the string it passes. The
+  script checks that the headers of L2 and L1 print `'%.6f' % float(s)`.
+- *Reproduction.* The bands of step 4 are applied to x_r, Cf(−4) and
+  u_c(−4) from FINAL, to U_in, and to the lip d by the gate reading of
+  the final `.cp` against CFL3D's level-1 file.
+  - ADR-045's printed values are taken as exact: 6.5210 and 6.5567,
+    2.92834e-3 and 2.8793e-3, 0.99891 and 0.99929, 0.944775, and the
+    lip d of the table above *(fixed here; the text above does not say
+    how their rounding enters)*.
+  - Each margin to its band is printed. A quantity whose verdict would
+    change under half a unit of ADR-045's last printed digit is flagged.
+- *Judged points and E_S0.* The judged-point filter and
+  E_S0 = d_S0 − 0.015 are taken per base level, from the same
+  final-state gate reading.
+- Reported: B and m of L2 and of L1, and the per-march report below.
+
+*`commands`.* It prints the exact commands of step 5 and step 6 from
+S0's outputs. These are the commands that are run:
+
+- the binary;
+- the U_in string s;
+- dt_S0, taken as the token of S0's L2 FINAL `dt`, and for (b)
+  `'%.12g' % (float(dt_S0) / 2)`;
+- the INIT paths, the environments and the directories.
+
+*Step 5, `grid`.*
+
+- *Nesting.* The header of `--l0` gives 1,277,952 cells, and every
+  z = 0 point of `--l1` lies within 1e-9 (Euclidean) of a z = 0 point of
+  `--l0`. The check uses `scipy.spatial.cKDTree`.
+- *What is not here.* The grid checks of step 5 (gate 1 and the boundary
+  classes) belong to `make_mesh.py`'s later revision, which also writes
+  L0.hex.
+- *The log is checked against the command* (first and later attempts as
+  above). It must show:
+  - L0.hex, `dt 0.04`, `'%.6f' % float(s)` and eight correctors;
+  - in its first attempt, `initial state:` S0's L1.state.
+
+  A mismatch is an error.
+- *Void* if:
+  - the march diverges or does not settle;
+  - the 50-step line at the step where it settled, FINAL's `steps`,
+    prints seconds above 604,800;
+  - any 50-step line of any attempt, kept or dropped, at a step before
+    the one it settled at (or at any step, with no FINAL yet), prints
+    seconds above 604,800. The resume's dropping applies to the window
+    only, not to this limit.
+
+  FINAL's own seconds also count the writing of the outputs after
+  settling (:781-823). They are reported, not judged.
+- *Lip values.* Nested: from the window. Not nested: from the final
+  `.cp`, and G is *inconclusive*, with the values reported.
+- *The rule against CFL3D_finest* *(fixed here)*. At each window sample
+  and under each reading, the rule is the lip part at that sample AND
+  the rest. The rest is every other CFL3D_finest point of the bottom wall
+  with −4 ≤ x ≤ 30, read floor by floor once from the final `.cp` under
+  the same reading. *Holds*, *fails* and *inconclusive* then follow the
+  definition above.
+- *T* is recomputed as in `finest`. The named outcomes and the fraction
+  follow step 5.
+- *Δ* = d_L1(S0) − d_L0, by the gate reading of the final states,
+  against CFL3D's level-1 file. These are final states, as for E_S0
+  *(fixed here)*. Reported beside it:
+  - Δ by the face reading;
+  - Δ from the window means;
+  - ours on level 0 against both CFL3D files.
+
+*Step 6, `ablations`.*
+
+- *Layout.* Each march k ∈ {0, a, b, c, d, e} has its own new, empty
+  directory `<root>/<k>/`, with prefix `L2_<k>` *(fixed here)*.
+- *The log is checked against the command* (first and later attempts as
+  above). It must show:
+  - S0's clone's L2.hex, `'%g' % float(passed dt)` and
+    `'%.6f' % float(s)`;
+  - 12 correctors for (a), and 8 otherwise;
+  - in its first attempt, `initial state:` S0's L2.state.
+
+  A mismatch is an error.
+- *Confounded* if the march diverges, does not settle, or FINAL's `dt`
+  token is not `'%.6g' % float(passed dt)`.
+- *The quantities.* m and B come from each window, S0's from its L2.
+  δ0 = m_S0 − m_(0) and δ = m_S0 − m_abl.
+- *Moves the lip.* Its condition is evaluated under each reading. A
+  finding needs both readings; if they disagree, the rule is
+  *inconclusive* *(fixed here)*. "The final samples" are each window's
+  last sample. Their difference is in "the same direction" when
+  sign(last_S0 − last_abl) = sign(δ), and a zero counts as not the same
+  direction *(fixed here)*.
+- *Closes level 2's excess* needs two things:
+  - the d_abl ≤ 0.015 part, as a single-march rule against CFL3D's
+    level-1 file;
+  - |x_r − x_r,S0| ≤ 0.02 |x_r,S0| and the same for Cf(−4), both from
+    the FINAL lines.
+
+  If the first part is inconclusive, the rule is inconclusive.
+
+*Step 8, `outcome`.*
+
+- It recomputes steps 2, 3, 5 and 6 as far as its inputs allow, and
+  prints step 8's mapping:
+  - `step 8: belongs to the reference` or `step 8: belongs to the grid`,
+    if a step attributes;
+  - otherwise `step 8: ADR-045's decision stands`, with the findings
+    for the known limits;
+  - `step 8: cause not found`, when nothing attributes.
+- It always prints that gate 4 stays FAIL as ADR-045 recorded it, never
+  re-scored, and that closing v2b is left to a later ADR.
+
+*Reported for every march* (Code's list). `s0` prints this for S0's
+marches, `grid` for step 5's and `ablations` for step 6's:
+
+- for every level run, against CFL3D's level-1 file, and for level 0
+  also against CFL3D_finest:
+  - d under both readings at every upstream point from −4 to 0;
+  - the largest |difference| behind the step, over 0 < x ≤ 30;
+  - the same from the `.cpw` beside them;
+- the full lip time series: every kept sample's step and four lip
+  values;
+- from FINAL: x_r, Cf(−4), u_c(−4), the corner bubble, the settled dt,
+  the steps and the resumes;
+- the time per step over the first 100 steps, taken as the step-100
+  line's seconds / 100. That includes setup, because t0 is taken before
+  the mesh is read (:346). (s100 − s50)/50 is printed beside it *(fixed
+  here)*;
+- threads, ranks, the variables set and the toolchain, which come from
+  the recorded commands and not from the logs.
+
+`parse_log`, `window` and `lip_values` are module-level functions, so
+ADR-047's `backstep_mpi_gate.py` can import them unchanged.
+
+*The binaries* (ADR-047's Order 2):
+
+- *S0's clone.* It is a WSL clone of its own, checked out at the
+  lip-print commit and built once into its `build` by CLAUDE.md's
+  commands. Recorded before the print check:
+  - its commit and path;
+  - its size on disk;
+  - the sha256 and compile line of `build/tests/backstep`.
+
+  Once the print check has passed on it, it is never rebuilt, moved or
+  checked out at another commit. Nothing of ADR-047 is built in it. If
+  the check fails, that clone is reported and set aside. After the
+  revision that fixes the print, a new clone is made at the fixed
+  commit, its commit, path, size and binary hash are recorded, and the
+  check runs again *(fixed here)*.
+- *What runs that binary.* All six marches of step 6, and a two-thread
+  step 5, run that same `build/tests/backstep`. The operator checks its
+  sha256 with `sha256sum` against the record and records the result at
+  these times:
+  - before each invocation of `backstep_gate.py` for step 4, the chain
+    or its resume, since the gate script runs the four marches itself
+    and is not edited;
+  - before every march and every resume of steps 5 and 6.
+
+  A mismatch stops that invocation before it starts and is recorded.
+- *Meshes.*
+  - S0's `backstep_gate.py` runs `make_mesh.py 2 1` again
+    (`backstep_gate.py:157`) and rewrites the clone's L2.hex. Its hash
+    after that run must equal the one recorded at the print check. If it
+    does not, that is recorded, and the print check runs again on S0's
+    file before step 5 or 6 starts. A mismatch then is step 7's.
+  - Step 6 reads that L2.hex, the file S0's L2 read.
+  - Step 5's L0.hex is written by `make_mesh.py`'s later revision, run
+    in the working clone at that revision's commit. It is then copied to
+    a directory of its own outside every clone, and its hash is recorded
+    before step 5's first step. A two-thread step 5 and step 5 under
+    MPI read that one copy, and it is the file that ADR-047's Order 8
+    calls `<S0's L0.hex>`.
+- *U_in*, for both steps, is the string s of S0's L2_cal FINAL, as
+  ADR-047's gate 6 and Order 8 compute it.
+- *Under MPI*, step 5 runs ADR-047's build, as its Order 8 states.
+- *Reason.* Δ and δ are differences from S0's marches. Using the same
+  binary removes the binary as a variable, and it is the binary that
+  step 7's check was made on.
+
+The files of steps 2 and 3 may be fetched at any time after this ADR's
+commit, with the user's permission each time. They are not opened before
+the reading script exists. If writing the print or the script shows that
+something here cannot be done as stated, a revision says so before that
+code is committed, with what has been seen by then.
+
+Nothing in this revision changes:
+
+- a rule of this ADR;
+- its contract on downloaded files, which no revision may change;
+- gate 4, which is FAIL in every outcome and never re-scored;
+- the user's decisions of 2026-10-05 and 2026-10-06;
+- any gate of ADR-047.
+
+Step 7's print check is unchanged. The additions declared here are the
+lip print in `backstep.cpp`, `backstep_lip.py` and `labels.json`.
+`make_mesh.py`'s change for the finest grid is left to a later revision,
+as Code says.
+
 ## ADR-047 — The backward-facing step under MPI: the harness, a parallel ILU and the serial answer. Stated before the code and the runs, answered after
 
 **Context.** ADR-046 needs TMR's finest grid for the step, about 1.28 million cells (its step 5). It estimates that march at 20 to 40 hours on two threads. The PETSc 3.24.4 and hypre 3.0.0 on this machine are built without OpenMP (`petscconf.h` has `PETSC_HAVE_HYPRE` and no `PETSC_HAVE_OPENMP`; hypre's `HYPRE_USING_OPENMP` is undefined), so their own kernels are serial. PETSc's vector operations call `libblas`, which on this machine resolves to OpenBLAS's pthreads build (the `libblas.so.3` alternative, priority 100, and the binary links it). Its threads follow `OMP_NUM_THREADS`, or every core when that is unset. So threads speed up the Kokkos share of a step and some of the Krylov vector work. ADR-046's cost note that threads speed up only the Kokkos share is not exact in this respect. How much of a solve they parallelise has not been measured. Ranks would split the whole of each solve.
