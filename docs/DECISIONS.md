@@ -5046,3 +5046,16 @@ Looked at before this revision was committed:
 - the pin check's refusal, exercised on the PC with substituted inputs: a SkylakeX OpenBLAS, an X86_V4 dispatch and no OpenBLAS. It refused each one.
 
 The revision's text was first written before those two runs, and they were made before its commit. Neither changes it. The PC's venv now has threadpoolctl 3.7.0, installed for step 1's log and for step 2's check.
+
+**Results** (after the change and the runs). The pin is adopted: gates 2 to 4 pass, and gate 1 held, as recorded above.
+
+1. *The cause.* It is named, as recorded under step 1.
+2. *Two machines, one answer.*
+   - *On the PC, at 59e7523.* The generator followed by `git diff --exit-code tests/fixtures/` is clean. The pin check printed both OpenBLAS as Haswell, and numpy's targets as X86_V3 and its X86_V2 baseline.
+   - *On AVX-512.* As revised, this is every gate-3 run that reports `avx512f`. There were nine, and all were clean: EPYC 9V45 four times, EPYC 9V74 three times, Xeon Platinum 8370C once and 8573C once. On each, the generator's own stderr line shows the pin taking effect on a machine that has AVX-512: both OpenBLAS Haswell, and numpy's targets X86_V3 and the baseline. That is the test of the code that the original Decision 4 gave to one cloud machine.
+3. *CI.* The change's commit, 59e7523, ran 14 times, all created between 13:36 and 13:50 UTC on 2026-10-14: one push, one pull_request, and 12 dispatches in three batches of four. Each batch waited until all its runs had finished. The runs stopped at the first batch boundary where at least 10 runs had been seen, with at least 3 on each side. That was after the third batch: 9 runs report `avx512f`, and 5 do not, all EPYC 7763. Every one of the 14 passed "Fixtures are current", and none refused to write.
+4. *Nothing else moves.* v0 passed on all 14 CI runs and on the PC at 59e7523 (8 of 8). No other script imports the generator, and no solver code changed.
+
+**Decision.** Adopted. The fixtures record the AVX2 kernels' answer: `solution_caseA.txt` blob 5bf52bf and `MANIFEST.txt` blob b244ecb. The generator pins its kernels and refuses to write if the pin does not take. CI's numpy and scipy are fixed at 2.5.3 and 1.18.1. The check is bitwise on all 19 files, as before. CLAUDE.md gains the PC venv's threadpoolctl and a line on the pin.
+
+**Cost.** CI ran 22 times for step 1 and 14 times for gate 3, at about three minutes each. On the PC, the runs took minutes.
