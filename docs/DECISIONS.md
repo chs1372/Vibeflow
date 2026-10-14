@@ -5293,6 +5293,27 @@ lip print in `backstep.cpp`, `backstep_lip.py` and `labels.json`.
 `make_mesh.py`'s change for the finest grid is left to a later revision,
 as Code says.
 
+*Step 7's print check, recorded* (2026-10-14, 14:20 to 14:37 UTC). The two binaries:
+
+- *with the print:* S0's clone, `/home/chs/Vibeflow-s0`, at the lip-print commit a76532c. Its `build/tests/backstep` has sha256 77c10aca4048db1afb8b42e5919a7d605304a28b0a18848909800701b8551047. The clone is 129 MB on disk;
+- *without it:* the working clone `~/Vibeflow` at this revision's commit 6ada006, sha256 6ef28f5f7543224ccd19896bb58e7daef4992db19ccc174eb88f8d4fc03c034a.
+
+Both were built by CLAUDE.md's commands with GCC 15.2, CMake 4.2.3 and Kokkos 5.2.2. Their compile lines for `backstep.cpp` are the same apart from the clone's path: `-O3 -DNDEBUG -std=gnu++20 -fopenmp -Wdate-time -D_FORTIFY_SOURCE=3`, with no `-march`.
+
+Both runs read S0's clone's `cases/backstep/L2.hex`, made by that clone's `make_mesh.py 2 1`, sha256 4630fdcee215c0a32c39ca29277cd4652032e03f8aa6a561e71212915619a37f. Its `L1.hex` has sha256 c6bc82139f22de13f50929f1453308412475808bc7fcd74e661bbea2ebda5245.
+
+Each run used a new, empty directory. The command was `OMP_NUM_THREADS=1 VIBEFLOW_BS_SAVE=1 VIBEFLOW_BS_STOP=200 VIBEFLOW_CONVECTION=upwind <binary> L2.hex <dir>/L2 0.16 5000 1`, with no other `VIBEFLOW_` variable set.
+
+`cmp` finds `.cf`, `.cp`, `.cpw`, `.prof` and `.state` identical. The FINAL lines are identical once `seconds` is removed. The print check passes, and steps 4 to 6 may start.
+
+Reported, not judged:
+
+- the two logs agree once the LIP and LIPX lines, every `(N s)` field, the `timings:` line and FINAL's `seconds` are removed;
+- the log with the print has one LIPX line and four LIP lines, at steps 50 to 200. Their values were not read;
+- both runs exit with 1, as a `VIBEFLOW_BS_STOP` run that has not settled does.
+
+S0 runs the binary above, by the sha256 recorded here.
+
 ## ADR-047 — The backward-facing step under MPI: the harness, a parallel ILU and the serial answer. Stated before the code and the runs, answered after
 
 **Context.** ADR-046 needs TMR's finest grid for the step, about 1.28 million cells (its step 5). It estimates that march at 20 to 40 hours on two threads. The PETSc 3.24.4 and hypre 3.0.0 on this machine are built without OpenMP (`petscconf.h` has `PETSC_HAVE_HYPRE` and no `PETSC_HAVE_OPENMP`; hypre's `HYPRE_USING_OPENMP` is undefined), so their own kernels are serial. PETSc's vector operations call `libblas`, which on this machine resolves to OpenBLAS's pthreads build (the `libblas.so.3` alternative, priority 100, and the binary links it). Its threads follow `OMP_NUM_THREADS`, or every core when that is unset. So threads speed up the Kokkos share of a step and some of the Krylov vector work. ADR-046's cost note that threads speed up only the Kokkos share is not exact in this respect. How much of a solve they parallelise has not been measured. Ranks would split the whole of each solve.
