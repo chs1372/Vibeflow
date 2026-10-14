@@ -14,7 +14,9 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with: { python-version: "3.12" }
-      - run: pip install numpy scipy meshio h5py
+      # ADR-048: numpy and scipy fixed, so a fixture diff means the generator
+      # changed, not a wheel; threadpoolctl for the generator's pin check.
+      - run: pip install numpy==2.5.3 scipy==1.18.1 threadpoolctl meshio h5py
 
       - name: System libraries
         run: sudo apt-get update -q && sudo apt-get install -y -q pkg-config libcgns-dev libopenmpi-dev openmpi-bin libpetsc-real-dev libhypre-dev
@@ -44,6 +46,18 @@ jobs:
         run: |
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DKokkos_ROOT=$HOME/kokkos-install
           cmake --build build -j$(nproc)
+
+      # ADR-048, step 1: which processor the runner has and which kernels
+      # numpy and scipy load, printed before the fixture check that depends
+      # on them. threadpoolctl lets numpy name OpenBLAS's core type; it does
+      # not change what the generator writes.
+      - name: Runner CPU and kernels (ADR-048)
+        run: |
+          grep -m1 'model name' /proc/cpuinfo
+          if grep -qw avx512f /proc/cpuinfo; then echo 'avx512f: yes'; else echo 'avx512f: no'; fi
+          python --version
+          pip install -q threadpoolctl
+          python -c "import numpy, scipy, scipy.sparse.linalg, threadpoolctl, pprint; print('numpy', numpy.__version__, 'scipy', scipy.__version__); numpy.show_runtime(); pprint.pprint(threadpoolctl.threadpool_info())"
 
       - name: Fixtures are current
         run: |

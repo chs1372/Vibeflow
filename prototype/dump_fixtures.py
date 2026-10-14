@@ -6,9 +6,20 @@ input. Text (17 significant digits) rather than binary so the fixtures are
 diffable and endian-independent; they are small enough that this costs nothing.
 """
 
+import os
 import sys
 from pathlib import Path
-import numpy as np
+
+# ADR-048: which SIMD kernels numpy and scipy's bundled OpenBLAS pick depends
+# on the CPU, and solution_caseA's last bits (and two MANIFEST lines) depend
+# on that choice. The kernels are pinned to AVX2 -- OpenBLAS's Haswell set and
+# numpy without X86_V4 -- the largest set every machine that runs this has.
+# Set before numpy is imported, overriding the environment.
+os.environ["OPENBLAS_CORETYPE"] = "Haswell"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["NPY_DISABLE_CPU_FEATURES"] = "X86_V4"
+
+import numpy as np  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).parent))
 from mesh import HexMesh                       # noqa: E402
@@ -16,6 +27,44 @@ from fvm import DiffusionOperator              # noqa: E402
 from mms_diffusion import CASES                # noqa: E402
 
 OUT = Path(__file__).resolve().parents[1] / "tests" / "fixtures"
+
+
+def check_pin():
+    """Refuse to write unless the pin above took effect (ADR-048).
+
+    Both variables fail silently: numpy accepts an unknown name in
+    NPY_DISABLE_CPU_FEATURES, and OpenBLAS ignores an unknown core type and
+    detects the CPU instead. So every OpenBLAS loaded (numpy's and scipy's,
+    the latter through fvm's scipy.sparse.linalg) must report Haswell, and no
+    numpy function may dispatch to X86_V4 or an AVX512 target.
+    """
+    from threadpoolctl import threadpool_info
+    from numpy.lib.introspect import opt_func_info
+
+    blas = [i for i in threadpool_info() if i.get("internal_api") == "openblas"]
+    targets = set()
+
+    def walk(d):
+        for v in d.values():
+            if isinstance(v, dict):
+                if "current" in v:
+                    targets.add(v["current"])
+                walk(v)
+
+    walk(opt_func_info())
+    wide = sorted(t for t in targets if t == "X86_V4" or t.startswith("AVX512"))
+    cpu = "unknown"
+    try:
+        with open("/proc/cpuinfo") as fh:
+            cpu = next(l.split(":", 1)[1].strip() for l in fh if l.startswith("model name"))
+    except (OSError, StopIteration):
+        pass
+    # stderr: CI discards this script's stdout.
+    print(f"dump_fixtures: CPU {cpu}; OpenBLAS "
+          + ", ".join(f"{i['filepath'].rsplit('/', 1)[-1]} {i.get('architecture')}" for i in blas)
+          + f"; numpy targets {sorted(targets)}", file=sys.stderr)
+    if not blas or any(i.get("architecture") != "Haswell" for i in blas) or wide:
+        sys.exit("dump_fixtures: the kernel pin of ADR-048 did not take effect; nothing written")
 
 
 def write(name, arr):
@@ -30,6 +79,7 @@ def write(name, arr):
 
 
 def main():
+    check_pin()
     OUT.mkdir(parents=True, exist_ok=True)
     n, skew, seed = 8, 0.25, 1
     m = HexMesh(n, skew=skew, seed=seed)
