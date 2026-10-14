@@ -1,6 +1,6 @@
 # Vibeflow v0 fixtures  n=8 skew=0.25 seed=1
 # cells=512 internal_faces=1344 boundary_faces=384
-# max_nonorthogonality_deg=25.650505504806468
+# max_nonorthogonality_deg=25.650505504806471
 # closure_error=7.8062556418956319e-18
 # volume_sum=1
 vertices.txt 729 3
@@ -20,4 +20,4 @@ vertices_n16_s25.txt 4913 3 n=16 skew=0.25
 vertices_n32_s0.txt 35937 3 n=32 skew=0.0
 vertices_n32_s25.txt 35937 3 n=32 skew=0.25
 solution_caseA.txt 512 1
-# solution_caseA_L2_error=0.0056073824656658342
+# solution_caseA_L2_error=0.0056073824656658324
