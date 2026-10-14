@@ -129,7 +129,12 @@ equivalence gates only; never a physics verdict"로 표시한 `VIBEFLOW_BS_SWEEP
 물리 판정에는 절대 쓰지 않는다.
 
 픽스처를 바꾸는 Python 변경 뒤에는 `python prototype/dump_fixtures.py`를
-실행하고 `git diff tests/fixtures/`를 확인한다. CI(ubuntu-24.04)는 이 픽스처
+실행하고 `git diff tests/fixtures/`를 확인한다. 생성기는 numpy를 불러오기 전에
+OpenBLAS와 numpy의 커널을 AVX2로 고정하고, 고정이 듣지 않으면 쓰기를 거부한다
+(ADR-048). AVX-512가 있는 기계와 없는 기계가 같은 비트를 내게 하려는 것이다.
+그래서 생성기에는 threadpoolctl이 필요하고, CI는 numpy 2.5.3과 scipy 1.18.1로
+고정돼 있다. numpy나 scipy를 올리는 일은 그 자체로 하나의 변경이며, 같은
+커밋에서 픽스처를 다시 만든다. CI(ubuntu-24.04)는 이 픽스처
 검사와 v0만 돌린다. v1부터의 단계와 후향계단은 로컬에서만 돌고, 결과는
 DECISIONS.md에 기록된다. 초록색 CI가 그 단계들까지 덮는다고 읽지 않는다.
 
@@ -192,12 +197,12 @@ sudo apt-get install -y build-essential cmake git pkg-config python3-venv \
 
 Kokkos는 `~/kokkos-install`에, venv는 `~/Vibeflow/.venv`에 있다. venv는 Python
 3.12이고 numpy 2.5.3, scipy 1.18.1, meshio 5.3.5, h5py 3.16.0, sympy 1.14.0,
-gmsh 4.15.2가 들어 있다. venv를 다시 만들 때는 uv(`~/venv-py314/bin/uv`)를
+gmsh 4.15.2, threadpoolctl 3.7.0이 들어 있다. venv를 다시 만들 때는 uv(`~/venv-py314/bin/uv`)를
 쓴다.
 
 ```sh
 uv python install 3.12 && uv venv --python 3.12 .venv
-uv pip install --python .venv/bin/python numpy scipy meshio h5py sympy gmsh
+uv pip install --python .venv/bin/python numpy==2.5.3 scipy==1.18.1 meshio h5py sympy gmsh threadpoolctl
 ```
 
 빌드 디렉터리는 반드시 저장소 루트의
