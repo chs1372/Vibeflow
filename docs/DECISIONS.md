@@ -5014,3 +5014,35 @@ Adopted if gates 2–4 pass. If gate 3 fails, the pin is not adopted: the genera
 *Reverses if:* a numpy or scipy bump makes the pin's names stop working. The refusal then stops the generator, and a later ADR picks the new names. It also reverses if a machine without AVX2 has to run the generator: OpenBLAS's Haswell kernels would stop it with an illegal instruction rather than let it write other bits.
 
 **Cost.** About ten lines in the generator, one CI step, two version pins and one package in `pip install`, 20 to 50 CI runs of about three minutes each, and two fixture files.
+
+*Step 1, recorded.* The CPU log is commit f23f297. Its workflow ran 22 times on that commit: once on push, once on pull_request, and 20 times by `workflow_dispatch`, all created on 2026-10-07 between 15:03 and 15:34 UTC. The last 14 dispatches waited out a GitHub outage of Actions. Every run's log was read for the CPU, `avx512f`, numpy's SIMD targets and threadpoolctl's OpenBLAS core types:
+
+| outcome | runs | processor | `avx512f` | OpenBLAS (numpy's and scipy's) | numpy found |
+| --- | --- | --- | --- | --- | --- |
+| fail | 12 | AMD EPYC 7763 | no | Haswell | X86_V3 |
+| fail | 1 | AMD EPYC 9V74 | no | Haswell | X86_V3 |
+| pass | 4 | AMD EPYC 9V74 | yes | SkylakeX | X86_V3, X86_V4, AVX512_ICL |
+| pass | 1 | AMD EPYC 9V45 | yes | SkylakeX | X86_V3, X86_V4, AVX512_ICL |
+| pass | 2 | Intel Xeon Platinum 8370C | yes | SkylakeX | X86_V3, X86_V4, AVX512_ICL |
+| pass | 1 | Intel Xeon Platinum 8573C | yes | SkylakeX | X86_V3, X86_V4, AVX512_ICL |
+| pass | 1 | Intel Xeon 6973P-C | yes | SkylakeX | X86_V3, X86_V4, AVX512_ICL, AVX512_SPR |
+
+Of the 20 dispatched runs, 11 failed and 9 passed. The stopping rule was not followed. The 14 dispatches after the outage were made in one batch, without looking at outcomes, so the runs did not stop where the rule says. Its point, three failures and three passes, came at the 10th dispatched run (37644814631). The 10 dispatched runs after it are reported here with the rest. Gate 1 below holds both on the runs up to that point and on all 22. All 13 failures failed at "Fixtures are current", each with the same diff: blobs acadaa2 → b244ecb and 0ac916f → 5bf52bf, 480 changed lines. Their v0 step did not run. All 9 passes passed v0 as well. The same EPYC 9V74 appears on both sides, with `avx512f` off in one runner's virtual machine and on in four others.
+
+On the PC (i5-9600K, no AVX-512, numpy found X86_V3, both OpenBLAS Haswell), the unmodified generator at f23f297 gives that same diff: blobs 5bf52bf and b244ecb, 765 lines with context, `max_nonorthogonality_deg` …471 and `solution_caseA_L2_error` …324. The PC's run was put back at once (`git checkout -- tests/fixtures/`).
+
+*Gate 1 holds on all four counts.* Every failing run reports no `avx512f`, and every passing run reports it. Every failure diff is byte-identical. The PC, without AVX-512, gives the same diff. So the cause is named, as stated: the runner has no AVX-512, so scipy's OpenBLAS and numpy's `arccos` take their AVX2 paths. The EPYC 9V74 seen on both sides separates the cause from the processor's make.
+
+*Revision before step 2's commit: the AVX-512 machine.* The cloud session that wrote this ADR was closed by the user on 2026-10-08, before step 2. Step 1's record above was made in the session that continues this ADR. Two places name "this cloud session's" AVX-512 machine, and neither is available now:
+
+- *Decision 4.* The one regeneration is made on the PC, with the pinned generator. The prediction is unchanged: the diff is byte-identical to the CI failure diff (blobs b244ecb and 5bf52bf), and no other file changes. On the PC, though, this no longer tests the pin. Gate 1's fourth count shows the unmodified generator already gives this diff there: the PC has no AVX-512, OpenBLAS picks Haswell anyway, and numpy has no X86_V4 target. The original Decision 4, on an AVX-512 machine, did test the code. Moved to the PC it does not. The pin is first tested on AVX-512 by the revised gate 2 below, in CI. If gate 3 fails there, the change reverts, as stated.
+- *Gate 2.* "Clean on this cloud machine (AVX-512) and on the PC (AVX2)" becomes: clean on the PC, and clean on every CI run of gate 3 whose log reports `avx512f`. Each of those runs is the same thing gate 2 asks of the cloud machine: the generator, then `git diff --exit-code tests/fixtures/` on all 19 files, on a machine with AVX-512. Gate 3 already requires at least three such runs, so the AVX-512 side now rests on three or more machines instead of one.
+
+Nothing is loosened, on this basis. Every comparison stays bitwise, and every bound and count is as stated. The test of the pin on an AVX-512 machine is kept, and it moves from one machine to the gate-3 runs that report `avx512f`, at least three of them.
+
+Looked at before this revision was committed:
+- step 1's 22 logs and the PC's run of the unmodified generator, above;
+- the PC's run of the pinned generator at step 2's code. It gave blobs 5bf52bf and b244ecb and changed no other file, and its pin check printed both OpenBLAS as Haswell and numpy's targets as X86_V3 and its X86_V2 baseline;
+- the pin check's refusal, exercised on the PC with substituted inputs: a SkylakeX OpenBLAS, an X86_V4 dispatch and no OpenBLAS. It refused each one.
+
+The revision's text was first written before those two runs, and they were made before its commit. Neither changes it. The PC's venv now has threadpoolctl 3.7.0, installed for step 1's log and for step 2's check.
