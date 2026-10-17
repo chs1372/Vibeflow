@@ -5594,6 +5594,81 @@ The script is committed next, on its own. Its sha256, as committed with LF line 
 2. step 1's `reading --s0`, so that the face counts and |m − x| are reported;
 3. `s0`.
 
+*The reading script's first runs, recorded* (2026-10-17, 04:01 UTC). They ran in the order the second revision fixes. The script was the committed one, at commit bf9401c (sha256 cce7c22ef3a590dfddee1e66aa15e4021f7b9c3a31851ca4790f8e6b77942072). It ran in the working clone `~/Vibeflow`, checked out at that commit, under the venv's Python 3.12.15. Its outputs are kept in `~/lip_runs`.
+
+- *`consistency`*, on the print check's run (`~/printcheck/with/L2.log`) and on S0's L2_up, L2_cal, L2 and L1:
+  - each log has one attempt, no resume, no truncated line and no error;
+  - LIPX equals the `.cp` x strings of the lip faces;
+  - the last LIP line equals the `.cp` at those faces (largest difference 0);
+  - d_G from the four faces equals d_G from the whole floor (0);
+  - |d_F − (d_G − b)| is at most 2.2e-17;
+  - all five exit with code 0.
+
+  The print check's run has four kept LIP lines and is unsettled, as a `VIBEFLOW_BS_STOP` run is. Its LIP values were read only by this check.
+- *Step 1 (R), `reading --s0`*, reported, not judged:
+  - `step 1 (R) level 1 corner: d-b 0.0205 within 0.015 no, d+C40 0.0198 within 0.015 no`
+  - `step 1 (R) level 1 -0.021: d-b 0.0174 within 0.015 no, d+C40 0.0167 within 0.015 no`
+  - `step 1 (R) level 2 corner: d-b 0.0200 within 0.015 no, d+C40 0.0214 within 0.015 no`
+  - `step 1 (R) level 2 -0.021: d-b 0.0181 within 0.015 no, d+C40 0.0174 within 0.015 no`
+  - `step 1 (R): reported, not judged`
+
+  More of what it reported:
+  - C40 is −0.000688.
+  - On level 1, b is +0.000006 at the corner and −0.000006 at −0.021, as the prediction's first premise has it (|b| ≤ 0.0004).
+  - On level 2, b is +0.002097 at the corner and +0.000001 at −0.021.
+  - The largest |b| in −4 ≤ x ≤ 0 is at CFL3D's point −0.0417: −0.001036 on level 1 and −0.002072 on level 2. At −4 it is ∓0.00017, one value for each of CFL3D's two entries there.
+  - TMR's upstream face centres number 336 on level 1 and 168 on level 2, the same as S0's `.cp`, and they differ from the harness's by at most 5.0e-9.
+
+  Neither b nor C40 alone brings a lip point within 0.015, so step 1 records nothing for the known limits.
+- *Step 4 (S0), `s0`*:
+  - `step 4 (S0) L2_up: settled quasi`, and the same for L2_cal, L2 and L1;
+  - `step 4 (S0) level 1 corner: judged (d_S0 0.0205)`
+  - `step 4 (S0) level 1 -0.021: judged (d_S0 0.0174)`
+  - `step 4 (S0) level 2 corner: judged (d_S0 0.0221)`
+  - `step 4 (S0) level 2 -0.021: judged (d_S0 0.0181)`
+  - `step 4 (S0): reproduces`
+
+  The reproduction, with S0's value, its |difference| from ADR-045 and the margin to its band:
+
+  | Quantity | S0 | \|difference\| | margin |
+  |---|---|---|---|
+  | U_in | 0.94477457 | 4.3e-7 | 2.0e-4 |
+  | level 2 x_r | 6.556656 | 4.4e-5 | 0.018 |
+  | level 2 Cf(−4) | 2.8793271e-3 | 2.7e-8 | 2.4e-5 |
+  | level 2 u_c(−4) | 0.99928721 | 2.8e-6 | 1.97e-4 |
+  | level 2 lip d, corner | 0.0220627 | 3.7e-5 | 7.6e-4 |
+  | level 2 lip d, −0.021 | 0.0181331 | 3.3e-5 | 3.7e-4 |
+  | level 1 x_r | 6.520951 | 4.9e-5 | 0.018 |
+  | level 1 Cf(−4) | 2.9283446e-3 | 4.6e-9 | 2.4e-5 |
+  | level 1 u_c(−4) | 0.99890747 | 2.5e-6 | 1.97e-4 |
+  | level 1 lip d, corner | 0.0204768 | 2.3e-5 | 7.8e-4 |
+  | level 1 lip d, −0.021 | 0.0174112 | 1.1e-5 | 3.9e-4 |
+
+  - No quantity is flagged.
+  - S0's U_in string s is `0.944774574893`.
+  - Every lip point is judged on both levels. E_S0 is 0.00548 at the corner and 0.00241 at −0.021 on level 1 (step 5's base), and 0.00706 and 0.00313 on level 2 (step 6's base).
+  - S0 is therefore the base of steps 5 and 6. Nothing goes to the known limits from step 4.
+
+  Reported, not judged:
+  - *The window.*
+    - On level 2 its 20 samples run from step 750 to 1,700. m is 0.022833 at the corner and 0.018531 at −0.021 by the gate reading, with B 0.019042 and 0.019174.
+    - On level 1 they run from step 350 to 1,300. m is 0.022051 and 0.018983, with B 0.003863 and 0.003856.
+    - The face reading's m is lower than the gate reading's at the corner: by 0.0021 on level 2, and by 6e-6 on level 1. At −0.021 the two agree to within 7e-6.
+  - *The lip series.* Both marches met ADR-045's quasi-steady criterion through x_r and Cf(−4) while the lip was still moving.
+    - On level 2 the lip oscillates through the window, with a period of about 300 to 400 steps. The corner's d runs between 0.0154 and 0.0345. Its final value, 0.0221, is near the oscillation's middle.
+    - On level 1 it falls through the whole march: from 0.0283 at the corner at step 50, to 0.0205 at FINAL. The last 50 steps still take off 0.00009, and each 50-step decrement is about 0.87 of the one before.
+  - *Consequences for the fixed rules.*
+    - Step 6's "moves the lip" needs |δ| > max(|δ0|, (B_S0 + B_abl)/2). With level 2's B_S0 of 0.019, a shift of the mean above about 0.0095 is needed, plus half the ablation's own range. That is more than E_S0 at either level-2 point.
+    - Step 5 reads level 0's window against a level-1 base that was still falling at FINAL.
+    - These are what the rules fixed before S0 imply. They are recorded, and nothing here changes a rule.
+  - *The rest of the report*:
+    - the marches' FINAL lines;
+    - level 1's largest |d| behind the step, 0.004394 at x = 4.6042 by the gate reading (0.004392 by the face reading). Level 2's is 0.005702 at x = 3.75. The `.cpw` readings are the same to the printed digits;
+    - time per step over the first 100 steps: 3.36 s for L2_up, 2.75 s for L2_cal, 3.28 s for L2 and 16.11 s for L1 on this machine's two threads. (s100 − s50)/50 is 2.92, 2.82, 3.10 and 14.82 s;
+    - the full lip series, which is in `~/lip_runs/s0.txt`.
+
+Steps 5 and 6 start once steps 2 and 3 have been read or recorded as not run (step 7). Those steps need TMR's FUN3D and finest-grid files, which have not been fetched; each download needs the user's permission.
+
 ## ADR-047 — The backward-facing step under MPI: the harness, a parallel ILU and the serial answer. Stated before the code and the runs, answered after
 
 **Context.** ADR-046 needs TMR's finest grid for the step, about 1.28 million cells (its step 5). It estimates that march at 20 to 40 hours on two threads. The PETSc 3.24.4 and hypre 3.0.0 on this machine are built without OpenMP (`petscconf.h` has `PETSC_HAVE_HYPRE` and no `PETSC_HAVE_OPENMP`; hypre's `HYPRE_USING_OPENMP` is undefined), so their own kernels are serial. PETSc's vector operations call `libblas`, which on this machine resolves to OpenBLAS's pthreads build (the `libblas.so.3` alternative, priority 100, and the binary links it). Its threads follow `OMP_NUM_THREADS`, or every core when that is unset. So threads speed up the Kokkos share of a step and some of the Krylov vector work. ADR-046's cost note that threads speed up only the Kokkos share is not exact in this respect. How much of a solve they parallelise has not been measured. Ranks would split the whole of each solve.
