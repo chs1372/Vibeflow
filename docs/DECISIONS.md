@@ -5738,6 +5738,37 @@ Steps 5 and 6 still run as this ADR states (step 7): they start once S0 has sett
 
 Nothing here changes a rule of this ADR, its contract on downloaded files, gate 4, the user's decisions or ADR-047.
 
+*Before steps 5 and 6, recorded* (2026-10-19).
+
+- *The files*, as the third revision fetches them:
+  - fetched at 05:29 UTC into `~/tmr_downloads`;
+  - the zip: 62,191,798 bytes, sha256 a646e5f64d0ed418331109d6515e8ec2885ac5893823fd391122a9857ef9d7b9, with 31 members;
+  - committed in c0c4843: its member `backstep5_0levdn.p2dfmt.gz` (7,700,164 bytes, sha256 8491cf5ab7178566b877dbd17b2b4f508c485d52bd1ea202f3b922621f41444b), and `backstep5_0levdn.nmf` (1,924 bytes, sha256 a048b9783d1847602ef402d28e84a56a5d8dd1d26ead4a43a37407c7d014d8bc), which is identical to the zip's member of that name;
+  - `labels.json` was added with them;
+  - the zip's grids for levels 1 to 4 are byte-identical to those ADR-045 committed.
+- *The mesh.* `make_mesh.py`'s check is 9d2931c. On levels 2 and 1 it gives the harness's own patch counts, and L2.hex and L1.hex keep their sha256. `make_mesh.py 0`, run in the working clone at 9d2931c, prints:
+  - `level 0: 1277952 cells, 1280577 points (zones less shared: 1280577), area 1490 (channel 1490): PASS -> L0.hex`
+  - `level 0 boundary faces: inlet 512, outlet 896, top 1696, top slip 32, upstream floor 672, upstream slip 32, lower floor 1024, step 384, unclassified 0: PASS`
+  - `backstep mesh GATE: PASS`
+
+  So the grid passes gate 1 and step 5's boundary classes. L0.hex (175,596,740 bytes) is copied to `~/l0/L0.hex`, with sha256 c037e5940ed1ba57cb6641e1452263d9d657b5edb797c2a149097f5762ec37dd. Step 5 reads that copy.
+- *Nesting.* The script's `nested` reports 1,277,952 cells, and every z = 0 point of S0's L1.hex lies within 0 of one of L0's. The grid is nested, so step 5's lip values come from its window.
+- *Step 1 on level 0*, `reading --s0 --grid0`, reported:
+  - 672 upstream wall faces;
+  - b is −0.000003 at −0.021 and 0.000000 at the corner, and −0.000518 at −0.0417;
+  - levels 1 and 2 and C40 are unchanged from the record above.
+- *The commands*, as `commands` prints them:
+  - binary `/home/chs/Vibeflow-s0/build/tests/backstep`, sha256 77c10aca…;
+  - s `0.944774574893`; dt_S0 `0.08`, and `0.04` for (b);
+  - step 5: `L0.hex` → `~/step5/L0`, at dt 0.04, from S0's `L1.state`;
+  - step 6: `<root>/<k>/L2_<k>` under `~/step6`, from S0's `L2.state`, with each march's change.
+
+  The full lines are in `~/lip_runs/commands.txt`. The directories `~/step5` and `~/step6` do not exist before their marches.
+- *Disk.* C: has 13 GB free, and WSL's root 948 GB of its disk. Step 5 does not start with less than 2 GB free.
+- *How they are run.* A script, `~/steps56_run.sh`, starts step 5 and runs step 6's six marches one after another beside it. It takes each command from `commands.txt` and records to `~/steps56/record.txt`. Before each march or resume it checks the binary's sha256, and stops that march on a mismatch.
+  - On a later invocation, a march with a FINAL is left alone. One with a checkpoint is resumed with its resume command. One with neither was interrupted before its first checkpoint: its directory is moved to `~/steps56/abandoned/` and the march is started again in a new, empty directory at the same path (step 7).
+  - A PowerShell launcher keeps the machine from idle sleep while the script runs.
+
 ## ADR-047 — The backward-facing step under MPI: the harness, a parallel ILU and the serial answer. Stated before the code and the runs, answered after
 
 **Context.** ADR-046 needs TMR's finest grid for the step, about 1.28 million cells (its step 5). It estimates that march at 20 to 40 hours on two threads. The PETSc 3.24.4 and hypre 3.0.0 on this machine are built without OpenMP (`petscconf.h` has `PETSC_HAVE_HYPRE` and no `PETSC_HAVE_OPENMP`; hypre's `HYPRE_USING_OPENMP` is undefined), so their own kernels are serial. PETSc's vector operations call `libblas`, which on this machine resolves to OpenBLAS's pthreads build (the `libblas.so.3` alternative, priority 100, and the binary links it). Its threads follow `OMP_NUM_THREADS`, or every core when that is unset. So threads speed up the Kokkos share of a step and some of the Krylov vector work. ADR-046's cost note that threads speed up only the Kokkos share is not exact in this respect. How much of a solve they parallelise has not been measured. Ranks would split the whole of each solve.
