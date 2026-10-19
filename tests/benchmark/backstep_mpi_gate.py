@@ -9,7 +9,10 @@
 tests/backstep_owners. <reference build> is the lip-print build that S0 runs;
 its clone's cases/backstep holds the L2.hex and L1.hex that every gate reads
 (ADR-047's first revision). Nothing is written in either clone. S0's directory
-is gate 6's, whose part of this script is committed before gate 6 starts.
+(its build/backstep) is gate 6's: S0's L2.state, L2_cal.log, L1.log and L1.cp,
+read only. Gate 6 runs S0's L1 command on four ranks, resumes it on four
+ranks if interrupted, and then the control, S0's L1 command on two threads
+with the lip-print binary, reported only.
 
 <out> holds one new directory per run, kept, and record.txt. A run whose
 directory has its <name>.json beside it is reused. A directory without one is
@@ -71,6 +74,10 @@ FINAL_SAME = ("steps", "full", "dt", "time", "settled")
 B_MIN, FLOOR_MAX = 1e-10, 1e-7           # gate 2
 TOL3 = 1e-5                              # gate 3
 LIMIT_FLOOR = 120.0                      # seconds: mpirun's own start-up (the first revision)
+TAU6 = 0.00048                           # gate 6: ADR-046's cap on the wall's Cp
+SECONDS6 = 54000.0                       # gate 6: printed seconds, three times ADR-045's L1
+QUIET6 = 3600.0                          # gate 6: wall seconds without a 50-step line
+REL6, UC6 = 0.002, 0.0002                # gate 6 (ii)
 TOL4 = 1e-10                             # gate 4 (iii)
 XY4 = 1e-12                              # gate 4 (i)
 MARGIN4 = 1e-12                          # gate 4 (v) and the station margins
@@ -102,6 +109,9 @@ class G:
     named = {}                       # P -> True if F5's or F6's named quantity failed
     lock = threading.Lock()
     mpi = threading.Lock()           # one of this ADR's MPI runs at a time
+    kill_reason = None
+    commit = None
+    build_sha = {}                   # the build's binaries: what a gate's result belongs to
 
 
 def now():
@@ -180,7 +190,8 @@ class Run:
 
     def __init__(self, gate, name, procs=0, threads=1, binary="new", env=None, level=2,
                  kind="backstep", argv=None, limit_from=None, copy_in=(), log_beside=False,
-                 watch=None, base=None):
+                 watch=None, base=None, args=L2_ARGS, resumable=False):
+        self.args, self.resumable = tuple(args), resumable
         self.gate, self.name, self.procs, self.threads = gate, name, procs, threads
         self.binary, self.env, self.level, self.kind = binary, dict(env or {}), level, kind
         self.argv, self.limit_from, self.copy_in = argv, limit_from, list(copy_in)
@@ -220,7 +231,7 @@ def command(run):
     if run.kind == "raw":
         argv = [str(a) for a in run.argv]
     else:
-        argv = [str(binary(run.binary)), str(mesh(run.level)), run.prefix, *L2_ARGS]
+        argv = [str(binary(run.binary)), str(mesh(run.level)), run.prefix, *run.args]
     if run.procs == 0:
         return argv
     names = ["OMP_NUM_THREADS", "OMP_PROC_BIND", *sorted(run.env)]
@@ -232,30 +243,50 @@ def command(run):
 
 
 def spawn(cmd, env, cwd, log, limit, watch):
+    """Runs cmd. A watch that returns a reason kills the run, as the limit does."""
     t0 = time.monotonic()
     killed = False
+    G.kill_reason = None
     with open(log, "ab") as fh:
         p = subprocess.Popen(cmd, env=env, cwd=cwd, stdout=fh, stderr=subprocess.STDOUT,
                              start_new_session=True)
-        while True:
+        try:
+            rc, killed = _wait(p, t0, limit, watch)
+        except BaseException:                # the script interrupted: its run goes with it
             try:
-                rc = p.wait(timeout=0.2)
-                break
-            except subprocess.TimeoutExpired:
-                if watch:
-                    watch()
-                if limit is not None and time.monotonic() - t0 > limit:
-                    os.killpg(p.pid, signal.SIGTERM)
-                    try:
-                        p.wait(timeout=30)
-                    except subprocess.TimeoutExpired:
-                        os.killpg(p.pid, signal.SIGKILL)
-                        p.wait()
-                    rc, killed = None, True
-                    break
+                os.killpg(p.pid, signal.SIGTERM)
+                p.wait(timeout=30)
+            except (OSError, subprocess.TimeoutExpired):
+                os.killpg(p.pid, signal.SIGKILL)
+            raise
     if watch:
-        watch()
+        why = watch(final=True)
+        if why and not killed:
+            G.kill_reason, killed = why, True    # found on the last read: the limit was passed
     return rc, time.monotonic() - t0, killed
+
+
+def _wait(p, t0, limit, watch):
+    """Waits for p, polling its watch; kills it at its limit or when the watch says."""
+    killed = False
+    while True:
+        try:
+            rc = p.wait(timeout=0.2)
+            break
+        except subprocess.TimeoutExpired:
+            why = watch() if watch else None
+            if why:
+                G.kill_reason = why
+            if why or (limit is not None and time.monotonic() - t0 > limit):
+                os.killpg(p.pid, signal.SIGTERM)
+                try:
+                    p.wait(timeout=30)
+                except subprocess.TimeoutExpired:
+                    os.killpg(p.pid, signal.SIGKILL)
+                    p.wait()
+                rc, killed = None, True
+                break
+    return rc, killed
 
 
 def limit_for(run):
@@ -280,13 +311,47 @@ def limit_for(run):
     return max(LIMIT_FLOOR, 10.0 * info["seconds"])
 
 
+def running_in(d):
+    """Processes whose working directory is d or under it."""
+    d, n = str(d), 0
+    for q in Path("/proc").iterdir():
+        if q.name.isdigit():
+            try:
+                cwd = os.readlink(q / "cwd")
+            except OSError:
+                continue
+            n += cwd == d or cwd.startswith(d + "/")
+    return n
+
+
+def resume_refused(run):
+    """Why an interrupted resumable run may not resume, or None. It resumes only
+    from a complete per-rank set, before its FINAL, with nothing running there."""
+    if running_in(run.dir):
+        return "a process is still running in its directory"
+    if run.log.exists() and finals(run.log) is not None:
+        return "its log already holds a FINAL line"
+    P = max(1, run.procs)
+    have = sorted(f.name for f in run.dir.glob(f"{run.prefix}.ckpt.*of{P}") if not f.name.endswith(".tmp"))
+    want = [f"{run.prefix}.ckpt.{r}of{P}" for r in range(P)]
+    if have != want:
+        return f"no complete checkpoint set ({len(have)} of {P} files)"
+    return None
+
+
 def execute(run, wait_for_cores=False):
     """Runs it unless it has run. None if the cores are not free."""
     if run.done():
         return run.info()
+    resume = False
     if run.dir.exists() or run.log.exists():
-        raise Stop(f"{run.dir} or {run.log.name} exists without {run.meta.name}: an interrupted run. "
-                   f"Look at it, and remove both to run it again")
+        if not (run.resumable and run.dir.exists()):
+            raise Stop(f"{run.dir} or {run.log.name} exists without {run.meta.name}: an interrupted run. "
+                       f"Look at it, and remove both to run it again")
+        why = resume_refused(run)
+        if why:
+            raise Stop(f"{run.dir}: interrupted, and not resumed: {why}")
+        resume = True
     with G.lock:
         free = budget() - _active["cores"]
         if run.cores() > free:
@@ -295,10 +360,14 @@ def execute(run, wait_for_cores=False):
         _active["cores"] += run.cores()
     try:
         limit = limit_for(run)
-        run.dir.mkdir(parents=True)
-        for src, dst in run.copy_in:
-            shutil.copy2(src, run.dir / dst)
+        if not resume:
+            run.dir.mkdir(parents=True)
+            for src, dst in run.copy_in:
+                shutil.copy2(src, run.dir / dst)
         before = {p.name: sha256(p) for p in sorted(run.dir.iterdir())}
+        if resume:                           # ADR-047 gate 6: on the same ranks, appending to the log
+            run.env["VIBEFLOW_BS_RESUME"] = "1"
+            say(f"  g{run.gate}/{run.name}: interrupted before; resumed in its own directory")
         env = clean_env(run.threads, run.env)
         cmd = command(run)
         busy, load, started = marches_running(), loadavg(), now()
@@ -313,11 +382,13 @@ def execute(run, wait_for_cores=False):
         after = {p.name: sha256(p) for p in sorted(run.dir.iterdir())}
         info = {"name": run.name, "gate": run.gate, "cmd": cmd, "env": run.env,
                 "threads": run.threads, "procs": run.procs, "exit": rc, "seconds": secs,
-                "killed": killed, "limit": limit, "marches": busy, "load": load,
+                "killed": killed, "kill_reason": G.kill_reason if killed else None,
+                "limit": limit, "marches": busy, "load": load, "resumed": resume,
                 "load_end": loadavg(), "files_before": before, "files_after": after,
-                "started": started, "ended": now()}
+                "started": started, "ended": now(), "build": G.build_sha}
         run.meta.write_text(json.dumps(info, indent=1))
-        say(f"  done g{run.gate}/{run.name}: exit {rc}, {secs:.0f} s" + (", KILLED at its limit" if killed else ""))
+        say(f"  done g{run.gate}/{run.name}: exit {rc}, {secs:.0f} s"
+            + (f", KILLED ({G.kill_reason or 'at its limit'})" if killed else ""))
         return info
     finally:
         with G.lock:
@@ -613,7 +684,7 @@ def gate0():
     kept = G.out / "g0" / "c_ref.step50.ckpt"
     c_ref = Run(0, "c_ref", binary="ref", env=C)
 
-    def grab():
+    def grab(final=False):
         src = c_ref.path("ckpt")
         if not kept.exists() and src.exists():
             shutil.copy2(src, kept.with_suffix(".tmp"))
@@ -1208,6 +1279,210 @@ def gate5():
     return verdict(ok), lines
 
 
+# ---------------------------------------------------------------- gate 6
+
+def watch6(log):
+    """Gate 6's limits: printed seconds past 54,000, or an hour of wall time
+    with no new 50-step line. Read every 30 s."""
+    state = {"t": time.monotonic(), "seen": None, "read": 0.0}
+    pat = re.compile(r"^\s*step\s+(\d+)\s+t\s.*\((\d+(?:\.\d*)?) s\)\s*$")
+
+    def watch(final=False):
+        now_ = time.monotonic()
+        if now_ - state["read"] < 30.0 and not final:
+            return None
+        state["read"] = now_
+        last = None
+        try:
+            for ln in log_lines(log):
+                m = pat.match(ln)
+                if m:
+                    last = (int(m.group(1)), float(m.group(2)))
+        except OSError:
+            return None
+        if last is not None and last != state["seen"]:
+            state["seen"], state["t"] = last, now_
+        if last is not None and last[1] > SECONDS6:
+            return f"printed seconds {last[1]:.0f} past {SECONDS6:.0f}"
+        if now_ - state["t"] > QUIET6 and not final:
+            return f"no new 50-step line for {QUIET6:.0f} s"
+        return None
+    return watch
+
+
+def lip_module():
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import backstep_lip
+    import backstep_gate
+    return backstep_lip, backstep_gate
+
+
+def read6(BL, BG, ref, log, cp):
+    """A march's quantities for gate 6: its parsed log, its .cp, the gate
+    reading at the three points, the window means of the two lip values."""
+    L = BL.parse_log(log)
+    c = BL.read_cp(cp)
+    pts = {"corner": float(BG.floor_values([ref.lip["corner"][0]], True, c[:, 0], c[:, 1])[0]),
+           "-0.021": float(BG.floor_values([ref.lip["-0.021"][0]], True, c[:, 0], c[:, 1])[0]),
+           "x = 0, lower floor": float(BG.floor_values([0.0], False, c[:, 0], c[:, 1])[0])}
+    samples, _, errs = BL.window(L)
+    means = {}
+    if not errs and L.lipx is not None:
+        for p in BL.POINTS:
+            means[p] = float(np.mean([BL.lip_values(L.lipx, x, ref, p)[0] for x in samples]))
+    return L, c, pts, means, errs
+
+
+def compare6(BL, BG, ref, s0, ours, name):
+    """Gate 6's judged quantities between S0's L1 and a march: (ok, lines)."""
+    L0, c0, p0, m0, e0 = s0
+    L1, c1, p1, m1, e1 = ours
+    lines, ok = [], True
+    if not L1.usable or L1.cls not in ("steady", "quasi"):
+        return False, [f"{name}: not a settled, usable march (class {L1.cls}, errors {L1.errors})"]
+    w0 = (c0[:, 0] >= -4.0) & (c0[:, 0] <= 30.0)
+    w1 = (c1[:, 0] >= -4.0) & (c1[:, 0] <= 30.0)
+    same_x = np.array_equal(c0[w0, 0], c1[w1, 0])
+    dmax = float(np.max(np.abs(c1[w1, 1] - c0[w0, 1]))) if same_x else math.inf
+    good = same_x and dmax <= TAU6
+    ok &= good
+    k = int(np.argmax(np.abs(c1[w1, 1] - c0[w0, 1]))) if same_x else 0
+    lines.append(f"{name} (i) .cp at every bottom-wall face with -4 <= x <= 30: faces paired {same_x}, "
+                 f"largest |dCp| {dmax:.6f}" + (f" at x = {c0[w0, 0][k]:+.6f}" if same_x else "")
+                 + f" against {TAU6}  {verdict(good)}")
+    for pt in p0:
+        d = p1[pt] - p0[pt]
+        good = abs(d) <= TAU6
+        ok &= good
+        lines.append(f"{name} (i) the gate reading at {pt}: dCp {d:+.6f}  {verdict(good)}")
+    if e1 or e0 or len(m0) != 2 or len(m1) != 2:
+        ok = False
+        lines.append(f"{name} (i) the window means: not computed (S0: {e0 or 'ok'}; {name}: {e1 or 'ok'})  FAIL")
+    else:
+        for pt in BL.POINTS:
+            d = m1[pt] - m0[pt]
+            good = abs(d) <= TAU6
+            ok &= good
+            lines.append(f"{name} (i) the window mean at {pt}: dm {d:+.6f}  {verdict(good)}")
+    f0, f1 = L0.final, L1.final
+    for key, tol, rel in (("xr", REL6, True), ("cf4", REL6, True), ("uc4", UC6, False)):
+        a, b = float(f0[key]), float(f1[key])
+        d = abs(b - a)
+        good = d <= (tol * abs(a) if rel else tol)
+        ok &= good
+        lines.append(f"{name} (ii) {key} {f1[key]} against S0's {f0[key]}: "
+                     + (f"{d / abs(a):.5f} of S0's" if rel else f"|d| {d:.6f}") + f"  {verdict(good)}")
+    good = f1["settled"] in ("steady", "quasi") and float(f1["dt"]) == float(f0["dt"])
+    ok &= good
+    lines.append(f"{name} (iii) settled {f1['settled']} at dt {f1['dt']} (S0's L1: {f0['settled']} at dt "
+                 f"{f0['dt']})  {verdict(good)}")
+    return ok, lines
+
+
+def printed_seconds(log):
+    """The largest printed seconds of a log's 50-step and FINAL lines."""
+    pat = re.compile(r"^\s*step\s+\d+\s+t\s.*\((\d+(?:\.\d*)?) s\)\s*$")
+    worst = 0.0
+    for ln in log_lines(log):
+        m = pat.match(ln)
+        if m:
+            worst = max(worst, float(m.group(1)))
+    f = finals(log)
+    if f and "seconds" in f:
+        try:
+            worst = max(worst, float(f["seconds"]))
+        except ValueError:
+            pass
+    return worst
+
+
+def judge6(BL, BG, ref, s0, run, name):
+    """(ok, lines) for a gate 6 march; a .cp or log that cannot be read fails."""
+    try:
+        return compare6(BL, BG, ref, s0, read6(BL, BG, ref, run.log, run.path("cp")), name)
+    except (BL.Stop, BL.NotJudged, OSError, ValueError, IndexError) as e:
+        return False, [f"{name}: not computed ({e})  FAIL"]
+
+
+def gate6():
+    say("gate 6: the production march on four ranks against S0's L1")
+    if G.s0 is None:
+        return "NOT YET", ["S0's directory not given"]
+    saved = G.out / "results.json"
+    got = json.loads(saved.read_text()) if saved.exists() else {}
+    before = [g for g in range(6) if got.get(str(g), {}).get("status") != "PASS"
+              or got.get(str(g), {}).get("build") != G.build_sha]
+    r = Run(6, "p4", procs=4, level=1, resumable=True)
+    if before and not r.dir.exists():
+        return "NOT YET", [f"gates {before} have not passed with this build's binaries (ADR-047, Order 5)"]
+    BL, BG = lip_module()
+    d = G.s0
+    try:
+        S = BL.parse_log(d / "L1.log")
+        if not S.usable or S.cls not in ("steady", "quasi"):
+            return "STOPPED", [f"S0's L1 is not a settled, usable march (class {S.cls})"]
+        a = BL.first_attempt(S)
+        if a is None or a.mesh is None or Path(a.mesh).resolve() != mesh(1).resolve():
+            return "STOPPED", [f"S0's L1 read {a.mesh if a else None}, not {mesh(1)}"]
+        u, ustr = BL.s0_u_in(d)
+        ref, _ = BL.cfl3d()
+        s0 = read6(BL, BG, ref, d / "L1.log", d / "L1.cp")
+    except (BL.Stop, BL.NotJudged, OSError, ValueError) as e:
+        return "STOPPED", [f"S0's L1 cannot be read: {e}"]
+    init = d / "L2.state"
+    say(f"  S0's L1: {d / 'L1.log'}, mesh {a.mesh} sha256 {sha256(mesh(1))}; U_in {ustr} from "
+        f"S0's L2_cal.log; init {init} sha256 {sha256(init)}")
+    E = {"VIBEFLOW_BS_INIT": str(init), "VIBEFLOW_BS_SAVE": "1"}
+    args = ("0.08", "5000", ustr)
+    r = Run(6, "p4", procs=4, env=E, level=1, args=args, resumable=True)
+    r.watch = watch6(r.log)
+    info = execute(r)
+    if info is None:
+        return "NOT YET", ["P = 4 waits for four free cores"]
+    lines, ok = [], True
+    secs = printed_seconds(r.log)
+    if info["killed"]:
+        ok = False
+        lines.append(f"P = 4 killed: {info.get('kill_reason') or 'at its limit'}  FAIL")
+    elif secs > SECONDS6:
+        ok = False
+        lines.append(f"P = 4 printed {secs:.0f} s, past {SECONDS6:.0f}  FAIL")
+    elif not r.path("cp").exists():
+        ok = False
+        lines.append("P = 4 wrote no .cp  FAIL")
+    else:
+        good, ls = judge6(BL, BG, ref, s0, r, "P = 4")
+        ok &= good
+        lines += ls
+        eqs = [ln.split() for ln in log_lines(r.log) if first(ln) == "EQ"]
+        differ = [int(t[1]) for t in eqs if len(t) == len(EQ_NAMES) + 1 and t[19] != "0"]
+        good = bool(eqs) and not differ
+        ok &= good
+        lines.append(f"P = 4 (iv) EQ lines with differing sweep counts: {differ or 'none'} of {len(eqs)}  "
+                     f"{verdict(good)}")
+        f = finals(r.log)
+        lines.append(f"reported: P = 4 {f['steps'] if f else '?'} steps in {f['seconds'] if f else '?'} s; "
+                     f"S0's L1 {S.final['steps']} steps in {S.final['seconds']} s on two threads; {solves(r.log)}")
+    # P = 4's verdict is recorded before the control starts; the control changes none.
+    for ln in lines:
+        say(f"  gate 6: {ln}")
+    say(f"gate 6, P = 4 against S0's L1: {verdict(ok)} (the control follows, reported only)")
+    c = Run(6, "control", threads=2, binary="ref", env=E, level=1, args=args)
+    c.watch = watch6(c.log)
+    try:
+        cinfo = execute(c)
+    except Stop as e:
+        cinfo, lines = None, lines + [f"the control: {e} (reported)"]
+    if cinfo is None:
+        lines.append("the control (S0's L1 command, two threads, the lip-print binary): not run yet (reported)")
+    elif cinfo["killed"] or not c.path("cp").exists():
+        lines.append(f"the control: {cinfo.get('kill_reason') or 'no .cp'} (reported)")
+    else:
+        _, ls = judge6(BL, BG, ref, s0, c, "the control")
+        lines += [ln.replace("  PASS", "  (reported)").replace("  FAIL", "  (reported)") for ln in ls]
+    return verdict(ok), lines
+
+
 # ---------------------------------------------------------------- main
 
 def main():
@@ -1216,7 +1491,7 @@ def main():
     ap.add_argument("reference")
     ap.add_argument("out")
     ap.add_argument("s0", nargs="?")
-    ap.add_argument("--gates", default="0,1,2,3,4,5")
+    ap.add_argument("--gates", default="0,1,2,3,4,5")   # gate 6 only when asked for
     ap.add_argument("--ranks", default="1,2,3,4")
     ap.add_argument("--cores", type=int, default=2)
     ap.add_argument("--jobs", type=int, default=1)
@@ -1238,7 +1513,7 @@ def main():
         gates = [FAULT_GATE[a.fault][0]]
         G.ranks = tuple(P for P in G.ranks if P in FAULT_GATE[a.fault][1])
     G.out.mkdir(parents=True, exist_ok=True)
-    for g in range(6):
+    for g in range(7):
         (G.out / f"g{g}").mkdir(exist_ok=True)
     say(f"backstep_mpi_gate.py: build {G.build}, reference {G.ref}, gates {gates}, ranks {G.ranks}, "
         f"cores {G.cores}, jobs {G.jobs}" + (f", fault {G.fault} against {G.baseline}" if G.fault else ""))
@@ -1247,21 +1522,29 @@ def main():
         st = subprocess.run(["git", "-C", str(clone), "status", "--porcelain", "--untracked-files=no"],
                             capture_output=True, text=True)
         say(f"  {clone}: commit {r.stdout.strip()}{' (modified)' if st.stdout.strip() else ''}")
+        if clone == G.build.parent:
+            G.commit = r.stdout.strip() + (" (modified)" if st.stdout.strip() else "")
     for lv in (2, 1):
         say(f"  L{lv}.hex {mesh(lv)} sha256 {sha256(mesh(lv))}")
     for exe in ("backstep", "test_backends_mpi", "backstep_owners"):
         p = G.build / "tests" / exe
         if p.exists():
-            say(f"  {exe} sha256 {sha256(p)}")
+            G.build_sha[exe] = sha256(p)
+            say(f"  {exe} sha256 {G.build_sha[exe]}")
     say(f"  reference backstep sha256 {sha256(binary('ref'))}")
-    table = {0: gate0, 1: gate1, 2: gate2, 3: gate3, 4: gate4, 5: gate5}
+    table = {0: gate0, 1: gate1, 2: gate2, 3: gate3, 4: gate4, 5: gate5, 6: gate6}
     results = {}
+    saved = G.out / "results.json"
     for g in gates:
         status, lines = table[g]()
         results[g] = status
         for ln in lines:
             say(f"  gate {g}: {ln}")
         say(f"gate {g}: {status}")
+        if not G.fault:
+            got = json.loads(saved.read_text()) if saved.exists() else {}
+            got[str(g)] = {"status": status, "commit": G.commit, "build": G.build_sha, "at": now()}
+            saved.write_text(json.dumps(got, indent=1))
     say("summary: " + "  ".join(f"gate {g} {s}" for g, s in results.items()))
     if G.fault:
         gate, wanted = FAULT_GATE[G.fault]
@@ -1290,7 +1573,13 @@ def main():
     return 0 if all(s == "PASS" for s in results.values()) else 2
 
 
+def _signalled(signum, frame):
+    raise SystemExit(128 + signum)
+
+
 if __name__ == "__main__":
+    signal.signal(signal.SIGTERM, _signalled)
+    signal.signal(signal.SIGHUP, _signalled)
     try:
         sys.exit(main())
     except Stop as e:
