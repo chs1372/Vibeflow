@@ -18,7 +18,10 @@ Gate 1 of ADR-045 is checked here, per level: the cell count is the zones'
 sum, every interface point is merged (the number of distinct points is the
 zones' total less the shared ones), and the cells' area is 1,490 exactly.
 
-Run:  python3 make_mesh.py [level ...]      levels 1 2 3 4 (default 4 3 2 1),
+For level 0, TMR's finest grid (ADR-046's third revision), it also checks that
+every boundary face falls into one of the harness's classes.
+
+Run:  python3 make_mesh.py [level ...]      levels 0 1 2 3 4 (default 4 3 2 1),
       each written to L<level>.hex beside this script.
 """
 
@@ -107,6 +110,38 @@ def check(zones, pts2, index):
     return cells, total - shared, len(pts2), area, ok
 
 
+def classes(pts2, index):
+    """ADR-046's step 5, for TMR's finest grid: every boundary face of the
+    merged grid (an edge of one cell only; the span faces aside) in one of the
+    harness's classes, by its midpoint, in backstep.cpp's order and tolerances."""
+    edges = []
+    for idx in index:
+        q = [idx[:-1, :-1], idx[:-1, 1:], idx[1:, 1:], idx[1:, :-1]]
+        for k in range(4):                         # each cell's four edges
+            edges.append(np.stack([q[k].ravel(), q[(k + 1) % 4].ravel()], -1))
+    edges, count = np.unique(np.sort(np.concatenate(edges), axis=1), axis=0, return_counts=True)
+    x_in, x_out, y_top = pts2[:, 0].min(), pts2[:, 0].max(), pts2[:, 1].max()
+    n = dict.fromkeys(("inlet", "outlet", "top", "top slip", "upstream floor", "upstream slip",
+                       "lower floor", "step", "unclassified"), 0)
+    for a, b in edges[count == 1]:
+        x, y = 0.5 * (pts2[a] + pts2[b])
+        if abs(x - x_in) < 1e-9:
+            n["inlet"] += 1
+        elif abs(x - x_out) < 1e-9:
+            n["outlet"] += 1
+        elif abs(y - y_top) < 1e-9:
+            n["top slip" if x < -110.0 else "top"] += 1
+        elif abs(y - 1.0) < 1e-9 and x < 0.0:
+            n["upstream slip" if x < -110.0 else "upstream floor"] += 1
+        elif abs(y) < 1e-12 and x > 0.0:
+            n["lower floor"] += 1
+        elif abs(x) < 1e-12 and y < 1.0:
+            n["step"] += 1
+        else:
+            n["unclassified"] += 1
+    return n, n["unclassified"] == 0
+
+
 def main():
     levels = [int(a) for a in sys.argv[1:]] or [4, 3, 2, 1]
     allok = True
@@ -119,6 +154,11 @@ def main():
         allok &= ok
         print(f"level {lv}: {cells} cells, {got} points (zones less shared: {want}), "
               f"area {area:.15g} (channel {AREA:g}): {'PASS' if ok else 'FAIL'} -> L{lv}.hex")
+        if lv == 0:      # the finest grid only (ADR-046's third revision)
+            cls, cok = classes(pts2, index)
+            allok &= cok
+            print("level 0 boundary faces: " + ", ".join(f"{k} {v}" for k, v in cls.items()) +
+                  f": {'PASS' if cok else 'FAIL'}")
     print(f"backstep mesh GATE: {'PASS' if allok else 'FAIL'}")
     return 0 if allok else 1
 

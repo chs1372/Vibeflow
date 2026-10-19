@@ -44,6 +44,9 @@
 //   <out>.cpw       x, Cp from the extrapolated wall pressure (reported only)
 //   <out>.state     x y u v w p k omega per cell (VIBEFLOW_BS_SAVE)
 //   and one line    FINAL xr ... cf4 ... uc4 ... bubble ... steps ... settled ...
+// and on stdout the lip print of ADR-046's first revision: LIPX (each process
+// start) with the x of the last four upstream bottom faces, and LIP (every
+// 50-step line) with step, p40 and those faces' Cp, computed as .cp is.
 //
 // Run:  backstep <mesh.hex> <out prefix> [dt, default 0.08] [max steps at the
 //       full dt, default 5000] [U_in, default 1]
@@ -418,6 +421,14 @@ int main(int argc, char** argv) {
     std::printf("  patches: inlet %d  outlet %d  slip %d  wall %d  span %d  (bottom wall %zu)\n",
                 count[INLET], count[OUTLET], count[SLIP], count[WALL], count[SPAN],
                 bottom.face.size());
+    // The lip faces (ADR-046's first revision): the four upstream entries of
+    // the sorted bottom wall nearest the step, in increasing x.
+    const std::size_t nUp = static_cast<std::size_t>(
+        std::count_if(bottom.x.begin(), bottom.x.end(), [](Real x) { return x < 0.0; }));
+    if (nUp < 4) { std::printf("fewer than four upstream wall faces\n"); std::exit(2); }
+    const std::size_t lip0 = nUp - 4;
+    std::printf("LIPX %.10e %.10e %.10e %.10e\n",
+                bottom.x[lip0], bottom.x[lip0 + 1], bottom.x[lip0 + 2], bottom.x[lip0 + 3]);
     Kokkos::deep_copy(uType, hUT); Kokkos::deep_copy(pType, hPT); Kokkos::deep_copy(kind, hK);
     Kokkos::deep_copy(wallMask, hW); Kokkos::deep_copy(ub, hUB); Kokkos::deep_copy(fb, hFB);
     Kokkos::deep_copy(kB, hKB); Kokkos::deep_copy(wB, hWB);
@@ -753,6 +764,17 @@ int main(int argc, char** argv) {
                     "omega %.1e at (%.4f, %.3e)\n",
                     cu.rel, ccH(cu.cell,0), ccH(cu.cell,1), ck.rel, ccH(ck.cell,0), ccH(ck.cell,1),
                     cw.rel, ccH(cw.cell,0), ccH(cw.cell,1));
+        {
+          // The lip print (ADR-046's first revision): .cp's expressions, no
+          // time field, nothing called on the solver but pressure().
+          auto pH = host(solver.pressure());
+          std::vector<Real> pw(bottom.face.size());
+          for (std::size_t i = 0; i < pw.size(); ++i) pw[i] = pH(bclH(bottom.face[i]));
+          const Real p40 = interpAt(bottom.x, pw, 40.0);
+          std::printf("LIP %d %.10e %.10e %.10e %.10e %.10e\n", step, p40,
+                      2.0 * (pw[lip0] - p40), 2.0 * (pw[lip0 + 1] - p40),
+                      2.0 * (pw[lip0 + 2] - p40), 2.0 * (pw[lip0 + 3] - p40));
+        }
         std::fflush(stdout);
         if (atDt >= 1000 && change < 1e-6) { steady = true; break; }
         if (atDt >= 1000 && sep.xr > 0.0 && dxr <= 2e-3 && dcf <= 2e-3) { quasi = true; break; }
