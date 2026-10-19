@@ -4,6 +4,7 @@
 
 #include <petscksp.h>
 #include <algorithm>
+#include <cstdio>
 #include <numeric>
 #include <stdexcept>
 
@@ -29,9 +30,13 @@ struct PetscSolver::Impl {
   int matrixChanges{0};
   bool constantNullSpace{false};   // ADR-044
   bool nullSpaceSet{false};
+  bool bjilu{false};               // ADR-047: block-Jacobi with ILU(0) blocks
+  bool blocksSet{false};
 
   Impl(const Mesh& m, Comm c, std::vector<Index> g) : mesh(m), comm(c), grow(std::move(g)) {
     nOwned = mesh.nCells();
+    // On more than one rank an empty map is built here (ADR-047).
+    if (grow.empty() && comm.parallel()) grow = PetscSolver::rowMap(mesh, comm);
     if (grow.empty()) {                       // serial: rows are local ids
       grow.resize(mesh.nTotal());
       std::iota(grow.begin(), grow.end(), 0);
@@ -52,12 +57,58 @@ struct PetscSolver::Impl {
     chk(MatSeqAIJSetPreallocation(A, 7, nullptr), "SeqPrealloc");
     chk(MatMPIAIJSetPreallocation(A, 7, nullptr, 6, nullptr), "MPIPrealloc");
     chk(MatSetOption(A, MAT_NEW_NONZERO_ALLOCATION_ERR, PETSC_FALSE), "MatSetOption");
+    if (comm.parallel()) checkMap();
 
     chk(VecCreate(mc, &b), "VecCreate");
     chk(VecSetSizes(b, nOwned, nGlobal), "VecSetSizes");
     chk(VecSetFromOptions(b), "VecSetFromOptions");
     chk(VecDuplicate(b, &u), "VecDuplicate");
     chk(KSPCreate(mc, &ksp), "KSPCreate");
+  }
+
+  // ADR-047: the solution is read back as arr[c] for the owned cells, so each
+  // rank's owned rows must be rstart + c, in local order; and a ghost's row
+  // must be its owner's. Checked collectively: a bad map on any rank makes
+  // every rank throw, so no rank is left waiting in a collective.
+  void checkMap() {
+    PetscInt rstart = 0, rend = 0;
+    chk(MatGetOwnershipRange(A, &rstart, &rend), "MatGetOwnershipRange");
+    const Index nt = mesh.nTotal();
+    bool ok = static_cast<Index>(grow.size()) == nt && rend - rstart == nOwned;
+    if (ok)
+      for (Index c = 0; c < nOwned; ++c) ok &= grow[c] == rstart + c;
+    ScalarField rows("rows", nt);
+    auto h = Kokkos::create_mirror_view(rows);
+    for (Index c = 0; c < nOwned; ++c) h(c) = ok ? static_cast<Real>(grow[c]) : -1.0;
+    Kokkos::deep_copy(rows, h);
+    if (const auto* halo = mesh.halo()) halo->exchange(rows);
+    Kokkos::deep_copy(h, rows);
+    if (ok)
+      for (Index c = nOwned; c < nt; ++c) ok &= h(c) == static_cast<Real>(grow[c]);
+    if (comm.min(ok ? 1.0 : 0.0) < 0.5) {
+      MatDestroy(&A);    // collective, and every rank is here: the destructor will not run
+      throw std::runtime_error("PETSc row map: owned rows not rstart + c, or a ghost's row not its owner's");
+    }
+  }
+
+  // ADR-047: once, after the operators are set, each block of bjilu is set to
+  // preonly with ILU at zero fill and natural ordering.
+  void setBlocks() {
+    chk(KSPSetUp(ksp), "KSPSetUp");
+    PC p;
+    chk(KSPGetPC(ksp, &p), "KSPGetPC");
+    PetscInt nLocal = 0, first = 0;
+    KSP* sub = nullptr;
+    chk(PCBJacobiGetSubKSP(p, &nLocal, &first, &sub), "PCBJacobiGetSubKSP");
+    for (PetscInt i = 0; i < nLocal; ++i) {
+      PC sp;
+      chk(KSPSetType(sub[i], KSPPREONLY), "KSPSetType sub");
+      chk(KSPGetPC(sub[i], &sp), "KSPGetPC sub");
+      chk(PCSetType(sp, PCILU), "PCSetType sub");
+      chk(PCFactorSetLevels(sp, 0), "PCFactorSetLevels");
+      chk(PCFactorSetMatOrderingType(sp, MATORDERINGNATURAL), "PCFactorSetMatOrderingType");
+    }
+    blocksSet = true;
   }
 
   ~Impl() {
@@ -81,8 +132,10 @@ struct PetscSolver::Impl {
     chk(KSPGetPC(ksp, &p), "KSPGetPC");
     if (pc == "jacobi")      chk(PCSetType(p, PCJACOBI), "PCSetType");
     else if (pc == "ilu")    chk(PCSetType(p, PCILU), "PCSetType");
-    else if (pc == "bjilu")
-      throw std::runtime_error("bjilu: a stub (ADR-047), not yet written");
+    else if (pc == "bjilu") {  // ADR-047: one block per process; see setBlocks
+      chk(PCSetType(p, PCBJACOBI), "PCSetType");
+      bjilu = true;
+    }
     else if (pc == "gamg")   chk(PCSetType(p, PCGAMG), "PCSetType");
     else if (pc == "hypre") {
       if (!PetscSolver::hasHypre())
@@ -184,6 +237,7 @@ SolveReport PetscSolver::solve(LinearSystem& sys, ScalarField& x,
   }
 
   chk(KSPSetOperators(I.ksp, I.A, I.A), "KSPSetOperators");
+  if (I.bjilu && !I.blocksSet) I.setBlocks();
   chk(KSPSetTolerances(I.ksp, relTol, absTol, PETSC_DEFAULT, maxIter), "KSPSetTolerances");
   chk(KSPSetInitialGuessNonzero(I.ksp, PETSC_TRUE), "KSPSetInitialGuessNonzero");
 
@@ -216,9 +270,71 @@ SolveReport PetscSolver::solve(LinearSystem& sys, ScalarField& x,
 
 void PetscSolver::notifyMatrixChanged() { impl_->dirty = true; }
 
-// ADR-047's stubs: test_backends_mpi is committed failing against them.
-std::vector<Index> PetscSolver::rowMap(const Mesh&, const Comm&) { return {}; }
-std::string PetscSolver::describe() const { return ""; }
+std::vector<Index> PetscSolver::rowMap(const Mesh& mesh, const Comm& comm) {
+  const Index nc = mesh.nCells(), nt = mesh.nTotal();
+  const std::vector<long long> counts = comm.allgatherv(std::vector<long long>{nc});
+  long long offset = 0;
+  for (int r = 0; r < comm.rank(); ++r) offset += counts[r];
+  ScalarField rows("rows", nt);
+  auto h = Kokkos::create_mirror_view(rows);
+  for (Index c = 0; c < nc; ++c) h(c) = static_cast<Real>(offset + c);
+  Kokkos::deep_copy(rows, h);
+  if (const auto* halo = mesh.halo()) halo->exchange(rows);   // the ghosts' rows
+  Kokkos::deep_copy(h, rows);
+  std::vector<Index> g(nt);
+  for (Index c = 0; c < nt; ++c) g[c] = static_cast<Index>(h(c));
+  return g;
+}
+
+namespace {
+
+std::string factorOptions(PC p) {
+  PetscInt levels = 0;
+  PetscReal amount = 0.0, zero = 0.0;
+  MatFactorShiftType shift = MAT_SHIFT_NONE;
+  chk(PCFactorGetLevels(p, &levels), "PCFactorGetLevels");
+  chk(PCFactorGetShiftType(p, &shift), "PCFactorGetShiftType");
+  chk(PCFactorGetShiftAmount(p, &amount), "PCFactorGetShiftAmount");
+  chk(PCFactorGetZeroPivot(p, &zero), "PCFactorGetZeroPivot");
+  char buf[160];
+  std::snprintf(buf, sizeof buf, "levels=%d shift=%s amount=%g zeropivot=%g",
+                static_cast<int>(levels), MatFactorShiftTypes[shift], static_cast<double>(amount),
+                static_cast<double>(zero));
+  return buf;
+}
+
+}  // namespace
+
+std::string PetscSolver::describe() const {
+  KSPType kt = nullptr;
+  PCType pt = nullptr;
+  PC p;
+  chk(KSPGetType(impl_->ksp, &kt), "KSPGetType");
+  chk(KSPGetPC(impl_->ksp, &p), "KSPGetPC");
+  chk(PCGetType(p, &pt), "PCGetType");
+  std::string s = std::string("ksp=") + (kt ? kt : "?") + " pc=" + (pt ? pt : "?");
+  PetscBool isIlu = PETSC_FALSE;
+  chk(PetscObjectTypeCompare(reinterpret_cast<PetscObject>(p), PCILU, &isIlu), "PetscObjectTypeCompare");
+  if (isIlu) s += " " + factorOptions(p);
+  if (impl_->bjilu && impl_->blocksSet) {
+    PetscInt total = 0, nLocal = 0, first = 0;
+    KSP* sub = nullptr;
+    chk(PCBJacobiGetTotalBlocks(p, &total, nullptr), "PCBJacobiGetTotalBlocks");
+    chk(PCBJacobiGetSubKSP(p, &nLocal, &first, &sub), "PCBJacobiGetSubKSP");
+    s += " blocks=" + std::to_string(total) + " ";
+    for (PetscInt i = 0; i < nLocal; ++i) {
+      KSPType skt = nullptr;
+      PCType spt = nullptr;
+      PC sp;
+      chk(KSPGetType(sub[i], &skt), "KSPGetType sub");
+      chk(KSPGetPC(sub[i], &sp), "KSPGetPC sub");
+      chk(PCGetType(sp, &spt), "PCGetType sub");
+      s += "block" + std::to_string(first + i) + ": ksp=" + (skt ? skt : "?") + " pc=" +
+           (spt ? spt : "?") + " " + factorOptions(sp) + "; ";
+    }
+  }
+  return s;
+}
 
 void PetscSolver::setConstantNullSpace(bool on) {
   impl_->constantNullSpace = on;
