@@ -5669,6 +5669,75 @@ The script is committed next, on its own. Its sha256, as committed with LF line 
 
 Steps 5 and 6 start once steps 2 and 3 have been read or recorded as not run (step 7). Those steps need TMR's FUN3D and finest-grid files, which have not been fetched; each download needs the user's permission.
 
+*Third revision, before any file is fetched: what TMR's pages offer, steps 2 and 3 not run, and how the finest grid is fetched, committed and meshed.*
+
+Looked at by then: TMR's step pages, read on 2026-10-19 with the user's permission. Only their text and links were read, in the session's browser, by script and page-text extraction. The browser pane also displayed the pages' images, the plots among them. Claude did not look at those images, and no screenshot was taken. The user may have seen them in the pane. The pages read:
+
+- `backstep_val.html`, the step's introduction. It has no result values, and links the experiment's files, which ADR-045 already committed.
+- `backstep_val_sst.html`, SSTm's results.
+  - Its text says the plots compare CFL3D's and FUN3D's SSTm results on the second-finest grid (257x257, 97x257, 385x449, 129x449), that is, level 1. It says reattachment is "near x/H = 6.50", as ADR-045 read it.
+  - Its only data files are CFL3D's four, `backstep_cfl3d_{cp,cf,vel,uv}_sst.dat`, which ADR-045 committed. FUN3D appears only as a typical input file, `fun3d.nml_typical_sst_timeaccurate`, and in the plots.
+- The six other models' result pages (SA, SST-Vm, Wilcox2006-klim-m, K-kL-MEAH2015m, EASMko2003-S and K-e-Rt), their links and the sentences naming a grid or FUN3D only.
+  - Each gives results on the second-finest grid alone.
+  - Their data files are CFL3D's on that grid, for SA, SST-Vm, Wilcox2006-klim-m and K-kL-MEAH2015m; EASMko2003-S and K-e-Rt have none. FUN3D appears only in input files.
+  - None of these files was opened.
+- `backstep_grids.html`. It lists five nested grids, each coarser one "exactly every-other-point of the next finer". The finest is `backstep5_0levdn` (513x513, 193x513, 769x897, 257x897). That makes 1,277,952 cells, the count step 5's nesting rule expects.
+  - Its grid files are no longer linked one by one. They come together in one zip, `https://www.nasa.gov/wp-content/uploads/2026/02/backstep-grids.zip`.
+  - Its neutral map files are linked singly, `Backstep_grids/backstep5_0levdn.nmf` among them.
+  - The page was last updated 04/16/2026.
+- *Header requests, which fetch no content:*
+  - the zip, 62,191,798 bytes, last modified 2026-02-24;
+  - `Backstep_grids/backstep5_0levdn.nmf`, 1,924 bytes;
+  - `Backstep_grids/backstep5_{0,1}levdn.p2dfmt.gz` at TMR's site, both 404.
+
+C: had 13 GB free on 2026-10-19.
+
+*Steps 2 and 3 are not run.* TMR's step pages offer no numeric FUN3D result for the step, from any model. They offer no numeric Cp on any grid but level 1, from either code. So file (i) and every file of (ii) cannot be obtained. The rule of *Files, fetched after this ADR is committed* then applies: "If a file cannot be obtained, its step is recorded as not run, and the steps that do not need it proceed." With that:
+
+- step 2 cannot attribute the failure to the reference, and T is not judged;
+- step 5 can therefore reach only *this solver needs a finer grid*, a fraction, inconclusive or void, under its rule for a T that is not judged. It cannot reach *belongs to the grid*;
+- no step can attribute the failure, and ADR-045's decision stands in every outcome.
+
+Steps 5 and 6 still run as this ADR states (step 7): they start once S0 has settled and steps 2 and 3 are recorded as not run. The user chose on 2026-10-19 to run them as pre-registered. Their findings go to the known limits.
+
+*File (iii), the finest grid.* The user allowed both downloads on 2026-10-19: the zip (62,191,798 bytes, from the address above, linked from `backstep_grids.html`), and `backstep5_0levdn.nmf` (1,924 bytes, from `https://tmbwg.github.io/turbmodels/Backstep_grids/backstep5_0levdn.nmf`).
+
+- *Fetching.* Each file is fetched into a new, empty directory in WSL, `~/tmr_downloads`, outside every clone. Its sha256 and size are recorded. The zip's member list (names and sizes) is printed; that shows no value.
+- *What is committed.* The user chose on 2026-10-19 that only the needed files are committed.
+  - `cases/backstep/tmr/backstep5_0levdn.p2dfmt.gz` holds the zip member of that name, its bytes as stored in the zip (the member is itself gzipped, and nothing is recompressed). Its sha256 is recorded.
+  - `cases/backstep/tmr/backstep5_0levdn.nmf` is committed as downloaded.
+  - The zip itself stays in `~/tmr_downloads`, and its URL, date, size and sha256 go into the commit message and here. This departs from *Files, fetched after this ADR is committed*'s "Each file is committed as downloaded" only in committing the zip's member rather than the 62 MB zip. The reason is that TMR no longer links the grid file alone.
+- *`labels.json`* is created with the first download, as the first revision says. It holds entries for the two files: name, URL, date and sha256.
+  - The grid's entry has one place, `page`, with the grids page's own line for it, `backstep5_0levdn.p2dfmt.gz: (2-D) 513x513, 193x513, 769x897, 257x897`, as `text`. `grid_name` is the file name, `grid_dims` the four zones, and `variant` is `null`.
+  - The `.nmf` has no place.
+- *`make_mesh.py`'s change.* The first revision leaves it to this revision. It is written after the grid is committed, in a commit of its own, and touches only level 0.
+  - `make_mesh.py 0` reads `tmr/backstep5_0levdn.p2dfmt.gz` by the existing pattern and runs gate 1 unchanged (its cells, its interface points, the area 1,490 to 1e-12 relative). Then, for level 0 alone, it checks step 5's boundary classes.
+  - *The boundary-class check.* Each edge of the merged 2-D grid that belongs to one cell only is a boundary face, the span faces aside. The face is classed by its midpoint in the harness's order (`backstep.cpp:373-380`), with the harness's tolerances:
+    - inlet at the smallest x and outlet at the largest, each to 1e-9;
+    - the top at the largest y, to 1e-9;
+    - the upstream floor at y = 1 with x < 0, to 1e-9;
+    - the lower floor at y = 0 with x > 0, and the step face at x = 0 with y < 1, each to 1e-12.
+
+    A face in none of these classes fails the check. The script prints each class's count, and the slip faces among the top and the upstream floor (x < −110).
+  - Gate 1 and the class check together give level 0's line and the exit code.
+  - Levels 1 to 4 run exactly as before. Their outputs, and `backstep_gate.py`'s use of the script, do not change.
+  - L0.hex is written in the working clone at that commit, then copied to `~/l0/L0.hex`. That is a directory of its own outside every clone, the one copy that step 5 reads. Its sha256 is recorded before step 5's first step.
+- *A grid that fails* gate 1 or the class check makes G void (step 5). That is recorded, and nothing is run.
+- *Then, before step 5's first step:*
+  - step 1's `reading --s0 --grid0` reports b on level 0's faces;
+  - `commands` prints the commands of steps 5 and 6;
+  - the binary's sha256 is checked.
+
+*How steps 5 and 6 run.*
+
+- Step 5 runs on two threads, with S0's binary (the first revision's *The binaries*), because ADR-047 has not passed.
+- Beside it, the six marches of step 6 run one after another, each on two threads. That keeps four of the six cores busy and leaves two for ADR-047's code. Step 7 allows six threads at once.
+- Each march's directory is new and empty, and the directories are recorded.
+- An interrupted march resumes from its checkpoint with `VIBEFLOW_BS_RESUME=1`, appending to the same log (step 7).
+- The machine is kept from idle sleep only while they run, as for S0.
+
+Nothing here changes a rule of this ADR, its contract on downloaded files, gate 4, the user's decisions or ADR-047.
+
 ## ADR-047 — The backward-facing step under MPI: the harness, a parallel ILU and the serial answer. Stated before the code and the runs, answered after
 
 **Context.** ADR-046 needs TMR's finest grid for the step, about 1.28 million cells (its step 5). It estimates that march at 20 to 40 hours on two threads. The PETSc 3.24.4 and hypre 3.0.0 on this machine are built without OpenMP (`petscconf.h` has `PETSC_HAVE_HYPRE` and no `PETSC_HAVE_OPENMP`; hypre's `HYPRE_USING_OPENMP` is undefined), so their own kernels are serial. PETSc's vector operations call `libblas`, which on this machine resolves to OpenBLAS's pthreads build (the `libblas.so.3` alternative, priority 100, and the binary links it). Its threads follow `OMP_NUM_THREADS`, or every core when that is unset. So threads speed up the Kokkos share of a step and some of the Krylov vector work. ADR-046's cost note that threads speed up only the Kokkos share is not exact in this respect. How much of a solve they parallelise has not been measured. Ranks would split the whole of each solve.
