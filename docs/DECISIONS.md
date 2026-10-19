@@ -6223,6 +6223,31 @@ One refuted finding, that a few-second P = 1 time makes gate 1's limit tight, is
   - Step 6's first march at step 700: dt 0.08, C 5.03, x_r 6.55239, `bounded` 0, 4,963 s.
   - Those lines' other columns were cut off and not read. No Cp file or `LIP` line of either was read. ADR-046's record of steps 5 and 6 lists this too.
 
+*Second revision, before gate 6's part of the script is committed: how gate 6 starts, resumes and stops.* Written on 2026-10-19. By then gates 0 to 5 were running at P = 1 and 2 under 33051e4's script, and none had been judged. Nothing of gate 6 has run. No gate, bound or fault changes.
+
+- *When gate 6 starts.* Only when gates 0 to 5 have passed with this build's binaries, as Order 5 says. The script keeps each gate's last result in `<out>/results.json`, with the sha256 of `backstep`, `test_backends_mpi` and `backstep_owners`. Gate 6 starts only if all six results are PASS with the hashes of the build it runs.
+- *The resume*, on four ranks with `VIBEFLOW_BS_RESUME=1`, in the same directory and appending to the log, goes ahead only when all of these hold:
+  - the directory holds the complete set `L1.ckpt.<r>of4`, r = 0 to 3;
+  - the log has no FINAL line;
+  - no process is running in the directory.
+
+  Otherwise the script stops and keeps the directory. In particular, a march interrupted before its first checkpoint, at step 500, leaves no set to resume from. Whether gate 6 then starts over is decided in a revision before it does, and the interrupted run is reported beside the new one.
+- *An interrupted script takes its runs down.* On SIGTERM, SIGHUP or an interrupt, the script kills its child's process group before it exits. No march is left running unwatched, and none can be resumed beside a live one.
+- *The limits.* Gate 6 fails in either of two cases, checked while the march runs and again after it ends:
+  - the printed seconds of any 50-step line or of FINAL pass 54,000;
+  - an hour of wall time passes with no new 50-step line.
+- *A march that diverges*, or whose `.cp` or log cannot be read, fails gate 6.
+- *The control.* P = 4's verdict is recorded before the control starts. The control runs under the same two limits. An interrupted or killed control is reported, not judged.
+- *The judged quantities* are computed with `backstep_lip.py`'s `parse_log`, `window`, `lip_values`, `read_cp`, `cfl3d` and `s0_u_in`, and with `backstep_gate.py`'s `floor_values`, all unchanged. On S0's L1 against itself, every judged difference is zero, and U_in's string is 0.944774574893, as S0's was.
+- *The shared code.* The script also gained per-run arguments, a watch that can kill its run, a resume branch used by gate 6's run alone, signal handling and `results.json`. None of these changes how gates 0 to 5 run or are judged. Their runs are reused when the script at this commit judges them again.
+- *A review of this part.* Two reviewers, with each finding checked by an adversarial verifier, confirmed 9 findings (several reported twice) and refuted 3. All the confirmed ones are fixed in what is committed:
+  - a resume without a checkpoint set;
+  - a resume beside a still-running march;
+  - a diverged march crashing the script;
+  - printed seconds past the limit on the last lines;
+  - the control blocking P = 4's verdict;
+  - gate 6 starting before gates 0 to 5 had passed.
+
 ## ADR-048 — "Fixtures are current" and the runner's CPU: the generator's kernels pinned. Stated before the change and the runs, answered after
 
 **Context.** CI's step "Fixtures are current" runs `python prototype/dump_fixtures.py` and then `git diff --exit-code tests/fixtures/`. The workflow has run 11 times, 12 jobs counting a re-run, from 2026-09-26 to 2026-10-06. Six jobs failed at this step and six passed:
