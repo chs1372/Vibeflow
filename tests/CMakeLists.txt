@@ -102,6 +102,9 @@ target_link_libraries(flat_plate PRIVATE vibeflow_physics)
 # ADR-045: the backward-facing step, one grid per run; backstep_gate.py compares.
 add_executable(backstep benchmark/backstep.cpp)
 target_link_libraries(backstep PRIVATE vibeflow_physics)
+# ADR-047: the RCB owner of each cell at P ranks, for the F5/F6 exception.
+add_executable(backstep_owners benchmark/backstep_owners.cpp)
+target_link_libraries(backstep_owners PRIVATE vibeflow_mesh)
 
 # Hours on two cores at 128^2 and Ra = 1e6: a suite gate, not a ctest.
 add_executable(heated_cavity benchmark/heated_cavity.cpp)

@@ -65,8 +65,10 @@
 // Under MPI (ADR-047), more than one process: the mesh is distributed by RCB,
 // every decision is taken from the same reduced or gathered data on every
 // rank, rank 0 writes every file in the formats above (.state in the file's
-// cell order), and each rank keeps its own checkpoint, <out>.ckpt.<rank>of<P>.
-// A resume never crosses rank counts: it is REFUSED (exit 3). Every 50 steps
+// cell order), and each rank keeps its own checkpoint, <out>.ckpt.<rank>of<P>,
+// renamed from its .tmp only once every rank has written one. A resume never
+// crosses rank counts, and every rank's file must hold the same step, time,
+// dt, ramp state and histories: otherwise it is REFUSED (exit 3). Every 50 steps
 // an EQ line gives the march's decision values at full precision, and before
 // FINAL a SOLVES line the linear solvers' counts; both serially too.
 
@@ -87,6 +89,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <exception>
 #include <filesystem>
 #include <memory>
@@ -381,6 +384,7 @@ CkptFiles ckptFiles(const std::string& out) {
   for (const auto& e : fs::directory_iterator(dir, ec)) {
     const std::string n = e.path().filename().string();
     if (n == base) { cf.serial = true; continue; }
+    if (n.size() >= 4 && n.compare(n.size() - 4, 4, ".tmp") == 0) continue;   // never renamed
     if (n.rfind(base + ".", 0) != 0) continue;
     const std::string rest = n.substr(base.size() + 1);       // <rank>of<P>
     const auto of = rest.find("of");
@@ -413,6 +417,7 @@ bool g_mpiDone = false;     // the MPI path returned normally
 // Every error exit under MPI goes through MPI_Abort: a std::exit path in a
 // serial helper reaches it through this.
 void abortUnlessDone() {
+  std::fflush(nullptr);                   // the message that led here, and what rank 0 buffered
 #ifdef VIBEFLOW_HAVE_MPI
   if (!g_mpiDone) MPI_Abort(MPI_COMM_WORLD, 2);
 #endif
@@ -424,6 +429,14 @@ void abortUnlessDone() {
   MPI_Abort(MPI_COMM_WORLD, code);
 #endif
   std::exit(code);
+}
+
+// An exit every rank reaches together: what rank 0 printed is out before any
+// rank aborts the job.
+[[noreturn]] void collectiveExit(const Comm& comm, int code) {
+  std::fflush(stdout);
+  comm.barrier();
+  mpiAbort(code);
 }
 
 // Every rank's vector, concatenated in rank order, on every rank.
@@ -463,7 +476,7 @@ Loc maxLoc(const Comm& comm, const Loc& mine) {
 }
 
 std::uint64_t fnv1a(const std::vector<Index>& ids) {
-  std::uint64_t h = 1469598103934665603ULL;
+  std::uint64_t h = 14695981039346656037ULL;
   for (Index id : ids) {
     const long long v = id;
     const auto* b = reinterpret_cast<const unsigned char*>(&v);
@@ -487,10 +500,12 @@ struct RankCheckpoint {
   std::vector<double> histXr, histCf4;
 };
 
-void writeRankCheckpoint(const std::string& path, const RankCheckpoint& c) {
+// The first of two phases: <path>.tmp, true if all of it reached the file.
+// The caller renames on every rank only if every rank wrote its own.
+bool writeRankTmp(const std::string& path, const RankCheckpoint& c) {
   const std::string tmp = path + ".tmp";
   std::FILE* f = std::fopen(tmp.c_str(), "wb");
-  if (!f) return;
+  if (!f) return false;
   std::fwrite("VFBSCK02", 1, 8, f);
   const int pr[2] = {c.P, c.rank};
   std::fwrite(pr, sizeof pr, 1, f);
@@ -501,9 +516,25 @@ void writeRankCheckpoint(const std::string& path, const RankCheckpoint& c) {
   std::fwrite(ints, sizeof ints, 1, f); std::fwrite(dbl, sizeof dbl, 1, f);
   putv(f, c.u); putv(f, c.p); putv(f, c.k); putv(f, c.w); putv(f, c.F);
   putv(f, c.histStep); putv(f, c.histXr); putv(f, c.histCf4);
-  const bool ok = std::fflush(f) == 0;
-  std::fclose(f);
-  if (ok) std::rename(tmp.c_str(), path.c_str());
+  const bool ok = std::fflush(f) == 0 && std::ferror(f) == 0;
+  return std::fclose(f) == 0 && ok;
+}
+
+// What every rank's checkpoint must hold alike for a resume: the march's
+// bookkeeping and a hash of its histories, the hash's halves exact as doubles.
+std::vector<double> bookkeeping(const RankCheckpoint& c) {
+  std::uint64_t h = 14695981039346656037ULL;
+  auto mix = [&](const void* p, std::size_t n) {
+    const auto* b = static_cast<const unsigned char*>(p);
+    for (std::size_t k = 0; k < n; ++k) { h ^= b[k]; h *= 1099511628211ULL; }
+  };
+  mix(c.histStep.data(), c.histStep.size() * sizeof(int));
+  mix(c.histXr.data(), c.histXr.size() * sizeof(double));
+  mix(c.histCf4.data(), c.histCf4.size() * sizeof(double));
+  return {static_cast<double>(c.step), c.time, c.dtNow, c.ceiling, static_cast<double>(c.sinceChange),
+          static_cast<double>(c.holdUntil), static_cast<double>(c.refused),
+          static_cast<double>(c.histStep.size()), static_cast<double>(h >> 32),
+          static_cast<double>(h & 0xffffffffULL)};
 }
 
 bool readRankCheckpoint(const std::string& path, RankCheckpoint& c) {
@@ -537,11 +568,11 @@ int runMpi(int argc, char** argv) {
   try {
     if (argc < 3) {
       if (r0) std::printf("usage: backstep <mesh.hex> <out prefix> [dt] [max steps at the full dt] [U_in]\n");
-      mpiAbort(2);
+      collectiveExit(comm, 2);
     }
     if (std::getenv("VIBEFLOW_BS_DEBUG")) {
       if (r0) std::printf("VIBEFLOW_BS_DEBUG is refused on more than one rank\n");
-      mpiAbort(2);
+      collectiveExit(comm, 2);
     }
 #ifdef VIBEFLOW_HAVE_PETSC
     const std::string pcfg = std::getenv("VIBEFLOW_PRESSURE") ? std::getenv("VIBEFLOW_PRESSURE") : "cg+hypre";
@@ -555,7 +586,7 @@ int runMpi(int argc, char** argv) {
       const std::string pc = plus == std::string::npos ? "" : cfg.substr(plus + 1);
       if (pc == "ilu" || pc == "gamg") {    // sequential factorisations
         if (r0) std::printf("%s is refused on more than one rank\n", cfg.c_str());
-        mpiAbort(2);
+        collectiveExit(comm, 2);
       }
     }
     const std::string meshPath = argv[1], out = argv[2];
@@ -630,7 +661,7 @@ int runMpi(int argc, char** argv) {
           break;
       }
     }
-    if (comm.max(static_cast<Real>(unclassified)) > 0.0) mpiAbort(2);
+    if (comm.max(static_cast<Real>(unclassified)) > 0.0) collectiveExit(comm, 2);
     // The bottom wall over every rank, sorted by x as serial sorts it. Face x
     // is the same bit for bit at any rank count. `order` maps the gathered
     // concatenation (rank order, then this rank's order) to sorted position.
@@ -671,7 +702,7 @@ int runMpi(int argc, char** argv) {
     }
     const std::size_t nUp = static_cast<std::size_t>(
         std::count_if(bx.begin(), bx.end(), [](Real x) { return x < 0.0; }));
-    if (nUp < 4) { if (r0) std::printf("fewer than four upstream wall faces\n"); mpiAbort(2); }
+    if (nUp < 4) { if (r0) std::printf("fewer than four upstream wall faces\n"); collectiveExit(comm, 2); }
     const std::size_t lip0 = nUp - 4;
     if (r0) std::printf("LIPX %.10e %.10e %.10e %.10e\n", bx[lip0], bx[lip0 + 1], bx[lip0 + 2], bx[lip0 + 3]);
     Kokkos::deep_copy(uType, hUT); Kokkos::deep_copy(pType, hPT); Kokkos::deep_copy(kind, hK);
@@ -714,18 +745,22 @@ int runMpi(int argc, char** argv) {
       const bool anyFile = comm.max((cf.serial || !cf.perRankP.empty()) ? 1.0 : 0.0) > 0.5;
       const bool allOk = comm.min(mineOk ? 1.0 : 0.0) > 0.5;
       const bool noForeign = comm.max((cf.serial || otherP) ? 1.0 : 0.0) < 0.5;
-      const Real s = mineOk ? static_cast<Real>(ck.step) : -1.0;
-      const Real sHi = comm.max(s), sLo = comm.min(s);
-      const bool stepsAgree = sLo >= 0.0 && sHi == sLo;
+      // The step, the time, dt, the ramp's state and the histories: alike on
+      // every rank, bit for bit, or a rename was cut short between ranks.
+      const std::vector<double> mine = bookkeeping(ck);
+      const std::vector<double> all = allGather(comm, mine);
+      bool booksAgree = all.size() == mine.size() * static_cast<std::size_t>(P);
+      for (std::size_t i = mine.size(); booksAgree && i < all.size(); ++i)
+        booksAgree = std::memcmp(&all[i], &all[i % mine.size()], sizeof(double)) == 0;
       if (anyFile) {
-        if (allOk && noForeign && stepsAgree) {
+        if (allOk && noForeign && booksAgree) {
           resume = true;
         } else {
           if (r0) std::printf("REFUSED: the checkpoints beside %s are not this run's %d ranks' own "
-                              "(serial %s, another P %s, own files %s)\n", out.c_str(), P,
+                              "(serial %s, another P %s, own files %s, bookkeeping %s)\n", out.c_str(), P,
                               cf.serial ? "present" : "absent", otherP ? "present" : "absent",
-                              allOk ? "matching" : "missing or mismatched");
-          mpiAbort(3);
+                              allOk ? "matching" : "missing or mismatched", booksAgree ? "alike" : "differs");
+          collectiveExit(comm, 3);
         }
       }
     }
@@ -819,7 +854,7 @@ int runMpi(int argc, char** argv) {
       return std::make_unique<PetscSolver>(mesh, comm, cfg);
 #else
       if (r0) std::printf("built without PETSc: %s unavailable\n", cfg.c_str());
-      mpiAbort(2);
+      collectiveExit(comm, 2);
 #endif
     };
     momentumPtr = makeSolver(mcfg, false);
@@ -1100,7 +1135,15 @@ int runMpi(int argc, char** argv) {
         }
         for (Index f = 0; f < nif; ++f) c.F[f] = F(f);
         c.histStep = histStep; c.histXr = histXr; c.histCf4 = histCf4;
-        writeRankCheckpoint(ckName, c);
+        // Two phases: every rank's .tmp, then the renames only if all were
+        // written. A set cut short between renames is refused on resume.
+        const bool wrote = writeRankTmp(ckName, c);
+        if (comm.min(wrote ? 1.0 : 0.0) > 0.5) {
+          if (std::rename((ckName + ".tmp").c_str(), ckName.c_str()) != 0)
+            std::printf("rank %d: checkpoint at step %d not renamed\n", rank, step);
+        } else if (r0) {
+          std::printf("checkpoint at step %d not written on every rank: the previous set is kept\n", step);
+        }
         comm.barrier();
       }
       if (step == stopAt) break;
@@ -1216,6 +1259,9 @@ int main(int argc, char** argv) {
     if (argc < 3) {
       std::printf("usage: backstep <mesh.hex> <out prefix> [dt] [max steps at the full dt] [U_in]\n");
       Kokkos::finalize();
+#ifdef VIBEFLOW_HAVE_PETSC
+      PetscFinalize();
+#endif
       return 2;
     }
     const std::string meshPath = argv[1], out = argv[2];
@@ -1229,6 +1275,9 @@ int main(int argc, char** argv) {
                   out.c_str());
       std::fflush(stdout);
       Kokkos::finalize();
+#ifdef VIBEFLOW_HAVE_PETSC
+      PetscFinalize();
+#endif
       return 3;
     }
 
