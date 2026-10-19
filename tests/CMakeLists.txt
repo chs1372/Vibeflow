@@ -24,6 +24,11 @@ add_executable(test_backends unit/test_backends.cpp)
 target_link_libraries(test_backends PRIVATE vibeflow_discretization)
 add_test(NAME backends COMMAND test_backends ${FIXTURES})
 
+# ADR-047 gate 1: PETSc on more than one rank. Run by backstep_mpi_gate.py,
+# serially to write its reference, then under mpirun.
+add_executable(test_backends_mpi unit/test_backends_mpi.cpp)
+target_link_libraries(test_backends_mpi PRIVATE vibeflow_discretization)
+
 add_executable(mms_convection mms/mms_convection.cpp)
 target_link_libraries(mms_convection PRIVATE vibeflow_discretization)
 add_test(NAME mms_convection COMMAND mms_convection)

@@ -81,6 +81,8 @@ struct PetscSolver::Impl {
     chk(KSPGetPC(ksp, &p), "KSPGetPC");
     if (pc == "jacobi")      chk(PCSetType(p, PCJACOBI), "PCSetType");
     else if (pc == "ilu")    chk(PCSetType(p, PCILU), "PCSetType");
+    else if (pc == "bjilu")
+      throw std::runtime_error("bjilu: a stub (ADR-047), not yet written");
     else if (pc == "gamg")   chk(PCSetType(p, PCGAMG), "PCSetType");
     else if (pc == "hypre") {
       if (!PetscSolver::hasHypre())
@@ -213,6 +215,10 @@ SolveReport PetscSolver::solve(LinearSystem& sys, ScalarField& x,
 }
 
 void PetscSolver::notifyMatrixChanged() { impl_->dirty = true; }
+
+// ADR-047's stubs: test_backends_mpi is committed failing against them.
+std::vector<Index> PetscSolver::rowMap(const Mesh&, const Comm&) { return {}; }
+std::string PetscSolver::describe() const { return ""; }
 
 void PetscSolver::setConstantNullSpace(bool on) {
   impl_->constantNullSpace = on;
