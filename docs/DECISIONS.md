@@ -6248,6 +6248,62 @@ One refuted finding, that a few-second P = 1 time makes gate 1's limit tight, is
   - the control blocking P = 4's verdict;
   - gate 6 starting before gates 0 to 5 had passed.
 
+*Third revision, before any P > 1 run of gate 2: the calibration's floors exceed 1e-7, and the bounds are applied as calibrated.* Written on 2026-10-21. No P > 1 run of gate 2, and no run of gate 5, has been made.
+
+*What was seen.* Gate 2's calibration ran on 2026-10-19, under 33051e4's script, with `backstep` sha256 094ee5e0…: P = 1 on one thread from 10:10 to 11:03 UTC, then on two threads to 11:54. Its floors and bounds were recorded at 11:54, before any P > 1 run (`g2/bounds.json`).
+
+Many floors exceed 1e-7:
+
+| Quantity | Floors |
+|---|---|
+| `.state.50` | u 5.1e-6, v 7.1e-7, p 1.08e-4, k 1.27e-5, ω 1.03e-7 |
+| `.state.100` | u 2.8e-6, v 6.1e-7, p 2.5e-5, k 5.2e-6 |
+| `.state` | u 2.2e-6, v 5.2e-7, p 2.0e-5, k 5.3e-6 |
+| files | `.cf` 2.1e-6, `.cp` 6.7e-5, `.cpw` 6.7e-5, `.prof`'s u 1.3e-6 |
+| `EQ` lines | C 7.1e-7, Cf(−4) 2.0e-6, `change` 1.0e-6; `relChange` u 7.5e-7, k 1.0e-6, ω 3.0e-5 |
+| lip print | p40 1.2e-3; the four Cp 2.2e-4, 1.7e-4, 1.1e-4, 6.1e-5 |
+
+These stay below it:
+- w in every state, and ω in the step-100 and final states;
+- u_c(−4), 9.8e-10;
+- x_r, −1 in both runs;
+- `.prof`'s y.
+
+The ramp decisions were the same in both runs (dt halved at steps 1 and 2), and so was FINAL, apart from `seconds`. The script then reported gate 2 as STOPPED. Gate 5, which judges with gate 2's bounds, stopped with it.
+
+*The cause.* In both runs every pressure solve stopped at its cap of 5,000 iterations: 600 solves, 3,000,000 iterations, 600 unconverged. The momentum, k and ω solves converged: 750 solves, 8,592 and 8,582 iterations, none unconverged. An unconverged CG's iterate depends on the order of its round-off, so the thread count moves p by about 1e-4.
+
+*What shortening can do.* Nothing. The step-50 state already carries 1.08e-4, and no march may be shorter than 101 steps.
+
+*Probes, seen before this revision.*
+- `make_mesh.py 4 3` made `L4.hex` (4,992 cells, sha256 48c72b95…) and `L3.hex` (19,968 cells, sha256 1d449ebb…) in the working clone. Both pass its own checks.
+- Gate 2's settings were run on each for 20 steps at P = 1, one thread, from the uniform stream.
+  - L4: 37 of 80 pressure solves and 51 of 100 momentum solves were unconverged, and the ramp halved dt to 9.8e-6.
+  - L3: 76 of 80 pressure solves and 2 of 100 momentum solves were unconverged, and dt fell to 7.8e-5.
+
+So the coarser levels do not converge either. Of the rank-independent preconditioners, Jacobi is the only one available: `ilu` and `gamg` are refused on more than one rank, and `hypre` and `bjilu` depend on the partition. On these grids it gives no converging pressure solve.
+
+*Decision (the user, 2026-10-21).* The bound rule b_q = max(1e-10, 10·f_q) is applied as written, with the floors recorded above.
+- The 1e-7 check offered only a revision to shorten the march, which cannot help here. Nothing else in the ADR changes.
+- Gate 2 therefore judges at the scale of the solver's own thread scatter, not at round-off. A defect smaller than ten times that scatter is not seen by gate 2.
+- F1, F5 and F6 are judged against these bounds, as stated.
+- Gate 5 uses the same bounds.
+
+The two alternatives were declined:
+- recording gate 2 as failed, after which ADR-047 could not pass;
+- the production solvers, whose preconditioners depend on the partition, against gate 2's premise.
+
+*The script.* Gates 2 and 5 now report floors above 1e-7 instead of stopping. Nothing else changes. The calibration is not repeated: `bounds.json` from 2026-10-19 is used.
+
+*Also seen by then.* The summary of the first invocation, on 2026-10-19:
+- gate 0 passed;
+- gate 1 passed at P = 2;
+- gate 3 passed at P = 2, with the largest difference 6.9e-10, in k;
+- gate 4 passed at P = 2: (i) and (ii) byte-identical, (iii) zero differences, and (v) every fine cell's margin above 1e-12, with u…ω byte-identical at P = 2;
+- gates 1, 3 and 4 wait for P = 3 and 4.
+
+Steps 5 and 6 of ADR-046 stopped with the machine on 2026-10-20. The last writes to their logs were at 03:20 KST (step 6-d, at step 250) and 04:32 KST (step 5, at step 500, with its checkpoint). Their launcher resumed them on 2026-10-21 at 12:17 UTC: step 5 from its checkpoint, and step 6-d over again, its first directory moved aside. ADR-046's record lists this.
+
 ## ADR-048 — "Fixtures are current" and the runner's CPU: the generator's kernels pinned. Stated before the change and the runs, answered after
 
 **Context.** CI's step "Fixtures are current" runs `python prototype/dump_fixtures.py` and then `git diff --exit-code tests/fixtures/`. The workflow has run 11 times, 12 jobs counting a re-run, from 2026-09-26 to 2026-10-06. Six jobs failed at this step and six passed:
