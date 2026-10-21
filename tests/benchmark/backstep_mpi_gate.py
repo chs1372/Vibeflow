@@ -826,9 +826,12 @@ def gate2():
             say(f"    note: {n}")
     lines = []
     over = {k: v for k, v in bounds["floors"].items() if not v <= FLOOR_MAX}
-    if over:
-        return "STOPPED", [f"floors above {FLOOR_MAX:g}: " + ", ".join(f"{k} {fmt(v)}" for k, v in over.items()),
-                           "a revision may shorten the march (never below 101 steps), before any P > 1 run"]
+    if any(not math.isfinite(v) for v in over.values()):
+        return "STOPPED", ["floors not finite: " + ", ".join(k for k, v in over.items() if not math.isfinite(v)),
+                           "the one- and two-thread runs differ in structure; a revision decides"]
+    if over:                             # ADR-047's third revision: applied as calibrated
+        lines.append(f"floors above {FLOOR_MAX:g}, the bounds applied as calibrated (the third revision): "
+                     + ", ".join(f"{k} {fmt(v)}" for k, v in over.items()))
     margins = [f"step {s} {o}: C {c:.2f}, margin "
                f"{abs(c - (C_DOWN if o == 'halves' else C_UP)) / (C_DOWN if o == 'halves' else C_UP):.4f}"
                + (" (within the print's precision)" if abs(c - (C_DOWN if o == "halves" else C_UP)) < 0.005 else "")
@@ -1155,8 +1158,8 @@ def gate5():
     if bounds is None:
         return "NOT YET", ["gate 2's calibration has not run"]
     over = {k: v for k, v in bounds["floors"].items() if not v <= FLOOR_MAX}
-    if over:
-        return "STOPPED", [f"gate 2's floors above {FLOOR_MAX:g}: " + ", ".join(over)]
+    if any(not math.isfinite(v) for v in over.values()):
+        return "STOPPED", ["gate 2's floors are not all finite: a revision decides"]
     b = bounds["bounds"]
     E = dict(GATE2_ENV, VIBEFLOW_BS_STOP="120", VIBEFLOW_BS_CKPT_EVERY="10", VIBEFLOW_BS_KEEP_CKPT="1")
     Eb = dict(GATE2_ENV, VIBEFLOW_BS_RESUME="1", VIBEFLOW_BS_STOP="0", VIBEFLOW_BS_KEEP_CKPT="1")
