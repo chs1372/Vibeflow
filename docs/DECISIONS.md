@@ -6458,6 +6458,48 @@ Not run:
 
 ADR-046's step 6 ended on 2026-10-21 at 15:17 UTC and step 5 at 20:09 UTC, so the cores are free.
 
+*Fourth revision, before gate 7's suite runs again: the NS cross-check passes `HOME` to the C++ run.* Written on 2026-10-22.
+
+*Gates 1, 3, 4 and 5 at P = 3 and 4* ran on 2026-10-22 from 00:35 to 00:51 UTC, beside nothing else. The record is in `~/adr047_gates`.
+- Gate 1 passes at P = 2, 3 and 4. The largest |Δu| is 1.7e-11 (`bicgstab+jacobi`), and `bjilu` is within 9.0e-12 of serial `ilu`.
+- Gate 3 passes at P = 2, 3 and 4, within 1e-5. FINAL is the same, and no step has differing sweep counts.
+- Gate 4 passes:
+  - (i) and (ii) are byte-identical at P = 2, 3 and 4, and (iii) has zero differences;
+  - (iv) is byte-identical;
+  - (v) has no fine cell with a margin of at most 1e-12, and is byte-identical at P = 2, 3 and 4.
+- Gate 5 fails at (d). (a), (b) at P = 1 and 4, and the three refusals of (c) pass. (d), P = 4 against P = 1 from step 120 to 150, is within gate 2's bounds except `EQ:change` and `EQ:rel_k`, both 1.131e-5 against 1.008e-5.
+
+So gates 2 and 5 fail on the same quantity, the `relChange` of k, and ADR-047 has not passed.
+
+*Gate 7's first run* was made on 2026-10-22, in the ADR's order, at b97b4cf's `src/` (`backstep` sha256 094ee5e0…):
+- `make_meshes.sh` exited with 0.
+- The suite (`v0 v1 v2 v2b`, with the two benchmarks skipped) ran from 00:51 to 04:28 UTC and exited with 1. Every gate passed but one, `[v1] cross-check: python and c++ Navier-Stokes agree`, which printed `C++ run FAILED`.
+- The heated cavity passes (Nu on 128² +0.68%, Richardson −0.075%).
+- The flat plate passes (Cf +0.885%, u⁺ 0.10%, log law 1.48%, ν_t peak +0.39%).
+
+Gate 7 has therefore failed once, and that stays recorded.
+
+*Why the cross-check failed.*
+- `crosscheck_ns.py` runs `ethier_steinman` with an environment of its own: `OMP_PROC_BIND`, `PATH`, `VIBEFLOW_OUTER` and `VIBEFLOW_CONVECTION`, and no `HOME`. The binary starts MPI (`ParallelScope`). This machine's OpenMPI 5.0.10 stops in `opal_init` without `HOME` ("Unable to get the user home directory"), before any computation.
+- Under the README's verified configuration (OpenMPI 4.1) the same gate passed in the same environment. CI runs only v0.
+- The same command, in the same environment, outside both clones, fails identically, with exit 14 and the same messages, for both binaries:
+  - S0's binary, built from a76532c, before any of ADR-047's `src/` changes;
+  - this ADR's binary.
+
+  So the failure does not come from this ADR's code. That is shown independently of the gate's numbers, as *What a failure means* asks.
+- *Seen before this revision.* A diagnostic, not the gate: the same script was imported unchanged with `HOME` added to its environment, and `main()` was run on this ADR's build. It printed 4 rows, with a worst relative difference of 5.05e-10 against a tolerance of 1e-4, and `NS cross-check gate: PASS`.
+
+*The change.*
+- `crosscheck_ns.py` adds the caller's `HOME`, when set, to the environment it passes to the C++ run. Nothing else changes: the binary, its arguments, the other variables, the Python side and the tolerance stay as they were.
+- `crosscheck.py` and `crosscheck_v1.py` also pass their own environments, but their runs passed, and they are not changed.
+- CI, which runs v0, is not affected.
+- This was the user's decision on 2026-10-22.
+
+*What runs again.*
+- The suite command of gate 7 runs again in full, on the commit with the change and the same `src/`.
+- The heated cavity and the flat plate do not run again: neither reads the changed script, and both passed on this `src/`.
+- Gate 7 passes if that suite run passes. Its first failure is reported beside it.
+
 ## ADR-048 — "Fixtures are current" and the runner's CPU: the generator's kernels pinned. Stated before the change and the runs, answered after
 
 **Context.** CI's step "Fixtures are current" runs `python prototype/dump_fixtures.py` and then `git diff --exit-code tests/fixtures/`. The workflow has run 11 times, 12 jobs counting a re-run, from 2026-09-26 to 2026-10-06. Six jobs failed at this step and six passed:
