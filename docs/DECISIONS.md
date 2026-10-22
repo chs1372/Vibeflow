@@ -6304,6 +6304,50 @@ The two alternatives were declined:
 
 Steps 5 and 6 of ADR-046 stopped with the machine on 2026-10-20. The last writes to their logs were at 03:20 KST (step 6-d, at step 250) and 04:32 KST (step 5, at step 500, with its checkpoint). Their launcher resumed them on 2026-10-21 at 12:17 UTC: step 5 from its checkpoint, and step 6-d over again, its first directory moved aside. ADR-046's record lists this.
 
+*Gate 2 fails at P = 2, and what runs after it.* Written on 2026-10-22.
+
+*The run.* Gate 2's P = 2 run was made on 2026-10-21 from 12:20 to 12:57 UTC. It used b97b4cf's script and `backstep` sha256 094ee5e0…, with ADR-046's two marches running beside it. It was judged against the bounds of 2026-10-19 (`g2/bounds.json`), as the third revision applies them.
+
+*The result.*
+- 35 of the 36 judged quantities are within their bounds.
+- The ramp decisions are the same, with dt halved at steps 1 and 2. FINAL's `steps`, `full`, `dt`, `time` and `settled` are the same.
+- The cells that set C and the three scales are the same at every `EQ` line.
+- One quantity is outside its bound: the `EQ` line's `relChange` of k at step 50.
+
+| Run at step 50 | `relChange` of k |
+|---|---|
+| P = 1, one thread | 0.53367423566224303 |
+| P = 1, two threads (the calibration) | 0.5336746401235406 |
+| P = 2 | 0.53366134200735194 |
+
+P = 2's |Δ|/|v₁| is 2.42e-5, against a bound of 1.01e-5 (a floor of 1.01e-6). At steps 100 and 150 the same quantity is within its bound. `SOLVES` at P = 2: 600 pressure solves, 3,000,000 iterations, 600 unconverged; 750 momentum solves, 8,587 iterations, none unconverged.
+
+*Gate 2 fails.* By *What a failure means*, ADR-047 has not passed. The MPI harness goes into the known limits as not shown to give the serial answer, with what failed.
+
+*No defect in this ADR's code has been shown.* The following is a hypothesis, not a finding, and nothing was run to test it. MPI may perturb the march differently from threads:
+- a ghost's geometry agrees with serial only to round-off (x and y within 2.8e-14 in gate 4);
+- global sums are ordered differently.
+
+With every pressure solve stopped at its cap, the thread scatter may then understate MPI's. There is no rerun: a failure may be fixed and run again only when a defect is shown independently of the failing gate's numbers.
+
+*Also from that invocation.* Gate 5's P = 1 runs were made:
+- (a), 120 steps, keeping the step-120 checkpoint;
+- (b), resumed with no step, byte-identical to (a) in `.cf`, `.cp`, `.cpw`, `.prof` and `.state`;
+- (d), resumed to step 150.
+
+Gates 0 (PASS), 1, 3 and 4 were reused and judged as before.
+
+*What runs after it (the user, 2026-10-22).* The failure is recorded here. Two sets of runs are made once the cores are free, to record what holds under MPI and to let the solver changes merge if gate 7 passes:
+- gates 1, 3, 4 and 5 at P = 3 and 4;
+- gate 7.
+
+Not run:
+- the deliberate faults, which test the gates' power to fail and matter only for a pass;
+- gate 6, which the second revision starts only after gates 0 to 5 have passed;
+- gate 2 at P = 3 and 4.
+
+ADR-046's step 6 ended on 2026-10-21 at 15:17 UTC and step 5 at 20:09 UTC, so the cores are free.
+
 ## ADR-048 — "Fixtures are current" and the runner's CPU: the generator's kernels pinned. Stated before the change and the runs, answered after
 
 **Context.** CI's step "Fixtures are current" runs `python prototype/dump_fixtures.py` and then `git diff --exit-code tests/fixtures/`. The workflow has run 11 times, 12 jobs counting a re-run, from 2026-09-26 to 2026-10-06. Six jobs failed at this step and six passed:
