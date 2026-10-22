@@ -6500,6 +6500,45 @@ Gate 7 has therefore failed once, and that stays recorded.
 - The heated cavity and the flat plate do not run again: neither reads the changed script, and both passed on this `src/`.
 - Gate 7 passes if that suite run passes. Its first failure is reported beside it.
 
+**Results** (after the runs, and the four revisions and records above them). ADR-047 has not passed. Gates 2 and 5 fail, both on the `relChange` of k, the `EQ` line's measure of how far k moved over 50 steps:
+- gate 2 by 2.42e-5 at step 50, at P = 2;
+- gate 5(d) by 1.13e-5, at P = 4;
+
+each against a calibrated bound of 1.01e-5. Every other judged quantity of both gates is within its bound, and so are their ramp decisions and FINAL.
+
+The MPI harness therefore goes into the known limits as not shown to give the serial answer. Within that, the gates show the following:
+- Where the solves converge, over 50 steps, the harness agrees with serial to 6.9e-10 at P = 2, 3 and 4, against gate 3's 1e-5.
+- Extraction and the state round trip are byte-identical (gate 4).
+- Checkpoints restore exactly, and every cross-count resume is refused (gate 5 (a) to (c)).
+- PETSc's parallel backends, `bjilu` among them, agree with serial to 1.7e-11 (gate 1).
+
+What fails is agreement at gate 2's calibrated scale, which every pressure solve reaching its cap sets (the third revision). No defect in this ADR's code has been shown, so neither gate is run again.
+
+| Gate | Result |
+|---|---|
+| 0, the serial path unchanged | PASS: (a) and (b) byte-identical with and without `mpirun -n 1`; (c)'s checkpoints identical but `seconds`; (d)'s resumes identical; the serial checkpoint's reader and writer unedited |
+| 1, PETSc on more than one rank | PASS at P = 2, 3, 4 (largest \|Δu\| 1.7e-11; `bjilu` bitwise equal to `ilu` at one rank) |
+| 2, round-off as calibrated | FAIL at P = 2 (`relChange` of k, 2.42e-5 against 1.01e-5); not run at P = 3, 4 |
+| 3, the production solvers | PASS at P = 2, 3, 4 (largest 6.9e-10 in k; no step with differing sweep counts) |
+| 4, extraction and the state | PASS (byte-identical at P = 2, 3, 4; (iv) and (v) hold) |
+| 5, checkpoint and resume | FAIL at (d) (`change` and `relChange` of k, 1.13e-5 against 1.01e-5); (a), (b) and (c) pass |
+| 6, the production march | not run: the second revision starts it only after gates 0 to 5 pass |
+| 7, nothing else moves | PASS, on the second suite run (2026-10-22, 06:58–10:35 UTC, at e1a425b): "All active gates passed for: v0, v1, v2, v2b", the NS cross-check 5.05e-10 against 1e-4. The heated cavity (Nu +0.68%, Richardson −0.075%) and the flat plate (Cf +0.885%) pass on the same `src/`. The first suite run failed that one gate, because OpenMPI 5.0.10 could not start without `HOME` (the fourth revision) |
+| F1 to F6 | not run (the user's decision after gate 2 failed) |
+
+*Reported.*
+- *Time.* With ADR-046's two marches beside them where the record says so, gate 3's 50 level-2 steps on the production solvers took:
+  - 386 s at P = 1 on one thread, beside the marches;
+  - 237 s at P = 2, beside the marches;
+  - 111 s at P = 3 and 98 s at P = 4, with nothing beside.
+
+  Gate 2's Jacobi solves took 3,201 s at P = 1 and 2,205 s at P = 2. Gate 6, which would have timed level 1, was not run.
+- *Bindings.* `--report-bindings` printed every rank as not bound.
+- *Toolchain.* GCC 15.2, OpenMPI 5.0.10, PETSc 3.24.4, hypre 3.0.0 and Kokkos 5.2.2, on WSL2 Ubuntu 26.04.1.
+- *Commits.* The code is f4ec4e1 (harness), 2498714 (`src/`), and the test at 5c81114. The script ran at 33051e4, b97b4cf and e1a425b. `backstep` sha256 094ee5e0… throughout.
+
+*The solver changes.* `bjilu`, the row map and its check, and the global scale of the non-orthogonal stop have passed gate 1 and gate 7. Nothing in this ADR holds them back from merging. The non-orthogonal stop's fix removes a defect found by reading (F2, which would have shown it, was not run). Before the fix, ranks could leave that loop after different sweep counts.
+
 ## ADR-048 — "Fixtures are current" and the runner's CPU: the generator's kernels pinned. Stated before the change and the runs, answered after
 
 **Context.** CI's step "Fixtures are current" runs `python prototype/dump_fixtures.py` and then `git diff --exit-code tests/fixtures/`. The workflow has run 11 times, 12 jobs counting a re-run, from 2026-09-26 to 2026-10-06. Six jobs failed at this step and six passed:
