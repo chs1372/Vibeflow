@@ -5769,6 +5769,116 @@ Nothing here changes a rule of this ADR, its contract on downloaded files, gate 
   - On a later invocation, a march with a FINAL is left alone. One with a checkpoint is resumed with its resume command. One with neither was interrupted before its first checkpoint: its directory is moved to `~/steps56/abandoned/` and the march is started again in a new, empty directory at the same path (step 7).
   - A PowerShell launcher keeps the machine from idle sleep while the script runs.
 
+**Results** (after the runs, and the three revisions and records above them). ADR-045's decision stands, and the cause is not found:
+- step 2 (F) and step 3 (T) were not run, as the third revision records;
+- step 4 (S0) reproduces;
+- step 5 (G) gives fractions, and attributes nothing;
+- step 6 (A) is not judged, because its null re-march is confounded.
+
+Gate 4 stays FAIL, as ADR-045 recorded it, and is never re-scored. Closing v2b and starting v2c is left to a later ADR.
+
+*How steps 5 and 6 ran.* `~/steps56_run.sh` started both on 2026-10-19 at 05:34 UTC, each march on two threads, with S0's binary (sha256 77c10aca…, checked before every march and resume). The runner's own environment held no `VIBEFLOW_` variable: its record counts 0 before each march. Each command set only the variables `commands` prints: `VIBEFLOW_BS_SAVE`, `VIBEFLOW_BS_INIT` and the ablation's change, plus `VIBEFLOW_BS_RESUME=1` on step 5's resume.
+
+| March | Ran | Exit |
+|---|---|---|
+| Step 6 (0) | 05:34 to 08:29 UTC | 0 |
+| Step 6 (a) | to 12:06 | 0 |
+| Step 6 (b) | to 13:20 | 0 |
+| Step 6 (c) | to 16:54 | 0 |
+| Step 6 (d), first attempt | from 16:54 | none: stopped with the machine |
+
+The machine stopped on 2026-10-20 (KST), and the cause is not known.
+- The last writes to the logs were step 6 (d)'s line at step 250, at 18:20 UTC on 10-19, and step 5's line and checkpoint at step 500, at 19:32 UTC.
+- Before that, both marches had slowed. Step 5's printed seconds rose by 12,315 for its steps 450 to 500, against 2,897 to 4,305 for each of the four 50-step stretches before. The (d) attempt's 50-step stretches grew from 605 s to 1,862 s.
+- The runner's first invocation recorded no end.
+
+On 2026-10-21 at 12:17 UTC, with the user's agreement, the launcher was run again and acted as step 7 says:
+- (0) to (c) were left alone, each with its FINAL.
+- Step 5 resumed from its step-500 checkpoint on the same command with `VIBEFLOW_BS_RESUME=1`, appending to its log. It printed `resumed from /home/chs/step5/L0.ckpt: step 500, t 3.080, dt 0.005, 294 steps at it`.
+- (d) had no checkpoint. Its directory was moved to `~/steps56/abandoned/step6-d-1`, and (d) started again in a new, empty directory. The abandoned attempt is reported, not judged: 23 lines, its last at step 250.
+- (d) then ran 12:17 to 14:26 UTC and (e) 14:26 to 15:17 UTC, each with exit 0.
+- Step 5 ended at 20:09 UTC with exit 0.
+
+*Seen before the readings.* While the marches ran, only the following were read:
+- the runner's record and exit codes;
+- one progress line of step 5, at step 50 (dt 0.005, C 0.58, x_r 6.52075), and one of step 6 (0), at step 700 (dt 0.08, C 5.03, x_r 6.55239), for the time per step;
+- step 5's last step number and printed seconds, and the abandoned (d)'s timings and last lines, including its LIP line at step 250, for this record.
+
+ADR-047's runs read nothing of these marches.
+
+*The readings*, on 2026-10-22 from 00:37 UTC: `consistency` on the seven logs, then `grid`, `ablations` and `outcome`.
+- the script was the committed one (sha256 cce7c22ef3a590dfddee1e66aa15e4021f7b9c3a31851ca4790f8e6b77942072);
+- it ran in the working clone at b97b4cf, under the venv's Python 3.12.15;
+- its outputs are kept in `~/lip_runs`: `consistency_*.txt`, `grid.txt`, `ablations.txt` and `outcome.txt`;
+- all exited with code 0.
+
+*`consistency`*, on step 5's log and step 6's six:
+- Step 5's log has two attempts, the first and one resumed at step 500. Each of the others has one attempt.
+- No log has a truncated line or an error, and every march is `quasi`.
+- LIPX equals the `.cp` x strings of the lip faces.
+- The last LIP line equals the `.cp` at those faces, and d_G from the four faces equals d_G from the whole floor (largest difference 0 in both).
+- |d_F − (d_G − b)| is at most 2.43e-17.
+
+*Step 5 (G), `grid`.*
+- *Nesting.* L0 has 1,277,952 cells, and every z = 0 point of S0's L1 lies within 0 of one of L0's.
+- *The march.* FINAL: x_r 6.517075, Cf(−4) 2.94991586e-3, u_c(−4) 0.99898444, bubble 0.00821–0.10703.
+  - It settled `quasi` at dt 0.005 after 1,250 steps, 1,044 of them at that dt. It never reached the dt passed, 0.04. S0's L1 settled at 0.04.
+  - Its 50-step line at step 1,250 prints 78,632 s, under 604,800. FINAL's seconds, which include writing the outputs, are 78,635 and are reported only.
+  - On two threads it took 77.8 s a step over the first 100 steps, and 63.5 s from step 50 to 100.
+- *The window.* 20 samples, steps 300 to 1,250. It is flagged because it contains the resume.
+- *Against CFL3D's level-1 file, final state, gate reading:*
+  - d at the corner +0.019503, and at −0.021 +0.018269;
+  - behind the step, 0 < x ≤ 30, the largest |d| is 0.004427, at x = 4.75;
+  - from step 850 to 1,250 the lip series still moves, at the corner from +0.019627 to +0.019503.
+- *Δ = d_L1(S0) − d_L0:*
+
+  | | Gate reading | Face reading | From the window means (G) |
+  |---|---|---|---|
+  | Corner | +0.000974 | +0.000968 | +0.002627 |
+  | −0.021 | −0.000858 | −0.000854 | +0.000795 |
+- *The rule.* T is not judged, and ours on level 0 is not within 0.015 of CFL3D's level-1 file at the lip, so step 5 records the fraction Δ/E_S0:
+  - `step 5 (G): fraction 0.1778 -0.3557`;
+  - between the final states, by the gate reading, level 0 is lower than S0's level 1 by 0.1778 of the excess at the corner, and higher by 0.3557 of it at −0.021;
+  - the window means, which are reported only, are lower at both points (+0.002627 and +0.000795), and neither march's lip had stopped moving;
+  - L0 also settled at a dt different from L1's, so Δ is not refinement alone;
+  - against the prediction, which is from final states, the corner lies inside its table (0.0189 to 0.0201), and −0.021 lies above every row (0.0167 to 0.0172).
+
+*Step 6 (A), `ablations`.* Each ablation is required to settle at dt_S0 = 0.08, or 0.04 for (b):
+
+| March | x_r | Settled | dt | Steps | Printed seconds | Largest \|d\| behind the step (gate) | Class |
+|---|---|---|---|---|---|---|---|
+| (0) | 6.552747 | quasi | 0.04 | 1,850 | 10,515 | 0.002743 | confounded |
+| (a) 12 correctors | 6.552070 | quasi | 0.04 | 1,700 | 13,024 | 0.002683 | confounded |
+| (b) half dt | 6.556014 | quasi | 0.04 | 1,300 | 4,467 | 0.002798 | reported |
+| (c) no explicit non-orthogonal diffusion | 6.557188 | quasi | 0.04 | 1,850 | 12,799 | 0.002866 | confounded |
+| (d) no ν_t(∇u)ᵀ | 6.532865 | quasi | 0.04 | 1,550 | 7,733 | 0.005040 | confounded |
+| (e) first-order momentum | 6.430802 | quasi | 0.08 | 1,300 | 3,045 | 0.011464 | reported |
+
+Reported, not judged, for every march: its final state's d against CFL3D's level-1 file at the lip, Cf(−4), u_c(−4), the corner bubble and the time per step. The full lip series and every upstream point are in `ablations.txt`.
+
+| March | d at the corner (gate, face) | d at −0.021 (gate, face) | Cf(−4) | u_c(−4) | Bubble | s per step (first 100; 50 to 100) |
+|---|---|---|---|---|---|---|
+| (0) | +0.021760, +0.019663 | +0.017463, +0.017463 | 2.88215116e-3 | 0.99856733 | 0.10990–1.27153 | 5.48; 6.18 |
+| (a) | +0.021712, +0.019615 | +0.017415, +0.017415 | 2.88215702e-3 | 0.99856521 | 0.10951–1.27200 | 5.25; 5.28 |
+| (b) | +0.022023, +0.019926 | +0.017725, +0.017725 | 2.88229225e-3 | 0.99857299 | 0.10823–1.27277 | 4.32; 3.84 |
+| (c) | +0.021728, +0.019632 | +0.017414, +0.017413 | 2.88217431e-3 | 0.99856698 | 0.11475–1.30218 | 4.40; 4.26 |
+| (d) | +0.023000, +0.020903 | +0.018524, +0.018523 | 2.88235471e-3 | 0.99856142 | 0.06985–1.10973 | 5.18; 5.92 |
+| (e) | +0.013211, +0.011114 | +0.010187, +0.010187 | 2.89202702e-3 | 0.99827963 | 0.03327–1.16057 | 2.90; 2.64 |
+
+Four marches settled at 0.04 instead of 0.08 and are confounded. (0), the null re-march from S0's L2 state, is among them, so step 6's rules are not judged and the ablations are reported: `step 6 (A): not judged, (0) confounded`. That the null re-march does not settle at S0's own dt is itself recorded: S0's L2 settled at 0.08, and its restart from S0's L2 state settled at 0.04.
+
+*Step 8, `outcome`:*
+- `step 4 (S0): reproduces` (judged at all four lip points, d_S0 0.0205 and 0.0174 on level 1, 0.0221 and 0.0181 on level 2);
+- `step 5 (G): fraction 0.1778 -0.3557`;
+- `step 6 (A): not judged, (0) confounded`;
+- `step 8: ADR-045's decision stands`;
+- for the known limits: step 5's fraction and step 6's not judged;
+- `step 8: cause not found`;
+- `step 8: gate 4 stays FAIL as ADR-045 recorded it, never re-scored`;
+- `step 8: closing v2b and starting v2c is left to a later ADR`.
+
+*What goes into the known limits.* Behind the step this solver's Cp is within ADR-045's bound, but its lip lacks suction against CFL3D. The excess holds on TMR's finest grid: d at the corner is 0.0195 and at −0.021 0.0183, against the bound 0.015. Between the final states, by the gate reading, level 0 sits 0.1778 of S0's level-1 excess lower at the corner and 0.3557 higher at −0.021. Level 0 settled at dt 0.005 against level 1's 0.04, and neither lip had stopped moving. On level 2, first-order momentum (e), reported only, gives a lip of 0.0132 and 0.0102. TMR offers no FUN3D numbers and no finest-grid Cp to compare with. The ablations could not be judged, because the null re-march settled at half S0's dt. No cause is attributed.
+
 ## ADR-047 — The backward-facing step under MPI: the harness, a parallel ILU and the serial answer. Stated before the code and the runs, answered after
 
 **Context.** ADR-046 needs TMR's finest grid for the step, about 1.28 million cells (its step 5). It estimates that march at 20 to 40 hours on two threads. The PETSc 3.24.4 and hypre 3.0.0 on this machine are built without OpenMP (`petscconf.h` has `PETSC_HAVE_HYPRE` and no `PETSC_HAVE_OPENMP`; hypre's `HYPRE_USING_OPENMP` is undefined), so their own kernels are serial. PETSc's vector operations call `libblas`, which on this machine resolves to OpenBLAS's pthreads build (the `libblas.so.3` alternative, priority 100, and the binary links it). Its threads follow `OMP_NUM_THREADS`, or every core when that is unset. So threads speed up the Kokkos share of a step and some of the Krylov vector work. ADR-046's cost note that threads speed up only the Kokkos share is not exact in this respect. How much of a solve they parallelise has not been measured. Ranks would split the whole of each solve.
