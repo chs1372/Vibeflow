@@ -807,8 +807,10 @@ void PisoSolver::solvePressure(LinearSolver& solver) {
     sweeps = k + 1;
     // The threshold has to sit above the linear solver's own noise floor.
     // At 1e-14 the loop chased residual noise, used all 40 sweeps, and still
-    // reported 8.9e-9 continuity error.
-    if (comm_.max(delta) < ctl_.nonOrthTol * scale) break;
+    // reported 8.9e-9 continuity error. Both sides reduced over the ranks
+    // (ADR-047): a rank-local scale lets ranks leave after different sweep
+    // counts, and their next collectives then do not match.
+    if (comm_.max(delta) < ctl_.nonOrthTol * comm_.max(scale)) break;
   }
   lastNonOrth_ = sweeps;
   // The last sweep's gradient is grad(p_) for the p_ just solved: nothing

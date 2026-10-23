@@ -41,6 +41,10 @@ OUTER = os.environ.get("VIBEFLOW_OUTER", "6")
 CONVECTION = os.environ.get("VIBEFLOW_CONVECTION", "linear")
 ENV = {"OMP_PROC_BIND": "false", "PATH": "/usr/bin:/bin", "VIBEFLOW_OUTER": OUTER,
        "VIBEFLOW_CONVECTION": CONVECTION}
+# The binary starts MPI, and OpenMPI 5 stops in opal_init without HOME
+# (ADR-047's fourth revision): pass the caller's through.
+if "HOME" in os.environ:
+    ENV["HOME"] = os.environ["HOME"]
 GRIDS = (6, 12)
 
 ROW = re.compile(r"^\s*(\d+)\s+([\d.]+)\s+([\d.eE+-]+)")

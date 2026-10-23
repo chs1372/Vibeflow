@@ -5769,6 +5769,116 @@ Nothing here changes a rule of this ADR, its contract on downloaded files, gate 
   - On a later invocation, a march with a FINAL is left alone. One with a checkpoint is resumed with its resume command. One with neither was interrupted before its first checkpoint: its directory is moved to `~/steps56/abandoned/` and the march is started again in a new, empty directory at the same path (step 7).
   - A PowerShell launcher keeps the machine from idle sleep while the script runs.
 
+**Results** (after the runs, and the three revisions and records above them). ADR-045's decision stands, and the cause is not found:
+- step 2 (F) and step 3 (T) were not run, as the third revision records;
+- step 4 (S0) reproduces;
+- step 5 (G) gives fractions, and attributes nothing;
+- step 6 (A) is not judged, because its null re-march is confounded.
+
+Gate 4 stays FAIL, as ADR-045 recorded it, and is never re-scored. Closing v2b and starting v2c is left to a later ADR.
+
+*How steps 5 and 6 ran.* `~/steps56_run.sh` started both on 2026-10-19 at 05:34 UTC, each march on two threads, with S0's binary (sha256 77c10aca…, checked before every march and resume). The runner's own environment held no `VIBEFLOW_` variable: its record counts 0 before each march. Each command set only the variables `commands` prints: `VIBEFLOW_BS_SAVE`, `VIBEFLOW_BS_INIT` and the ablation's change, plus `VIBEFLOW_BS_RESUME=1` on step 5's resume.
+
+| March | Ran | Exit |
+|---|---|---|
+| Step 6 (0) | 05:34 to 08:29 UTC | 0 |
+| Step 6 (a) | to 12:06 | 0 |
+| Step 6 (b) | to 13:20 | 0 |
+| Step 6 (c) | to 16:54 | 0 |
+| Step 6 (d), first attempt | from 16:54 | none: stopped with the machine |
+
+The machine stopped on 2026-10-20 (KST), and the cause is not known.
+- The last writes to the logs were step 6 (d)'s line at step 250, at 18:20 UTC on 10-19, and step 5's line and checkpoint at step 500, at 19:32 UTC.
+- Before that, both marches had slowed. Step 5's printed seconds rose by 12,315 for its steps 450 to 500, against 2,897 to 4,305 for each of the four 50-step stretches before. The (d) attempt's 50-step stretches grew from 605 s to 1,862 s.
+- The runner's first invocation recorded no end.
+
+On 2026-10-21 at 12:17 UTC, with the user's agreement, the launcher was run again and acted as step 7 says:
+- (0) to (c) were left alone, each with its FINAL.
+- Step 5 resumed from its step-500 checkpoint on the same command with `VIBEFLOW_BS_RESUME=1`, appending to its log. It printed `resumed from /home/chs/step5/L0.ckpt: step 500, t 3.080, dt 0.005, 294 steps at it`.
+- (d) had no checkpoint. Its directory was moved to `~/steps56/abandoned/step6-d-1`, and (d) started again in a new, empty directory. The abandoned attempt is reported, not judged: 23 lines, its last at step 250.
+- (d) then ran 12:17 to 14:26 UTC and (e) 14:26 to 15:17 UTC, each with exit 0.
+- Step 5 ended at 20:09 UTC with exit 0.
+
+*Seen before the readings.* While the marches ran, only the following were read:
+- the runner's record and exit codes;
+- one progress line of step 5, at step 50 (dt 0.005, C 0.58, x_r 6.52075), and one of step 6 (0), at step 700 (dt 0.08, C 5.03, x_r 6.55239), for the time per step;
+- step 5's last step number and printed seconds, and the abandoned (d)'s timings and last lines, including its LIP line at step 250, for this record.
+
+ADR-047's runs read nothing of these marches.
+
+*The readings*, on 2026-10-22 from 00:37 UTC: `consistency` on the seven logs, then `grid`, `ablations` and `outcome`.
+- the script was the committed one (sha256 cce7c22ef3a590dfddee1e66aa15e4021f7b9c3a31851ca4790f8e6b77942072);
+- it ran in the working clone at b97b4cf, under the venv's Python 3.12.15;
+- its outputs are kept in `~/lip_runs`: `consistency_*.txt`, `grid.txt`, `ablations.txt` and `outcome.txt`;
+- all exited with code 0.
+
+*`consistency`*, on step 5's log and step 6's six:
+- Step 5's log has two attempts, the first and one resumed at step 500. Each of the others has one attempt.
+- No log has a truncated line or an error, and every march is `quasi`.
+- LIPX equals the `.cp` x strings of the lip faces.
+- The last LIP line equals the `.cp` at those faces, and d_G from the four faces equals d_G from the whole floor (largest difference 0 in both).
+- |d_F − (d_G − b)| is at most 2.43e-17.
+
+*Step 5 (G), `grid`.*
+- *Nesting.* L0 has 1,277,952 cells, and every z = 0 point of S0's L1 lies within 0 of one of L0's.
+- *The march.* FINAL: x_r 6.517075, Cf(−4) 2.94991586e-3, u_c(−4) 0.99898444, bubble 0.00821–0.10703.
+  - It settled `quasi` at dt 0.005 after 1,250 steps, 1,044 of them at that dt. It never reached the dt passed, 0.04. S0's L1 settled at 0.04.
+  - Its 50-step line at step 1,250 prints 78,632 s, under 604,800. FINAL's seconds, which include writing the outputs, are 78,635 and are reported only.
+  - On two threads it took 77.8 s a step over the first 100 steps, and 63.5 s from step 50 to 100.
+- *The window.* 20 samples, steps 300 to 1,250. It is flagged because it contains the resume.
+- *Against CFL3D's level-1 file, final state, gate reading:*
+  - d at the corner +0.019503, and at −0.021 +0.018269;
+  - behind the step, 0 < x ≤ 30, the largest |d| is 0.004427, at x = 4.75;
+  - from step 850 to 1,250 the lip series still moves, at the corner from +0.019627 to +0.019503.
+- *Δ = d_L1(S0) − d_L0:*
+
+  | | Gate reading | Face reading | From the window means (G) |
+  |---|---|---|---|
+  | Corner | +0.000974 | +0.000968 | +0.002627 |
+  | −0.021 | −0.000858 | −0.000854 | +0.000795 |
+- *The rule.* T is not judged, and ours on level 0 is not within 0.015 of CFL3D's level-1 file at the lip, so step 5 records the fraction Δ/E_S0:
+  - `step 5 (G): fraction 0.1778 -0.3557`;
+  - between the final states, by the gate reading, level 0 is lower than S0's level 1 by 0.1778 of the excess at the corner, and higher by 0.3557 of it at −0.021;
+  - the window means, which are reported only, are lower at both points (+0.002627 and +0.000795), and neither march's lip had stopped moving;
+  - L0 also settled at a dt different from L1's, so Δ is not refinement alone;
+  - against the prediction, which is from final states, the corner lies inside its table (0.0189 to 0.0201), and −0.021 lies above every row (0.0167 to 0.0172).
+
+*Step 6 (A), `ablations`.* Each ablation is required to settle at dt_S0 = 0.08, or 0.04 for (b):
+
+| March | x_r | Settled | dt | Steps | Printed seconds | Largest \|d\| behind the step (gate) | Class |
+|---|---|---|---|---|---|---|---|
+| (0) | 6.552747 | quasi | 0.04 | 1,850 | 10,515 | 0.002743 | confounded |
+| (a) 12 correctors | 6.552070 | quasi | 0.04 | 1,700 | 13,024 | 0.002683 | confounded |
+| (b) half dt | 6.556014 | quasi | 0.04 | 1,300 | 4,467 | 0.002798 | reported |
+| (c) no explicit non-orthogonal diffusion | 6.557188 | quasi | 0.04 | 1,850 | 12,799 | 0.002866 | confounded |
+| (d) no ν_t(∇u)ᵀ | 6.532865 | quasi | 0.04 | 1,550 | 7,733 | 0.005040 | confounded |
+| (e) first-order momentum | 6.430802 | quasi | 0.08 | 1,300 | 3,045 | 0.011464 | reported |
+
+Reported, not judged, for every march: its final state's d against CFL3D's level-1 file at the lip, Cf(−4), u_c(−4), the corner bubble and the time per step. The full lip series and every upstream point are in `ablations.txt`.
+
+| March | d at the corner (gate, face) | d at −0.021 (gate, face) | Cf(−4) | u_c(−4) | Bubble | s per step (first 100; 50 to 100) |
+|---|---|---|---|---|---|---|
+| (0) | +0.021760, +0.019663 | +0.017463, +0.017463 | 2.88215116e-3 | 0.99856733 | 0.10990–1.27153 | 5.48; 6.18 |
+| (a) | +0.021712, +0.019615 | +0.017415, +0.017415 | 2.88215702e-3 | 0.99856521 | 0.10951–1.27200 | 5.25; 5.28 |
+| (b) | +0.022023, +0.019926 | +0.017725, +0.017725 | 2.88229225e-3 | 0.99857299 | 0.10823–1.27277 | 4.32; 3.84 |
+| (c) | +0.021728, +0.019632 | +0.017414, +0.017413 | 2.88217431e-3 | 0.99856698 | 0.11475–1.30218 | 4.40; 4.26 |
+| (d) | +0.023000, +0.020903 | +0.018524, +0.018523 | 2.88235471e-3 | 0.99856142 | 0.06985–1.10973 | 5.18; 5.92 |
+| (e) | +0.013211, +0.011114 | +0.010187, +0.010187 | 2.89202702e-3 | 0.99827963 | 0.03327–1.16057 | 2.90; 2.64 |
+
+Four marches settled at 0.04 instead of 0.08 and are confounded. (0), the null re-march from S0's L2 state, is among them, so step 6's rules are not judged and the ablations are reported: `step 6 (A): not judged, (0) confounded`. That the null re-march does not settle at S0's own dt is itself recorded: S0's L2 settled at 0.08, and its restart from S0's L2 state settled at 0.04.
+
+*Step 8, `outcome`:*
+- `step 4 (S0): reproduces` (judged at all four lip points, d_S0 0.0205 and 0.0174 on level 1, 0.0221 and 0.0181 on level 2);
+- `step 5 (G): fraction 0.1778 -0.3557`;
+- `step 6 (A): not judged, (0) confounded`;
+- `step 8: ADR-045's decision stands`;
+- for the known limits: step 5's fraction and step 6's not judged;
+- `step 8: cause not found`;
+- `step 8: gate 4 stays FAIL as ADR-045 recorded it, never re-scored`;
+- `step 8: closing v2b and starting v2c is left to a later ADR`.
+
+*What goes into the known limits.* Behind the step this solver's Cp is within ADR-045's bound, but its lip lacks suction against CFL3D. The excess holds on TMR's finest grid: d at the corner is 0.0195 and at −0.021 0.0183, against the bound 0.015. Between the final states, by the gate reading, level 0 sits 0.1778 of S0's level-1 excess lower at the corner and 0.3557 higher at −0.021. Level 0 settled at dt 0.005 against level 1's 0.04, and neither lip had stopped moving. On level 2, first-order momentum (e), reported only, gives a lip of 0.0132 and 0.0102. TMR offers no FUN3D numbers and no finest-grid Cp to compare with. The ablations could not be judged, because the null re-march settled at half S0's dt. No cause is attributed.
+
 ## ADR-047 — The backward-facing step under MPI: the harness, a parallel ILU and the serial answer. Stated before the code and the runs, answered after
 
 **Context.** ADR-046 needs TMR's finest grid for the step, about 1.28 million cells (its step 5). It estimates that march at 20 to 40 hours on two threads. The PETSc 3.24.4 and hypre 3.0.0 on this machine are built without OpenMP (`petscconf.h` has `PETSC_HAVE_HYPRE` and no `PETSC_HAVE_OPENMP`; hypre's `HYPRE_USING_OPENMP` is undefined), so their own kernels are serial. PETSc's vector operations call `libblas`, which on this machine resolves to OpenBLAS's pthreads build (the `libblas.so.3` alternative, priority 100, and the binary links it). Its threads follow `OMP_NUM_THREADS`, or every core when that is unset. So threads speed up the Kokkos share of a step and some of the Krylov vector work. ADR-046's cost note that threads speed up only the Kokkos share is not exact in this respect. How much of a solve they parallelise has not been measured. Ranks would split the whole of each solve.
@@ -6087,6 +6197,348 @@ The exception for F5 and F6: for each P separately, from the global ids that P =
 - Code: about 800 to 1,100 lines, in the harness, the test, the script and about 60 lines of solver code.
 - Disk: gate 6's states and checkpoints are about 150 MB. The second clone and its build are measured before S0. ADR-046's 2 GB floor for step 5 stands.
 
+*First revision, before the gate script and before any gate's run: what writing the code settled that the text above left open, the faults' exact lines, how the gates fit the cores, and what had been seen by then.* Written on 2026-10-19. The code is at commits 5c81114 (the test, failing against the stub), 2498714 (the two solver changes), 7e8fcd9 (the harness) and f4ec4e1 (the harness's fixes below and `backstep_owners`). `backstep_mpi_gate.py` is written and reviewed but not committed; it follows this revision. No gate has run. Only the script's readers have run, imported by a scratch test on the smoke outputs below. No gate, bound or fault changes, and neither does what passing means.
+
+*Step 5 has started, on two threads.* ADR-046's steps 5 and 6 started on 2026-10-19 at 05:34 UTC, each on two threads, with the lip-print binary in S0's clone. This ADR had not passed. By Order 7, and by ADR-046's rule that no march moves between threads and MPI once it has started, nothing this ADR finds now changes how step 5 runs. Gate 6 is unchanged. Its pass now says only that the MPI harness gives S0's L1 answer within ADR-046's cap. Any later march that uses the MPI harness states that in its own ADR before it starts.
+
+*Cores.* Steps 5 and 6 use four cores until step 6's six marches end. Until then this ADR's runs use the other two:
+
+- gate 0's one-thread runs, two at a time;
+- gate 1 at P = 1 and 2;
+- the P = 1 and P = 2 runs of gates 2 to 5, with each two-thread P = 1 run alone.
+
+Runs at P = 3 and 4 wait until step 6 has ended, and so do gate 6 and gate 7. Gate 7 waits because the suite's MPI gates run up to four ranks (`run_gates.py:30`, :63). The script therefore runs whatever subset of gates and rank counts the cores allow (`--gates`, `--ranks`, `--cores`, `--jobs`). It keeps each run's directory and its record, and judges a gate only when all of the gate's runs exist. Until then the gate is reported as not yet run, never as passed. It never starts a run that would take the cores in use, counting ADR-046's marches at two each, past six. With every run it records how many of ADR-046's marches were running and the load average.
+
+*The ten-times limit.*
+- A P = 1 run made while steps 5 and 6 run is slower than one made after step 6 has ended, so a P > 1 run made later gets a longer limit, not a shorter one. If a P > 1 run starts with more of ADR-046's marches running than its P = 1 run had, the P = 1 run is first repeated under that load, and its time sets the limit.
+- A limit below 120 s is raised to 120 s. Gate 1's P = 1 test takes seconds, and `mpirun`'s own start-up at four ranks is not part of that time. A short limit would count a slow start as a hang. This changes no bound on any result, and is set before any run.
+- Gate 5(c)'s two MPI cross-resumes take their limit from 5(b)'s P = 1 run. A run killed at its limit fails (c).
+
+*What writing the code settled.* Each item is stated before any gate's run:
+
+- *Startup.* `main` constructs `ParallelScope`, then calls `PetscInitialize`, then initialises Kokkos. With `Comm::world().size() > 1` it calls `runMpi`. Otherwise the serial body runs as before, in the block that already held it, not re-indented. 7e8fcd9 removes three lines of the old file:
+  - that block's opening brace, which becomes `} else {` after the dispatch;
+  - the `advance` call, which is now given the counting wrappers;
+  - the checkpoint's removal, which `VIBEFLOW_BS_KEEP_CKPT` now guards.
+- *Maxima.* The text says the Courant number's maximum goes through `comm.max` and its position through a max-location. The code takes both from one max-location (`maxLoc`).
+  - Every rank's (value, global id, x, y) is gathered to every rank with `Comm::alltoallv`. The largest value wins, and a tie goes to the smallest global id.
+  - For finite values this maximum is the one `comm.max` returns, because a maximum is exact in any order.
+  - `relChange` finds its difference and its scale the same way.
+- *The `SOLVES` counts.* The text says they come from `LinearSolver`'s counters. They come from the wrapper (`Counted`) instead.
+  - The wrapper counts solves, iterations and unconverged solves itself, in `long long`, from each `SolveReport`.
+  - `LinearSolver`'s `int` counters (`LinearSolver.hpp:44-55`) advance only when a backend calls its own `record()`. A forwarding wrapper never does.
+  - Each step's sweep count is the increase in the pressure wrapper's solve count, as stated.
+  - Under MPI, the line gives rank 0's solves and iterations. These are the same on every rank, because each solve is collective with a global count. The unconverged counts are the maxima over ranks. The momentum wrapper serves k and ω too.
+- *The `EQ` line's fields*, in order:
+  - `EQ`, step, dt, C, the global id of C's cell;
+  - x_r, Cf(−4), u_c(−4), the bubble's two ends, x_r's drift, Cf(−4)'s drift, `change`;
+  - the three `relChange` values (u, k, ω), and the global ids of the cells that set their scales;
+  - the number of steps since the last line whose sweep counts differed between ranks, and the smallest and largest sweep count over those steps and ranks.
+
+  Reals are printed with `%.17g` and integers as integers. Serially the differing count is always 0.
+- *The `SOLVES` line*: `SOLVES ranks <P> pressure <backend> solves <n> iterations <n> unconverged <n> momentum <backend> solves <n> iterations <n> unconverged <n>`.
+- *Logs under `mpirun`.* OpenMPI 5.0.10 here cannot find its help files. When any rank exits non-zero, `mpirun` appends a block beginning "Sorry!  You were supposed to get help about: prun:non-zero-exit", and a NUL byte. Every march stopped by `VIBEFLOW_BS_STOP` exits with 1, so most gate runs end this way. The script reads logs as bytes, takes lines by their first token, and ignores the rest. A refused resume ends in `MPI_Abort` with code 3, and `mpirun` then returns 3.
+- *The header under MPI.* The volume and area are sums over ranks, and may differ from serial's in the last printed digit: at P = 2, "14.9000000000001" against "14.9". A line `ranks <P>, RCB: <n> owned cells on rank 0` follows the patches. No gate reads either.
+- *Error exits.* Some exits are reached by every rank together: usage, a refused option, an unclassified face, too few upstream faces, a solver missing from the build, and a refused resume.
+  - At those, rank 0 prints, every rank flushes and passes a barrier, and then `MPI_Abort` is called. The message is out before the job ends.
+  - An exception aborts from the rank that caught it, after printing there.
+  - A `std::exit` from a serial helper reaches `MPI_Abort` through an `atexit` handler, which flushes first.
+- *Per-rank checkpoints are written in two phases.*
+  - Each rank writes `<out>.ckpt.<rank>of<P>.tmp` and checks that the write completed (`ferror`, `fflush`, `fclose`).
+  - Only if every rank's write completed (`comm.min`) does every rank rename its file. Otherwise rank 0 prints a line and the previous set stays.
+  - When the refusal looks for checkpoints, it ignores `.tmp` files.
+- *The resume's agreement covers the bookkeeping.* The text asks for the same P, hash and step on every rank. The code also asks that every rank's file hold the same bookkeeping bit for bit:
+  - step, time, dtNow, ceiling, sinceChange, holdUntil and refused;
+  - the histories' length;
+  - an FNV-1a hash of the three histories' bytes, as its two 32-bit halves, each exact in a double.
+
+  These are compared through one gather. A set whose renames were cut short between ranks is refused with exit 3, as a mismatched set is.
+- *The owned-id hash.* 7e8fcd9 mistyped FNV-1a's offset basis as 1469598103934665603 instead of 14695981039346656037. f4ec4e1 corrects it. Only the smoke runs' checkpoints were written with the old value.
+- *`VFBSCK02`'s layout, in bytes, as gate 5(a) reads it.*
+  - Header: magic 0–7, P 8, rank 12, nc 16, nif 24, the hash 32.
+  - Bookkeeping: step 40, sinceChange 44, holdUntil 48, refused 52, time 56, dtNow 64, ceiling 72, seconds 80.
+  - Then u, p, k, ω, F, the step history, x_r's history and Cf(−4)'s history. Each is a `long` count followed by its values.
+  - `VFBSCK01` has step at 24, time at 40, dtNow 48, ceiling 56 and seconds 64, as gate 0(c) says. Its vectors start at 72.
+- *The serial `REFUSED` exit* finalises Kokkos and PETSc before it returns 3. So does the serial usage exit (no arguments), which before finalised Kokkos only. Both are outside every gate's command.
+- *A refusal line* is one whose first token begins with `REFUSED`, as ADR-046's second revision defines it. Both refusals print `REFUSED:`.
+- *A run that writes no file it should.* A missing `.state`, `.state.<step>` or `%.10e` file counts as an infinite difference, with a note, so an aborted run fails its gate instead of stopping the script. An unreadable checkpoint fails gate 5(a).
+- *Gate 5 and gate 2's floors.* Gate 5 judges with gate 2's bounds only if no floor exceeds 1e-7. Otherwise it reports STOPPED, as gate 2 does.
+- *u_c(−4)'s tie margin* is computed from the P = 1 run's state, and reported beside the u_c(−4) comparisons of gates 2, 3 and 5(d) when it is below 1e-12.
+- *An interrupted run.* A run whose directory or log exists without its record stops the script, which removes nothing.
+- *Ramp margins.* Gate 2 reports each ramp decision's margin, |C − threshold| / threshold. The decision lines print C with `%.2f`, and the serial line does not change. So the margin is computed from the printed C, and a C within 0.005 of its threshold is reported as within the print's precision.
+- *Meshes.* Gates 0 to 5 read `L2.hex` and `L1.hex` from the reference build's clone, `<reference build>/../cases/backstep/`. These are the files S0 read. Their hashes are recorded, and nothing is written there.
+- *Gate 5(c)'s "no new file".* The logs of gate 5(c)'s three runs are written beside their directories, not in them.
+- *Gate 4's station rows.* A station whose margin is below 1e-12 has its `.prof` rows left out of (iii) in both files, and the whole file's metric is reported beside.
+- *Gate 6 in the script.* Gate 6's part is committed before gate 6 starts. It takes the gate reading and the window from `backstep_lip.py`'s committed functions (`parse_log`, `window`, `lip_values` and the gate reading of `.cp`), unchanged.
+
+*The deliberate faults, line by line.* Each is the one-line edit below, made in a scratch WSL clone at the commit being judged. The clone is built with the fault, run, and reverted, one fault at a time. Its diff is recorded. The script runs a fault with `--fault Fn --baseline <the judged run's out>`: the P = 1 runs, gate 2's bounds and gate 3's state come from the baseline, read only, and only the fault's P > 1 runs are made.
+
+- F1: in `runMpi`, `PisoSolver solver(mesh, NU, dtNow, ctl, comm);` becomes `PisoSolver solver(mesh, NU, dtNow, ctl, Comm());`.
+- F2: at `Piso.cpp:813`, `comm_.max(scale)` becomes `scale`.
+  - By reading, ranks then leave the non-orthogonal loop after different sweep counts, and the next collectives pair wrongly.
+  - The likely outcome is a hang, which the ten-times limit catches, or an abort.
+  - An `EQ` line can show the fault only if the run reaches step 50.
+- F3: at `PetscSolver.cpp:282`, the halo exchange in `rowMap` is replaced by `for (Index c = nc; c < nt; ++c) h(c) = static_cast<Real>(c); Kokkos::deep_copy(rows, h);`. Each ghost's row becomes its local index.
+- F4: in `runMpi`, the gather of the bottom wall's x that builds `order` (`const auto all = allGather(comm, mine);`) becomes `allGather(Comm(), mine)`.
+  - Each rank then sorts only its own faces.
+  - Predicted: either rank 0's files hold only its own faces' rows, or the ranks disagree on the upstream count and the collective exit hangs. Either way gate 4 fails.
+- F5: in `courant`, `maxLoc(comm, {best, ...` becomes `maxLoc(Comm(), {best, ...`.
+- F6: in `relChange`, `r.scale = maxLoc(comm, ...` becomes `r.scale = maxLoc(Comm(), ...`.
+
+*F5 and F6 are judged on the quantities named above.* At each testable P, F5 is caught only if the `EQ` lines' C exceeds its bound, and F6 only if `change` or one of the three `relChange` values does. A hang or an abort also counts as caught. A gate 2 failure on another quantity alone does not.
+
+*The partition for the F5 and F6 exception.* `tests/benchmark/backstep_owners.cpp` is new, and links only `vibeflow_mesh`. It prints each cell's owner at P ranks, from `DistributedMesh::partition(raw, P, RCB)`, the function the constructor calls (`DistributedMesh.cpp:119`). Before any fault run, the script reads the global ids that P = 1's `EQ` lines print and decides from this tool's output.
+
+*A review before the commit.* A read-only review of f4ec4e1's code and the script was run by three reviewers, each finding checked by an adversarial verifier. It confirmed 15 findings, several reported twice, and refuted 3. All the confirmed ones are fixed in what is committed:
+- gate 5(c) compared the first token with `REFUSED`, and so could never pass;
+- an aborted run crashed the script;
+- 5(c)'s MPI runs had no limit;
+- gate 5 ignored gate 2's floor rule;
+- F5 and F6 counted any gate 2 failure;
+- the u_c(−4) note was missing from gates 2, 3 and 5(d);
+- a log beside an interrupted run was appended to;
+- an unreadable checkpoint stopped the script;
+- the record's start time;
+- the serial usage exit.
+
+One refuted finding, that a few-second P = 1 time makes gate 1's limit tight, is the reason for the 120 s floor above.
+
+*Looked at by then.*
+
+- *Gate 1, during the code's writing,* at P = 1 and 2 on 2498714's code. Its stdout was read:
+  - P = 1: every solve converged. Iterations: diffusion `cg+jacobi` 762, `cg+hypre` 57; convection `bicgstab+jacobi` 59, `bicgstab+bjilu` 21. (a): `bjilu` is bitwise equal to `ilu`, 21 iterations each. (c): `describe()` gives `blocks=1 block0: ksp=preonly pc=ilu levels=0 shift=NONE amount=2.22045e-14 zeropivot=2.22045e-14`, the same factor options as `ilu`'s.
+  - P = 2: the largest |Δu| against serial was 4.6e-15 for `cg+hypre`, 2.4e-11 for `bicgstab+jacobi` and 6.8e-12 for `bicgstab+bjilu`, also 6.8e-12 against serial `ilu`. (c) and (d) passed. PETSc refused `ilu` ("Could not locate a solver type for factorization type ILU and matrix type mpiaij"). The P = 2 output's `cg+jacobi` line was not kept.
+  - Gate 1 runs again in full on the commit that is judged.
+- *The harness's smoke runs.* None is a gate's command. All are at level 2 (S0's `L2.hex`), dt 0.16, U_in 1, from the uniform stream, with `VIBEFLOW_CONVECTION=upwind`, `VIBEFLOW_BS_SAVE=1`, and one thread per process.
+  - *Serial, 50 steps, against the lip-print binary*, on 7e8fcd9's code and again on f4ec4e1's. `.cf`, `.cp`, `.cpw`, `.prof` and `.state` were byte-identical. The logs were identical except for the `EQ` and `SOLVES` lines and the times.
+  - *P = 2, 50 steps, default solvers, against serial.* This ran on the code just before 7e8fcd9 (`bicgstab+bjilu` against serial's `bicgstab+ilu`).
+    - Largest |Δ| over gate 3's scales: u 1.1e-11, v 2.9e-12, p 4.1e-11, k 5.1e-11, ω 3.3e-11.
+    - Absolute: `.cp` 3.1e-10, `.cpw` 4.0e-10, `.cf` 1.0e-12, `.prof`'s u 2e-11.
+    - Every x column was identical, and `.state`'s x and y agreed within 2.8e-14.
+    - The step-50 `EQ` line: C 2.6885062178319346 against 2.6885062178294876, the same cells for C and for the three scales, 19 to 79 sweeps a step, and no step with differing counts.
+    - `SOLVES`: 1,205 pressure solves in both, 7,952 iterations against 8,115; 250 momentum solves, 548 iterations against 550; none unconverged.
+    - Its `bounded` was twice serial's, 3,958 against 1,979. That came from a second sum over ranks in the harness (`Sst.cpp:465` already sums), removed before 7e8fcd9. The same run on f4ec4e1's code gives 1,979, and the same differences in every digit shown above.
+
+    This run resembles gate 3 at P = 2 with first-order upwind, and its differences are far inside gate 3's 1e-5. That is recorded so gate 3's result is read with it. The bound does not change.
+  - *P = 2 checkpoint runs* (`VIBEFLOW_BS_CKPT_EVERY=20`), on 7e8fcd9's code: a resume from step 60, and the three refusals, each with exit 3 and no new file.
+  - *P = 2 runs on f4ec4e1's code,* with `VIBEFLOW_BS_CKPT_EVERY=20` and `VIBEFLOW_BS_KEEP_CKPT=1`:
+    - a run to step 80, and one to step 40 resumed to 80. As expected, the resumed run's outputs differ from the uninterrupted run's, because BDF restarts at first order (gate 5(d) compares resumes with resumes for this reason);
+    - a resume beside a stale `.tmp` went ahead;
+    - three resumes were refused with exit 3: rank 0's file from step 40 beside rank 1's from step 20 ("bookkeeping differs", the files' hashes unchanged), a P = 3 set at P = 2, and a serial file beside the set;
+    - a serial resume beside per-rank files was refused with exit 3, and PETSc finalised cleanly.
+  - `backstep_owners` at P = 2 on `L2.hex`: 39,936 cells on each rank, as the harness's own line says for rank 0.
+  - Their Cp, Cf and lip values count as data seen for any later revision of ADR-046 (Order 9).
+- *Steps 5 and 6.* Read: the launch record, and one progress line of each, for the time per step.
+  - Step 5 at step 50: dt 0.005, C 0.58, x_r 6.52075, `bounded` 10,197, 4,602 s.
+  - Step 6's first march at step 700: dt 0.08, C 5.03, x_r 6.55239, `bounded` 0, 4,963 s.
+  - Those lines' other columns were cut off and not read. No Cp file or `LIP` line of either was read. ADR-046's record of steps 5 and 6 lists this too.
+
+*Second revision, before gate 6's part of the script is committed: how gate 6 starts, resumes and stops.* Written on 2026-10-19. By then gates 0 to 5 were running at P = 1 and 2 under 33051e4's script, and none had been judged. Nothing of gate 6 has run. No gate, bound or fault changes.
+
+- *When gate 6 starts.* Only when gates 0 to 5 have passed with this build's binaries, as Order 5 says. The script keeps each gate's last result in `<out>/results.json`, with the sha256 of `backstep`, `test_backends_mpi` and `backstep_owners`. Gate 6 starts only if all six results are PASS with the hashes of the build it runs.
+- *The resume*, on four ranks with `VIBEFLOW_BS_RESUME=1`, in the same directory and appending to the log, goes ahead only when all of these hold:
+  - the directory holds the complete set `L1.ckpt.<r>of4`, r = 0 to 3;
+  - the log has no FINAL line;
+  - no process is running in the directory.
+
+  Otherwise the script stops and keeps the directory. In particular, a march interrupted before its first checkpoint, at step 500, leaves no set to resume from. Whether gate 6 then starts over is decided in a revision before it does, and the interrupted run is reported beside the new one.
+- *An interrupted script takes its runs down.* On SIGTERM, SIGHUP or an interrupt, the script kills its child's process group before it exits. No march is left running unwatched, and none can be resumed beside a live one.
+- *The limits.* Gate 6 fails in either of two cases, checked while the march runs and again after it ends:
+  - the printed seconds of any 50-step line or of FINAL pass 54,000;
+  - an hour of wall time passes with no new 50-step line.
+- *A march that diverges*, or whose `.cp` or log cannot be read, fails gate 6.
+- *The control.* P = 4's verdict is recorded before the control starts. The control runs under the same two limits. An interrupted or killed control is reported, not judged.
+- *The judged quantities* are computed with `backstep_lip.py`'s `parse_log`, `window`, `lip_values`, `read_cp`, `cfl3d` and `s0_u_in`, and with `backstep_gate.py`'s `floor_values`, all unchanged. On S0's L1 against itself, every judged difference is zero, and U_in's string is 0.944774574893, as S0's was.
+- *The shared code.* The script also gained per-run arguments, a watch that can kill its run, a resume branch used by gate 6's run alone, signal handling and `results.json`. None of these changes how gates 0 to 5 run or are judged. Their runs are reused when the script at this commit judges them again.
+- *A review of this part.* Two reviewers, with each finding checked by an adversarial verifier, confirmed 9 findings (several reported twice) and refuted 3. All the confirmed ones are fixed in what is committed:
+  - a resume without a checkpoint set;
+  - a resume beside a still-running march;
+  - a diverged march crashing the script;
+  - printed seconds past the limit on the last lines;
+  - the control blocking P = 4's verdict;
+  - gate 6 starting before gates 0 to 5 had passed.
+
+*Third revision, before any P > 1 run of gate 2: the calibration's floors exceed 1e-7, and the bounds are applied as calibrated.* Written on 2026-10-21. No P > 1 run of gate 2, and no run of gate 5, has been made.
+
+*What was seen.* Gate 2's calibration ran on 2026-10-19, under 33051e4's script, with `backstep` sha256 094ee5e0…: P = 1 on one thread from 10:10 to 11:03 UTC, then on two threads to 11:54. Its floors and bounds were recorded at 11:54, before any P > 1 run (`g2/bounds.json`).
+
+Many floors exceed 1e-7:
+
+| Quantity | Floors |
+|---|---|
+| `.state.50` | u 5.1e-6, v 7.1e-7, p 1.08e-4, k 1.27e-5, ω 1.03e-7 |
+| `.state.100` | u 2.8e-6, v 6.1e-7, p 2.5e-5, k 5.2e-6 |
+| `.state` | u 2.2e-6, v 5.2e-7, p 2.0e-5, k 5.3e-6 |
+| files | `.cf` 2.1e-6, `.cp` 6.7e-5, `.cpw` 6.7e-5, `.prof`'s u 1.3e-6 |
+| `EQ` lines | C 7.1e-7, Cf(−4) 2.0e-6, `change` 1.0e-6; `relChange` u 7.5e-7, k 1.0e-6, ω 3.0e-5 |
+| lip print | p40 1.2e-3; the four Cp 2.2e-4, 1.7e-4, 1.1e-4, 6.1e-5 |
+
+These stay below it:
+- w in every state, and ω in the step-100 and final states;
+- u_c(−4), 9.8e-10;
+- x_r, −1 in both runs;
+- `.prof`'s y.
+
+The ramp decisions were the same in both runs (dt halved at steps 1 and 2), and so was FINAL, apart from `seconds`. The script then reported gate 2 as STOPPED. Gate 5, which judges with gate 2's bounds, stopped with it.
+
+*The cause.* In both runs every pressure solve stopped at its cap of 5,000 iterations: 600 solves, 3,000,000 iterations, 600 unconverged. The momentum, k and ω solves converged: 750 solves, 8,592 and 8,582 iterations, none unconverged. An unconverged CG's iterate depends on the order of its round-off, so the thread count moves p by about 1e-4.
+
+*What shortening can do.* Nothing. The step-50 state already carries 1.08e-4, and no march may be shorter than 101 steps.
+
+*Probes, seen before this revision.*
+- `make_mesh.py 4 3` made `L4.hex` (4,992 cells, sha256 48c72b95…) and `L3.hex` (19,968 cells, sha256 1d449ebb…) in the working clone. Both pass its own checks.
+- Gate 2's settings were run on each for 20 steps at P = 1, one thread, from the uniform stream.
+  - L4: 37 of 80 pressure solves and 51 of 100 momentum solves were unconverged, and the ramp halved dt to 9.8e-6.
+  - L3: 76 of 80 pressure solves and 2 of 100 momentum solves were unconverged, and dt fell to 7.8e-5.
+
+So the coarser levels do not converge either. Of the rank-independent preconditioners, Jacobi is the only one available: `ilu` and `gamg` are refused on more than one rank, and `hypre` and `bjilu` depend on the partition. On these grids it gives no converging pressure solve.
+
+*Decision (the user, 2026-10-21).* The bound rule b_q = max(1e-10, 10·f_q) is applied as written, with the floors recorded above.
+- The 1e-7 check offered only a revision to shorten the march, which cannot help here. Nothing else in the ADR changes.
+- Gate 2 therefore judges at the scale of the solver's own thread scatter, not at round-off. A defect smaller than ten times that scatter is not seen by gate 2.
+- F1, F5 and F6 are judged against these bounds, as stated.
+- Gate 5 uses the same bounds.
+
+The two alternatives were declined:
+- recording gate 2 as failed, after which ADR-047 could not pass;
+- the production solvers, whose preconditioners depend on the partition, against gate 2's premise.
+
+*The script.* Gates 2 and 5 now report floors above 1e-7 instead of stopping. Nothing else changes. The calibration is not repeated: `bounds.json` from 2026-10-19 is used.
+
+*Also seen by then.* The summary of the first invocation, on 2026-10-19:
+- gate 0 passed;
+- gate 1 passed at P = 2;
+- gate 3 passed at P = 2, with the largest difference 6.9e-10, in k;
+- gate 4 passed at P = 2: (i) and (ii) byte-identical, (iii) zero differences, and (v) every fine cell's margin above 1e-12, with u…ω byte-identical at P = 2;
+- gates 1, 3 and 4 wait for P = 3 and 4.
+
+Steps 5 and 6 of ADR-046 stopped with the machine on 2026-10-20. The last writes to their logs were at 03:20 KST (step 6-d, at step 250) and 04:32 KST (step 5, at step 500, with its checkpoint). Their launcher resumed them on 2026-10-21 at 12:17 UTC: step 5 from its checkpoint, and step 6-d over again, its first directory moved aside. ADR-046's record lists this.
+
+*Gate 2 fails at P = 2, and what runs after it.* Written on 2026-10-22.
+
+*The run.* Gate 2's P = 2 run was made on 2026-10-21 from 12:20 to 12:57 UTC. It used b97b4cf's script and `backstep` sha256 094ee5e0…, with ADR-046's two marches running beside it. It was judged against the bounds of 2026-10-19 (`g2/bounds.json`), as the third revision applies them.
+
+*The result.*
+- 35 of the 36 judged quantities are within their bounds.
+- The ramp decisions are the same, with dt halved at steps 1 and 2. FINAL's `steps`, `full`, `dt`, `time` and `settled` are the same.
+- The cells that set C and the three scales are the same at every `EQ` line.
+- One quantity is outside its bound: the `EQ` line's `relChange` of k at step 50.
+
+| Run at step 50 | `relChange` of k |
+|---|---|
+| P = 1, one thread | 0.53367423566224303 |
+| P = 1, two threads (the calibration) | 0.5336746401235406 |
+| P = 2 | 0.53366134200735194 |
+
+P = 2's |Δ|/|v₁| is 2.42e-5, against a bound of 1.01e-5 (a floor of 1.01e-6). At steps 100 and 150 the same quantity is within its bound. `SOLVES` at P = 2: 600 pressure solves, 3,000,000 iterations, 600 unconverged; 750 momentum solves, 8,587 iterations, none unconverged.
+
+*Gate 2 fails.* By *What a failure means*, ADR-047 has not passed. The MPI harness goes into the known limits as not shown to give the serial answer, with what failed.
+
+*No defect in this ADR's code has been shown.* The following is a hypothesis, not a finding, and nothing was run to test it. MPI may perturb the march differently from threads:
+- a ghost's geometry agrees with serial only to round-off (x and y within 2.8e-14 in gate 4);
+- global sums are ordered differently.
+
+With every pressure solve stopped at its cap, the thread scatter may then understate MPI's. There is no rerun: a failure may be fixed and run again only when a defect is shown independently of the failing gate's numbers.
+
+*Also from that invocation.* Gate 5's P = 1 runs were made:
+- (a), 120 steps, keeping the step-120 checkpoint;
+- (b), resumed with no step, byte-identical to (a) in `.cf`, `.cp`, `.cpw`, `.prof` and `.state`;
+- (d), resumed to step 150.
+
+Gates 0 (PASS), 1, 3 and 4 were reused and judged as before.
+
+*What runs after it (the user, 2026-10-22).* The failure is recorded here. Two sets of runs are made once the cores are free, to record what holds under MPI and to let the solver changes merge if gate 7 passes:
+- gates 1, 3, 4 and 5 at P = 3 and 4;
+- gate 7.
+
+Not run:
+- the deliberate faults, which test the gates' power to fail and matter only for a pass;
+- gate 6, which the second revision starts only after gates 0 to 5 have passed;
+- gate 2 at P = 3 and 4.
+
+ADR-046's step 6 ended on 2026-10-21 at 15:17 UTC and step 5 at 20:09 UTC, so the cores are free.
+
+*Fourth revision, before gate 7's suite runs again: the NS cross-check passes `HOME` to the C++ run.* Written on 2026-10-22.
+
+*Gates 1, 3, 4 and 5 at P = 3 and 4* ran on 2026-10-22 from 00:35 to 00:51 UTC, beside nothing else. The record is in `~/adr047_gates`.
+- Gate 1 passes at P = 2, 3 and 4. The largest |Δu| is 1.7e-11 (`bicgstab+jacobi`), and `bjilu` is within 9.0e-12 of serial `ilu`.
+- Gate 3 passes at P = 2, 3 and 4, within 1e-5. FINAL is the same, and no step has differing sweep counts.
+- Gate 4 passes:
+  - (i) and (ii) are byte-identical at P = 2, 3 and 4, and (iii) has zero differences;
+  - (iv) is byte-identical;
+  - (v) has no fine cell with a margin of at most 1e-12, and is byte-identical at P = 2, 3 and 4.
+- Gate 5 fails at (d). (a), (b) at P = 1 and 4, and the three refusals of (c) pass. (d), P = 4 against P = 1 from step 120 to 150, is within gate 2's bounds except `EQ:change` and `EQ:rel_k`, both 1.131e-5 against 1.008e-5.
+
+So gates 2 and 5 fail on the same quantity, the `relChange` of k, and ADR-047 has not passed.
+
+*Gate 7's first run* was made on 2026-10-22, in the ADR's order, at b97b4cf's `src/` (`backstep` sha256 094ee5e0…):
+- `make_meshes.sh` exited with 0.
+- The suite (`v0 v1 v2 v2b`, with the two benchmarks skipped) ran from 00:51 to 04:28 UTC and exited with 1. Every gate passed but one, `[v1] cross-check: python and c++ Navier-Stokes agree`, which printed `C++ run FAILED`.
+- The heated cavity passes (Nu on 128² +0.68%, Richardson −0.075%).
+- The flat plate passes (Cf +0.885%, u⁺ 0.10%, log law 1.48%, ν_t peak +0.39%).
+
+Gate 7 has therefore failed once, and that stays recorded.
+
+*Why the cross-check failed.*
+- `crosscheck_ns.py` runs `ethier_steinman` with an environment of its own: `OMP_PROC_BIND`, `PATH`, `VIBEFLOW_OUTER` and `VIBEFLOW_CONVECTION`, and no `HOME`. The binary starts MPI (`ParallelScope`). This machine's OpenMPI 5.0.10 stops in `opal_init` without `HOME` ("Unable to get the user home directory"), before any computation.
+- Under the README's verified configuration (OpenMPI 4.1) the same gate passed in the same environment. CI runs only v0.
+- The same command, in the same environment, outside both clones, fails identically, with exit 14 and the same messages, for both binaries:
+  - S0's binary, built from a76532c, before any of ADR-047's `src/` changes;
+  - this ADR's binary.
+
+  So the failure does not come from this ADR's code. That is shown independently of the gate's numbers, as *What a failure means* asks.
+- *Seen before this revision.* A diagnostic, not the gate: the same script was imported unchanged with `HOME` added to its environment, and `main()` was run on this ADR's build. It printed 4 rows, with a worst relative difference of 5.05e-10 against a tolerance of 1e-4, and `NS cross-check gate: PASS`.
+
+*The change.*
+- `crosscheck_ns.py` adds the caller's `HOME`, when set, to the environment it passes to the C++ run. Nothing else changes: the binary, its arguments, the other variables, the Python side and the tolerance stay as they were.
+- `crosscheck.py` and `crosscheck_v1.py` also pass their own environments, but their runs passed, and they are not changed.
+- CI, which runs v0, is not affected.
+- This was the user's decision on 2026-10-22.
+
+*What runs again.*
+- The suite command of gate 7 runs again in full, on the commit with the change and the same `src/`.
+- The heated cavity and the flat plate do not run again: neither reads the changed script, and both passed on this `src/`.
+- Gate 7 passes if that suite run passes. Its first failure is reported beside it.
+
+**Results** (after the runs, and the four revisions and records above them). ADR-047 has not passed. Gates 2 and 5 fail, both on the `relChange` of k, the `EQ` line's measure of how far k moved over 50 steps:
+- gate 2 by 2.42e-5 at step 50, at P = 2;
+- gate 5(d) by 1.13e-5, at P = 4;
+
+each against a calibrated bound of 1.01e-5. Every other judged quantity of both gates is within its bound, and so are their ramp decisions and FINAL.
+
+The MPI harness therefore goes into the known limits as not shown to give the serial answer. Within that, the gates show the following:
+- Where the solves converge, over 50 steps, the harness agrees with serial to 6.9e-10 at P = 2, 3 and 4, against gate 3's 1e-5.
+- Extraction and the state round trip are byte-identical (gate 4).
+- Checkpoints restore exactly, and every cross-count resume is refused (gate 5 (a) to (c)).
+- PETSc's parallel backends, `bjilu` among them, agree with serial to 1.7e-11 (gate 1).
+
+What fails is agreement at gate 2's calibrated scale, which every pressure solve reaching its cap sets (the third revision). No defect in this ADR's code has been shown, so neither gate is run again.
+
+| Gate | Result |
+|---|---|
+| 0, the serial path unchanged | PASS: (a) and (b) byte-identical with and without `mpirun -n 1`; (c)'s checkpoints identical but `seconds`; (d)'s resumes identical; the serial checkpoint's reader and writer unedited |
+| 1, PETSc on more than one rank | PASS at P = 2, 3, 4 (largest \|Δu\| 1.7e-11; `bjilu` bitwise equal to `ilu` at one rank) |
+| 2, round-off as calibrated | FAIL at P = 2 (`relChange` of k, 2.42e-5 against 1.01e-5); not run at P = 3, 4 |
+| 3, the production solvers | PASS at P = 2, 3, 4 (largest 6.9e-10 in k; no step with differing sweep counts) |
+| 4, extraction and the state | PASS (byte-identical at P = 2, 3, 4; (iv) and (v) hold) |
+| 5, checkpoint and resume | FAIL at (d) (`change` and `relChange` of k, 1.13e-5 against 1.01e-5); (a), (b) and (c) pass |
+| 6, the production march | not run: the second revision starts it only after gates 0 to 5 pass |
+| 7, nothing else moves | PASS, on the second suite run (2026-10-22, 06:58–10:35 UTC, at e1a425b): "All active gates passed for: v0, v1, v2, v2b", the NS cross-check 5.05e-10 against 1e-4. The heated cavity (Nu +0.68%, Richardson −0.075%) and the flat plate (Cf +0.885%) pass on the same `src/`. The first suite run failed that one gate, because OpenMPI 5.0.10 could not start without `HOME` (the fourth revision) |
+| F1 to F6 | not run (the user's decision after gate 2 failed) |
+
+*Reported.*
+- *Time.* With ADR-046's two marches beside them where the record says so, gate 3's 50 level-2 steps on the production solvers took:
+  - 386 s at P = 1 on one thread, beside the marches;
+  - 237 s at P = 2, beside the marches;
+  - 111 s at P = 3 and 98 s at P = 4, with nothing beside.
+
+  Gate 2's Jacobi solves took 3,201 s at P = 1 and 2,205 s at P = 2. Gate 6, which would have timed level 1, was not run.
+- *Bindings.* `--report-bindings` printed every rank as not bound.
+- *Toolchain.* GCC 15.2, OpenMPI 5.0.10, PETSc 3.24.4, hypre 3.0.0 and Kokkos 5.2.2, on WSL2 Ubuntu 26.04.1.
+- *Commits.* The code is f4ec4e1 (harness), 2498714 (`src/`), and the test at 5c81114. The script ran at 33051e4, b97b4cf and e1a425b. `backstep` sha256 094ee5e0… throughout.
+
+*The solver changes.* `bjilu`, the row map and its check, and the global scale of the non-orthogonal stop have passed gate 1 and gate 7. Nothing in this ADR holds them back from merging. The non-orthogonal stop's fix removes a defect found by reading (F2, which would have shown it, was not run). Before the fix, ranks could leave that loop after different sweep counts.
+
 ## ADR-048 — "Fixtures are current" and the runner's CPU: the generator's kernels pinned. Stated before the change and the runs, answered after
 
 **Context.** CI's step "Fixtures are current" runs `python prototype/dump_fixtures.py` and then `git diff --exit-code tests/fixtures/`. The workflow has run 11 times, 12 jobs counting a re-run, from 2026-09-26 to 2026-10-06. Six jobs failed at this step and six passed:
@@ -6241,3 +6693,72 @@ The revision's text was first written before those two runs, and they were made 
 **Decision.** Adopted. The fixtures record the AVX2 kernels' answer: `solution_caseA.txt` blob 5bf52bf and `MANIFEST.txt` blob b244ecb. The generator pins its kernels and refuses to write if the pin does not take. CI's numpy and scipy are fixed at 2.5.3 and 1.18.1. The check is bitwise on all 19 files, as before. CLAUDE.md gains the PC venv's threadpoolctl and a line on the pin.
 
 **Cost.** CI ran 22 times for step 1 and 14 times for gate 3, at about three minutes each. On the PC, the runs took minutes.
+
+## ADR-049 — v2b closes with the backward-facing step's lip as a known limit, and v2c may start. Decided before any v2c gate or code
+
+**Context.**
+
+- *v2b's stage gates pass.* All six of its gates in the suite pass on the current code (`run_gates.py v2b`; ADR-047's gate 7 ran them again on Ubuntu 26.04):
+  - SST wall distance and manufactured solutions, in Python and in C++;
+  - the cross-check between Python and C++;
+  - the SST's independence of the rank count;
+  - momentum's face value where convection matters;
+  - the flat plate against NASA TMR's SST results.
+- *Its second benchmark does not pass.* The backward-facing step (ADR-045) runs outside the suite. It passes five of its six gates:
+  - the mesh;
+  - the upstream layer, Cf(−4) −0.16%;
+  - reattachment, x_r −0.34%;
+  - the profiles behind the step;
+  - settling.
+
+  It fails gate 4, the pressure recovery, and only over the last 0.03 H before the lip: 0.0205 at the corner and 0.0174 at the point before it, against 0.015. Behind the step Cp is within 0.0044 of CFL3D's.
+- *The cause was looked for and not found* (ADR-046, stated before its data and runs):
+  - the reading of the wall is not it;
+  - TMR publishes no FUN3D Cp and no Cp on its finest grid, so the reference could not be judged;
+  - on TMR's finest grid the lip still falls 0.0195 and 0.0183 short;
+  - the ablations of the numerics could not be judged, because the null re-march settled at half S0's dt. With first-order momentum, reported only, the lip came to 0.0132 and 0.0102 and x_r to 6.43.
+
+  ADR-045's decision stands and gate 4 stays FAIL.
+- *What was left open.* ADR-046 left closing v2b to a later ADR in every outcome. The user fixed that on 2026-10-05 and 2026-10-06, before ADR-046 was written. This is that ADR.
+- *The rule it meets.*
+  - `run_gates.py`: "A stage's gates must pass before code for the next stage is merged".
+  - ROADMAP's risk table: "게이트 미통과 시 새 물리 추가 금지를 규칙으로".
+  - ROADMAP's next-work list: v2c's gates are stated "v2b 통과 후".
+
+  The suite's v2b gates pass. The step's gate is outside the suite and fails, so by the rule as written v2c cannot start.
+- *What v2c brings.*
+  - Wall functions change the near-wall treatment, and the lip lies against a wall. Whether they come as an option beside the low-Reynolds treatment v2b uses, or replace it somewhere, is v2c's own ADR to state.
+  - Conjugate heat transfer does not touch the step's flow.
+
+**Decision (the user, 2026-10-23).**
+
+1. *v2b is closed.* Its README row reads "complete — 6 gates; the backward-facing step's benchmark fails one of its six at the lip (ADR-045), cause not found (ADR-046)". The following all stay:
+   - the step's gate 4 stays FAIL, as ADR-045 recorded it, and is never re-scored;
+   - the harness, the gate script, the reading script and the MPI harness stay in the tree;
+   - the lip and the MPI harness stay in the known limits (ADR-046, ADR-047).
+2. *One exception to the stage rule, by name.* The step's gate 4 does not block v2c. Everything else in the rule stands:
+   - every suite gate of v0 to v2b must pass before v2c's code merges;
+   - any other gate that fails blocks, the step's other five included.
+3. *The step stays a regression check for v2c.* Before any v2c code that touches the momentum, turbulence or wall treatment merges, the step's gate runs again, with the same command and the default low-Reynolds treatment (`backstep_gate.py`):
+   - gates 1, 2, 3, 5 and 6 must still pass;
+   - gate 4's two lip values and its largest |ΔCp| behind the step are reported beside ADR-045's.
+
+   v2c's own ADR states the wall-function case of the step, if it adds one, before its code.
+4. *The lip can be reopened at any time* by an ADR of its own, stated before its data. Two examples:
+   - the sensitivity to momentum's face value that ablation (e) reported;
+   - a FUN3D or finest-grid Cp, if TMR publishes one.
+
+   Such an ADR may attribute the failure as ADR-046's step 8 words it. Gate 4 then still stays FAIL.
+
+**What would reverse it.**
+- v2c's code makes a suite gate fail, or one of the step's five passing gates fail.
+- A later ADR shows that the lip's failure comes from a defect that also moves another v2b result.
+
+Either reopens v2b.
+
+**Not changed.** No gate, bound or verdict of ADR-042 to ADR-048 changes. ADR-045's decision stands.
+
+**Order.**
+1. This ADR is committed.
+2. Then, in their own commit: README's v2b row; ROADMAP's next-work list (v2b closed, v2c's gates next); and CLAUDE.md rule 7.
+3. v2c then starts with its own ADR, gates first, as rule 1 says.

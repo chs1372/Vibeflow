@@ -24,6 +24,11 @@ add_executable(test_backends unit/test_backends.cpp)
 target_link_libraries(test_backends PRIVATE vibeflow_discretization)
 add_test(NAME backends COMMAND test_backends ${FIXTURES})
 
+# ADR-047 gate 1: PETSc on more than one rank. Run by backstep_mpi_gate.py,
+# serially to write its reference, then under mpirun.
+add_executable(test_backends_mpi unit/test_backends_mpi.cpp)
+target_link_libraries(test_backends_mpi PRIVATE vibeflow_discretization)
+
 add_executable(mms_convection mms/mms_convection.cpp)
 target_link_libraries(mms_convection PRIVATE vibeflow_discretization)
 add_test(NAME mms_convection COMMAND mms_convection)
@@ -97,6 +102,9 @@ target_link_libraries(flat_plate PRIVATE vibeflow_physics)
 # ADR-045: the backward-facing step, one grid per run; backstep_gate.py compares.
 add_executable(backstep benchmark/backstep.cpp)
 target_link_libraries(backstep PRIVATE vibeflow_physics)
+# ADR-047: the RCB owner of each cell at P ranks, for the F5/F6 exception.
+add_executable(backstep_owners benchmark/backstep_owners.cpp)
+target_link_libraries(backstep_owners PRIVATE vibeflow_mesh)
 
 # Hours on two cores at 128^2 and Ra = 1e6: a suite gate, not a ctest.
 add_executable(heated_cavity benchmark/heated_cavity.cpp)

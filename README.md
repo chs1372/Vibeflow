@@ -22,16 +22,17 @@ gate suite is the only thing that tells the two apart.
 | v0 | mesh geometry, FVM diffusion, CGNS input, ParaView output, MPI decomposition, linear-solver backends | **complete** — 8 gates |
 | v1 | incompressible laminar flow: PISO/PIMPLE, Rhie–Chow, BDF2, inlet/outlet boundaries, MPI | **complete** — 15 gates |
 | v2a | energy equation, Boussinesq buoyancy (balanced form), slip walls | **complete** — 10 gates |
-| v2b | RANS turbulence: k-ω SST, low-Reynolds wall treatment | **in progress** — 6 gates; the backward-facing step fails one of its six (ADR-045) |
+| v2b | RANS turbulence: k-ω SST, low-Reynolds wall treatment | **complete** — 6 gates; the backward-facing step's benchmark fails one of its six at the lip (ADR-045), cause not found (ADR-046), closed with it as a known limit (ADR-049) |
 | v2c | wall functions, conjugate heat transfer | not started |
 | v2.5 | GPU build | not started |
 | v3 | compressible flow | not started |
 | v4 | multiphase (VOF) | not started |
 
 All 39 gates in the suite pass on the current code, on Ubuntu 24.04 with
-two cores. The backward-facing step's gate, run on its own, passes five of
-its six and fails its pressure recovery at the step's lip. CI runs the v0
-gates on every push.
+two cores, and again on Ubuntu 26.04 with OpenMPI 5 (ADR-047's gate 7). The
+backward-facing step's gate, run on its own, passes five of its six and
+fails its pressure recovery at the step's lip. CI runs the v0 gates on every
+push.
 
 ## What the gates show
 
@@ -209,7 +210,10 @@ grid (ADR-045):
 
 Behind the step Cp is within 0.0044 of CFL3D's; the failure is the suction
 at the step's lip, weaker than CFL3D's over the last 0.03 H. The
-experiment's reattachment is 6.26 ± 0.10.
+experiment's reattachment is 6.26 ± 0.10. A search for the cause, stated
+before it ran, found none (ADR-046): on TMR's finest grid (1,277,952 cells)
+the lip still falls 0.0195 and 0.0183 short, and TMR publishes no FUN3D or
+finest-grid Cp to compare with.
 
 ## Known limits
 
@@ -268,7 +272,24 @@ experiment's reattachment is 6.26 ± 0.10.
   is within 0.0044 of CFL3D's behind the step, but the suction at the
   step's lip is weaker than CFL3D's, 0.0205 short at the corner and 0.0174
   at the point before it, against the gate's 0.015 (ADR-045). The wall's
-  extrapolated pressure gives the same; the cause is not established.
+  extrapolated pressure gives the same. The cause is not found (ADR-046).
+  The reading of the wall is not it. On TMR's finest grid the shortfall is
+  still 0.0195 and 0.0183: between the final states, the corner has lost
+  18% of level 1's excess and the point before it gained 36%, and neither
+  lip had stopped moving. TMR offers no FUN3D or finest-grid Cp to judge
+  the reference by. The ablations of the numerics on level 2 could not be
+  judged, because the null re-march settled at half the original dt; with
+  first-order momentum the lip reached 0.0132 and 0.0102, reported only.
+- **The step's harness runs under MPI, but is not shown to give the serial
+  answer** (ADR-047). Extraction, checkpoints and the production solvers
+  agree with serial (byte for byte, and to 6.9e-10 over 50 steps), but the
+  equivalence gates calibrated on the threads' own scatter fail on the
+  relative change of k, by up to 2.4 times their bound. Those gates need a
+  preconditioner that does not depend on the partition, and the only one the
+  solver has, Jacobi, leaves every pressure solve on TMR's step grids at its
+  5,000-iteration cap. PETSc's block-Jacobi ILU (`bjilu`), the checked
+  global row map and a global scale in the non-orthogonal pressure loop's
+  stop came with it and pass on their own.
 - **TMR's step grids are hard on this collocated PISO.** In the long, thin
   wall cells behind the step a cell's slight taper tilts the line between
   centroids from the face normal by up to 74° on level 2, 84° and 87° on
@@ -329,6 +350,8 @@ python3 cases/flatplate/make_mesh.py  # TMR's flat-plate grids as .hex, a few se
 python3 tests/mms/run_gates.py v2b    # the flat plate alone is many hours
 python3 tests/benchmark/backstep_gate.py build build/backstep   # the step: half a day
 python3 tests/benchmark/backstep_report.py build/backstep       # its reported numbers
+python3 tests/benchmark/backstep_lip.py outcome --s0 build/backstep --g <step 5> --a <step 6>   # ADR-046
+python3 tests/benchmark/backstep_mpi_gate.py build <reference build> <out>   # ADR-047: the step under MPI
 ```
 
 The cylinder meshes are generated rather than stored. With gmsh 4.15.2 the
@@ -375,7 +398,7 @@ The architecture, the stage plan and a record of each round of work, in
 Korean, are in [`ROADMAP.md`](ROADMAP.md), a copy of the living roadmap
 document kept in step with it.
 
-[`docs/DECISIONS.md`](docs/DECISIONS.md) is append-only: 45 entries, each
+[`docs/DECISIONS.md`](docs/DECISIONS.md) is append-only: 49 entries, each
 saying what was decided, why, and what would reverse it. It keeps the wrong
 turns too, marked where later entries corrected them. Three runs of entries
 are worth reading as a story:

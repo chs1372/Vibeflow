@@ -68,6 +68,15 @@ class PetscSolver final : public LinearSolver {
   // prefix, so no other solver sees it; no-op unless the PC is hypre.
   void setSymmetricAMG();
 
+  // ADR-047. The global row of each local cell (owned, then ghost): owned
+  // rows are this rank's offset plus the local index, ghost rows come from
+  // their owners through one halo exchange. On more than one rank an empty
+  // globalRowOf is filled by this.
+  static std::vector<Index> rowMap(const Mesh& mesh, const Comm& comm);
+  // ADR-047. The KSP and PC types and, after a solve, the factor options;
+  // for bjilu the number of blocks and each local block's KSP, PC and fill.
+  std::string describe() const;
+
  private:
   struct Impl;
   std::unique_ptr<Impl> impl_;
