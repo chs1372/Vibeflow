@@ -6693,3 +6693,72 @@ The revision's text was first written before those two runs, and they were made 
 **Decision.** Adopted. The fixtures record the AVX2 kernels' answer: `solution_caseA.txt` blob 5bf52bf and `MANIFEST.txt` blob b244ecb. The generator pins its kernels and refuses to write if the pin does not take. CI's numpy and scipy are fixed at 2.5.3 and 1.18.1. The check is bitwise on all 19 files, as before. CLAUDE.md gains the PC venv's threadpoolctl and a line on the pin.
 
 **Cost.** CI ran 22 times for step 1 and 14 times for gate 3, at about three minutes each. On the PC, the runs took minutes.
+
+## ADR-049 — v2b closes with the backward-facing step's lip as a known limit, and v2c may start. Decided before any v2c gate or code
+
+**Context.**
+
+- *v2b's stage gates pass.* All six of its gates in the suite pass on the current code (`run_gates.py v2b`; ADR-047's gate 7 ran them again on Ubuntu 26.04):
+  - SST wall distance and manufactured solutions, in Python and in C++;
+  - the cross-check between Python and C++;
+  - the SST's independence of the rank count;
+  - momentum's face value where convection matters;
+  - the flat plate against NASA TMR's SST results.
+- *Its second benchmark does not pass.* The backward-facing step (ADR-045) runs outside the suite. It passes five of its six gates:
+  - the mesh;
+  - the upstream layer, Cf(−4) −0.16%;
+  - reattachment, x_r −0.34%;
+  - the profiles behind the step;
+  - settling.
+
+  It fails gate 4, the pressure recovery, and only over the last 0.03 H before the lip: 0.0205 at the corner and 0.0174 at the point before it, against 0.015. Behind the step Cp is within 0.0044 of CFL3D's.
+- *The cause was looked for and not found* (ADR-046, stated before its data and runs):
+  - the reading of the wall is not it;
+  - TMR publishes no FUN3D Cp and no Cp on its finest grid, so the reference could not be judged;
+  - on TMR's finest grid the lip still falls 0.0195 and 0.0183 short;
+  - the ablations of the numerics could not be judged, because the null re-march settled at half S0's dt. With first-order momentum, reported only, the lip came to 0.0132 and 0.0102 and x_r to 6.43.
+
+  ADR-045's decision stands and gate 4 stays FAIL.
+- *What was left open.* ADR-046 left closing v2b to a later ADR in every outcome. The user fixed that on 2026-10-05 and 2026-10-06, before ADR-046 was written. This is that ADR.
+- *The rule it meets.*
+  - `run_gates.py`: "A stage's gates must pass before code for the next stage is merged".
+  - ROADMAP's risk table: "게이트 미통과 시 새 물리 추가 금지를 규칙으로".
+  - ROADMAP's next-work list: v2c's gates are stated "v2b 통과 후".
+
+  The suite's v2b gates pass. The step's gate is outside the suite and fails, so by the rule as written v2c cannot start.
+- *What v2c brings.*
+  - Wall functions change the near-wall treatment, and the lip lies against a wall. Whether they come as an option beside the low-Reynolds treatment v2b uses, or replace it somewhere, is v2c's own ADR to state.
+  - Conjugate heat transfer does not touch the step's flow.
+
+**Decision (the user, 2026-10-23).**
+
+1. *v2b is closed.* Its README row reads "complete — 6 gates; the backward-facing step's benchmark fails one of its six at the lip (ADR-045), cause not found (ADR-046)". The following all stay:
+   - the step's gate 4 stays FAIL, as ADR-045 recorded it, and is never re-scored;
+   - the harness, the gate script, the reading script and the MPI harness stay in the tree;
+   - the lip and the MPI harness stay in the known limits (ADR-046, ADR-047).
+2. *One exception to the stage rule, by name.* The step's gate 4 does not block v2c. Everything else in the rule stands:
+   - every suite gate of v0 to v2b must pass before v2c's code merges;
+   - any other gate that fails blocks, the step's other five included.
+3. *The step stays a regression check for v2c.* Before any v2c code that touches the momentum, turbulence or wall treatment merges, the step's gate runs again, with the same command and the default low-Reynolds treatment (`backstep_gate.py`):
+   - gates 1, 2, 3, 5 and 6 must still pass;
+   - gate 4's two lip values and its largest |ΔCp| behind the step are reported beside ADR-045's.
+
+   v2c's own ADR states the wall-function case of the step, if it adds one, before its code.
+4. *The lip can be reopened at any time* by an ADR of its own, stated before its data. Two examples:
+   - the sensitivity to momentum's face value that ablation (e) reported;
+   - a FUN3D or finest-grid Cp, if TMR publishes one.
+
+   Such an ADR may attribute the failure as ADR-046's step 8 words it. Gate 4 then still stays FAIL.
+
+**What would reverse it.**
+- v2c's code makes a suite gate fail, or one of the step's five passing gates fail.
+- A later ADR shows that the lip's failure comes from a defect that also moves another v2b result.
+
+Either reopens v2b.
+
+**Not changed.** No gate, bound or verdict of ADR-042 to ADR-048 changes. ADR-045's decision stands.
+
+**Order.**
+1. This ADR is committed.
+2. Then, in their own commit: README's v2b row; ROADMAP's next-work list (v2b closed, v2c's gates next); and CLAUDE.md rule 7.
+3. v2c then starts with its own ADR, gates first, as rule 1 says.
