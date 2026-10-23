@@ -22,7 +22,7 @@ gate suite is the only thing that tells the two apart.
 | v0 | mesh geometry, FVM diffusion, CGNS input, ParaView output, MPI decomposition, linear-solver backends | **complete** — 8 gates |
 | v1 | incompressible laminar flow: PISO/PIMPLE, Rhie–Chow, BDF2, inlet/outlet boundaries, MPI | **complete** — 15 gates |
 | v2a | energy equation, Boussinesq buoyancy (balanced form), slip walls | **complete** — 10 gates |
-| v2b | RANS turbulence: k-ω SST, low-Reynolds wall treatment | **in progress** — 6 gates; the backward-facing step fails one of its six (ADR-045), cause not found (ADR-046) |
+| v2b | RANS turbulence: k-ω SST, low-Reynolds wall treatment | **complete** — 6 gates; the backward-facing step's benchmark fails one of its six at the lip (ADR-045), cause not found (ADR-046), closed with it as a known limit (ADR-049) |
 | v2c | wall functions, conjugate heat transfer | not started |
 | v2.5 | GPU build | not started |
 | v3 | compressible flow | not started |
@@ -398,7 +398,7 @@ The architecture, the stage plan and a record of each round of work, in
 Korean, are in [`ROADMAP.md`](ROADMAP.md), a copy of the living roadmap
 document kept in step with it.
 
-[`docs/DECISIONS.md`](docs/DECISIONS.md) is append-only: 48 entries, each
+[`docs/DECISIONS.md`](docs/DECISIONS.md) is append-only: 49 entries, each
 saying what was decided, why, and what would reverse it. It keeps the wrong
 turns too, marked where later entries corrected them. Three runs of entries
 are worth reading as a story:
